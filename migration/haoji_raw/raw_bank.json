@@ -1,0 +1,103 @@
+{
+ "datagrid": "emkBankRecordController.do?datagridAccount&field=id,createName,createBy,createDate,sysOrgCode,bankAccount,balance,yuer,",
+ "field": "id,createName,createBy,createDate,sysOrgCode,bankAccount,balance,yuer,",
+ "total": 8,
+ "columns": {
+  "id": "主键",
+  "createName": "创建人名称",
+  "createBy": "创建人登录名称",
+  "sysOrgCode": "所属部门",
+  "bankAccount": "账户",
+  "balance": "期初余额"
+ },
+ "rows": [
+  {
+   "bankAccount": "现金账户",
+   "yuer": "-170546.47999999998",
+   "createBy": "zika2023",
+   "balance": "80000",
+   "sysOrgCode": "甲47",
+   "state": "closed",
+   "id": "2c9262259622134c019623cafd186918",
+   "createName": "范先生",
+   "createDate": "2025-04-11 15:40:28.0"
+  },
+  {
+   "bankAccount": "范微信",
+   "yuer": "-2526.6",
+   "createBy": "zika2023",
+   "balance": "2000",
+   "sysOrgCode": "甲47",
+   "state": "closed",
+   "id": "2c9262259622134c0196250f0a5440ef",
+   "createName": "范先生",
+   "createDate": "2025-04-11 21:34:25.0"
+  },
+  {
+   "bankAccount": "苏总微信",
+   "yuer": "0",
+   "createBy": "zika2023",
+   "balance": "0",
+   "sysOrgCode": "甲47",
+   "state": "closed",
+   "id": "2c9262259622134c0196250f429d40fd",
+   "createName": "范先生",
+   "createDate": "2025-04-11 21:34:39.0"
+  },
+  {
+   "bankAccount": "寨卡公户",
+   "yuer": "-20441.119999999995",
+   "createBy": "zika2023",
+   "balance": "0",
+   "sysOrgCode": "甲47",
+   "state": "closed",
+   "id": "2c9262259622134c0196250f7d824100",
+   "createName": "范先生",
+   "createDate": "2025-04-11 21:34:54.0"
+  },
+  {
+   "bankAccount": "寨纬公户",
+   "yuer": "12185",
+   "createBy": "zika2023",
+   "balance": "0",
+   "sysOrgCode": "甲47",
+   "state": "closed",
+   "id": "2c9262289bb2ffb9019bb567fb3950ba",
+   "createName": "范先生",
+   "createDate": "2026-01-13 11:30:49.0"
+  },
+  {
+   "bankAccount": "华诺迈公户",
+   "yuer": "0",
+   "createBy": "zika2023",
+   "balance": "0",
+   "sysOrgCode": "甲47",
+   "state": "closed",
+   "id": "2c9262289bb2ffb9019bb568508150e6",
+   "createName": "范先生",
+   "createDate": "2026-01-13 11:31:11.0"
+  },
+  {
+   "bankAccount": "范总微信",
+   "yuer": "0",
+   "createBy": "zika2023",
+   "balance": "0",
+   "sysOrgCode": "甲47",
+   "state": "closed",
+   "id": "2c9262289e45d365019e49321f3b025a",
+   "createName": "范先生",
+   "createDate": "2026-05-21 14:21:22.0"
+  },
+  {
+   "bankAccount": "范支付宝",
+   "yuer": "-17091",
+   "createBy": "zika2023",
+   "balance": "0",
+   "sysOrgCode": "甲47",
+   "state": "closed",
+   "id": "2c9262289e45d365019e49391f3f052b",
+   "createName": "范先生",
+   "createDate": "2026-05-21 14:29:01.0"
+  }
+ ]
+}

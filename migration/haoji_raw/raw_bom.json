@@ -1,0 +1,56 @@
+{
+ "datagrid": "emkBomController.do?datagrid&field=id,createName,createBy,createDate,sysOrgCode,orgCode,departId,proNum,proZnName,standards,brand,a01a01a01,total,money,",
+ "field": "id,createName,createBy,createDate,sysOrgCode,orgCode,departId,proNum,proZnName,standards,brand,a01a01a01,total,money,",
+ "total": 2,
+ "columns": {
+  "id": "主键",
+  "createName": "创建人名称",
+  "createBy": "创建人登录名称",
+  "sysOrgCode": "所属部门",
+  "orgCode": "部门代码",
+  "departId": "部门ID",
+  "proNum": "产品编号",
+  "proZnName": "商品名称",
+  "standards": "规格",
+  "brand": "型号",
+  "a01a01a01": "颜色",
+  "total": "材料数量",
+  "money": "材料金额"
+ },
+ "rows": [
+  {
+   "proNum": "0002",
+   "standards": "4G-双电-可拆卸",
+   "createBy": "zika2023",
+   "total": "",
+   "money": "",
+   "orgCode": "甲47",
+   "a01a01a01": "不锈钢-黑",
+   "sysOrgCode": "甲47",
+   "departId": "2c92622589b18fba0189b42b7a763c8a",
+   "state": "closed",
+   "id": "2c9262258b391bbc018b3bcb26025d3a",
+   "proZnName": "AI4G可视化装置",
+   "brand": "ZK-QZJ-4G-AISP",
+   "createName": "范先生",
+   "createDate": "2023-10-17 12:00:51.0"
+  },
+  {
+   "proNum": "0001",
+   "standards": "",
+   "createBy": "zika2023",
+   "total": "14.000",
+   "money": "265.700",
+   "orgCode": "甲47",
+   "a01a01a01": "白",
+   "sysOrgCode": "甲47",
+   "departId": "2c92622589b18fba0189b42b7a763c8a",
+   "state": "closed",
+   "id": "2c926228980e92b90198120df39d288e",
+   "proZnName": "车载声光报警装置",
+   "brand": "ZW-SG-WX-DC012",
+   "createName": "范先生",
+   "createDate": "2025-07-16 15:06:01.0"
+  }
+ ]
+}

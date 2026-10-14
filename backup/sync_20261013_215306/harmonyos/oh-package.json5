@@ -1,0 +1,6 @@
+{
+  "modelVersion": "5.0.0",
+  "description": "本地 ERP 鸿蒙客户端（WebView 壳 + 原生框架）",
+  "dependencies": {},
+  "devDependencies": {}
+}

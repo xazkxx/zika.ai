@@ -1,0 +1,4059 @@
+import { useEffect, useMemo, useState } from 'react';
+import jsQR from 'jsqr';
+import * as pdfjsLib from 'pdfjs-dist';
+import Tesseract from 'tesseract.js';
+import * as XLSX from 'xlsx';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
+
+// 使用同源相对路径：开发时由 Vite 代理转发到后端；
+// 手机/局域网访问时请求也走当前服务器，不会指向错误的 127.0.0.1。
+const API_BASE = '/api/v1';
+// 菜单按业务域分组。items 里的 key 与业务逻辑一一对应，改分组不会影响任何功能。
+const menuGroups = [
+  {
+    key: 'workspace',
+    label: '工作台',
+    items: [{ key: 'overview', label: '运营概览' }],
+  },
+  {
+    key: 'basic',
+    label: '基础资料',
+    items: [
+      { key: 'customers', label: '客户档案' },
+      { key: 'suppliers', label: '供应商档案' },
+      { key: 'products', label: '商品档案' },
+    ],
+  },
+  {
+    key: 'business',
+    label: '业务单据',
+    items: [
+      { key: 'sales', label: '销售开单' },
+      { key: 'purchase', label: '采购入库' },
+    ],
+  },
+  {
+    key: 'inventory',
+    label: '库存管理',
+    items: [{ key: 'inventory', label: '库存流水' }],
+  },
+  {
+    key: 'manufacture',
+    label: '生产管理',
+    items: [
+      { key: 'production', label: '生产工单' },
+      { key: 'bom', label: 'BOM 清单' },
+    ],
+  },
+  {
+    key: 'finance',
+    label: '财务中心',
+    items: [{ key: 'finance', label: '财务流水' }],
+  },
+  {
+    key: 'project',
+    label: '项目管理',
+    items: [{ key: 'projects', label: '项目台账' }],
+  },
+  {
+    key: 'analysis',
+    label: '报表分析',
+    items: [
+      { key: 'reports', label: '报表中心' },
+      { key: 'analysis', label: '经营分析' },
+    ],
+  },
+  {
+    key: 'mobile',
+    label: '移动与智能',
+    items: [
+      { key: 'agent', label: '智能助手' },
+      { key: 'mobile', label: '移动端预览' },
+    ],
+  },
+];
+
+// 扁平视图：供顶栏标题查找、权限过滤等按 key 检索的场景使用
+const tabs = menuGroups.flatMap((group) =>
+  group.items.map((item) => ({ ...item, group: group.key, groupLabel: group.label })),
+);
+
+const emptyCustomerForm = {
+  code: '',
+  name: '',
+  phone: '',
+  email: '',
+  address: '',
+};
+
+const emptyProductForm = {
+  sku: '',
+  name: '',
+  category: '',
+  unit: '',
+  purchase_price: '',
+  sale_price: '',
+};
+
+const emptyPurchaseForm = {
+  supplier_id: '',
+  order_no: '',
+  product_id: '',
+  quantity: '1',
+  unit_price: '0',
+};
+
+const emptySalesForm = {
+  customer_id: '',
+  order_no: '',
+  product_id: '',
+  quantity: '1',
+  unit_price: '0',
+};
+
+const emptySupplierForm = {
+  code: '',
+  name: '',
+  phone: '',
+  email: '',
+  address: '',
+};
+
+const emptyInventoryForm = {
+  product_id: '',
+  warehouse_id: '',
+  transaction_type: 'inbound',
+  quantity: '1',
+  unit_price: '0',
+};
+
+// 现存量状态 → 中文标签与样式类（阈值来自商品档案的库存上下限）
+const STOCK_STATUS_LABEL = {
+  shortage: '缺货',
+  low_stock: '低库存',
+  overstock: '积压',
+  normal: '正常',
+};
+const stockStatusLabel = (status) => STOCK_STATUS_LABEL[status] || '正常';
+
+const emptyFinanceForm = {
+  transaction_type: 'income',
+  amount: '0',
+  currency: 'CNY',
+  note: '',
+  related_order_id: '',
+  customer_id: '',
+  supplier_id: '',
+};
+
+function App() {
+  const getStoredToken = () => {
+    try {
+      return localStorage.getItem('erp_token') || '';
+    } catch {
+      return '';
+    }
+  };
+
+  const [summary, setSummary] = useState(null);
+  const [customers, setCustomers] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [purchaseOrders, setPurchaseOrders] = useState([]);
+  const [salesOrders, setSalesOrders] = useState([]);
+  const [selectedSalesOrder, setSelectedSalesOrder] = useState(null);
+  const [productionOrders, setProductionOrders] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  // 现存量看板：按需拉取（切到库存页才请求），不挤进首页那批并发请求里
+  const [stockData, setStockData] = useState({ rows: [], summary: {} });
+  const [finance, setFinance] = useState([]);
+  const [financeAnalysis, setFinanceAnalysis] = useState({
+    total_revenue: 0,
+    total_expense: 0,
+    net_profit: 0,
+    by_customer: [],
+    monthly_trend: [],
+  });
+  const [financeDecision, setFinanceDecision] = useState({
+    summary: { total_income: 0, total_expense: 0, net_cash_flow: 0, gross_margin_rate: 0, expense_ratio: 0 },
+    status: { liquidity: '待评估', trend: '待评估', cash_position: '待评估' },
+    risk_level: 'healthy',
+    recommendations: [],
+  });
+  const [operationsBoard, setOperationsBoard] = useState({
+    production_orders: [],
+    project_summary: { total: 0, in_progress: 0, completed: 0, avg_progress: 0, budget_total: 0 },
+    high_priority_orders: [],
+    status_breakdown: { planned: 0, in_progress: 0, completed: 0 },
+    milestones: [],
+    cost_summary: { material_cost: 0, labor_cost: 0, overhead_cost: 0, total_cost: 0 },
+    gantt: [],
+    production_flow: [],
+    recommendations: [],
+    bom_summary: { total_items: 0, total_quantity: 0, total_cost: 0 },
+    work_orders: [],
+    production_schedule: [],
+    bom_alerts: [],
+    line_board: [],
+    auto_schedule: [],
+    inventory_alerts: [],
+    purchase_recommendations: [],
+    supplier_performance: [],
+    payment_alerts: [],
+    work_report_summary: { total_work_orders: 0, completed_today: 0, progress_rate: 0, avg_output: 0, oee: 0 },
+  });
+  const [executiveDashboard, setExecutiveDashboard] = useState({
+    kpis: [],
+    status: { health: 'healthy', production: 0, margin: 0, risk_count: 0 },
+    alerts: [],
+  });
+  const [mobileDashboard, setMobileDashboard] = useState({
+    status: 'healthy',
+    risk_count: 0,
+    updated_at: '',
+    summary: { sales_total: 0, purchase_total: 0, net_profit: 0, customers: 0, products: 0, inventory_alerts: 0, payment_alerts: 0 },
+    kpis: [],
+    recommendations: [],
+  });
+  const [bomTree, setBomTree] = useState([]);
+  const [bomForm, setBomForm] = useState({
+    product_id: '',
+    component_product_id: '',
+    parent_id: '',
+    name: '',
+    code: '',
+    quantity: '1',
+    unit_cost: '0',
+    bom_type: 'assembly',
+    level: '0',
+    description: '',
+  });
+  const [invoiceItems, setInvoiceItems] = useState([]);
+  const [invoiceDetail, setInvoiceDetail] = useState(null);
+  const [invoiceAggregate, setInvoiceAggregate] = useState({
+    total_count: 0,
+    total_amount: 0,
+    total_tax: 0,
+    by_type: [],
+    deduction: { deducted_count: 0, deducted_amount: 0, undeducted_count: 0, undeducted_amount: 0 },
+    monthly: {},
+  });
+  const [invoiceAgentReport, setInvoiceAgentReport] = useState(null);
+  const [analysisRange, setAnalysisRange] = useState({ startDate: '', endDate: '' });
+  const [agentPrompt, setAgentPrompt] = useState('请评估当前业务健康度，并给出建议。');
+  const [agentResponse, setAgentResponse] = useState({ answer: '', summary: {}, risk_level: '健康' });
+  const [selectedTab, setSelectedTab] = useState('overview');
+  const [collapsedGroups, setCollapsedGroups] = useState([]);
+  const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getStoredToken()));
+  const [authToken, setAuthToken] = useState(getStoredToken());
+  const [userProfile, setUserProfile] = useState({ username: '', role: 'staff' });
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [customerForm, setCustomerForm] = useState(emptyCustomerForm);
+  const [supplierForm, setSupplierForm] = useState(emptySupplierForm);
+  const [productForm, setProductForm] = useState(emptyProductForm);
+  const [purchaseForm, setPurchaseForm] = useState(emptyPurchaseForm);
+  const [salesForm, setSalesForm] = useState(emptySalesForm);
+  const [inventoryForm, setInventoryForm] = useState(emptyInventoryForm);
+  const [financeForm, setFinanceForm] = useState(emptyFinanceForm);
+  const [productionForm, setProductionForm] = useState({ product_id: '', order_no: '', quantity: '1', status: 'planned', priority: 'normal', note: '' });
+  const [projectForm, setProjectForm] = useState({ code: '', name: '', manager: '', status: 'planned', progress: '0', budget: '0', deadline: '', note: '' });
+  const [selectedRecommendation, setSelectedRecommendation] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  // 删除确认弹窗：{ id, ids, endpoint, label, kind }
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  // 发票列表批量勾选删除：已勾选的发票 id 数组
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState([]);
+
+  useEffect(() => {
+    async function loadCurrentUser() {
+      if (!authToken) {
+        setUserProfile({ username: '', role: 'staff' });
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}/auth/me`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+
+        if (!response.ok) {
+          throw new Error('401');
+        }
+
+        const data = await response.json();
+        setUserProfile({ username: data.username, role: data.role || 'staff' });
+      } catch {
+        localStorage.removeItem('erp_token');
+        setAuthToken('');
+        setIsAuthenticated(false);
+      }
+    }
+
+    loadCurrentUser();
+  }, [authToken]);
+
+  useEffect(() => {
+    if (selectedTab !== 'inventory' || !authToken) return;
+    refreshStock();
+    // refreshStock 每次渲染都是新引用，这里只关心「切到库存页」这一个时机
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTab, authToken]);
+
+  useEffect(() => {
+    async function loadDashboard() {
+      if (!authToken) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const headers = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+        const params = new URLSearchParams();
+        if (analysisRange.startDate) params.set('start_date', analysisRange.startDate);
+        if (analysisRange.endDate) params.set('end_date', analysisRange.endDate);
+        const financeAnalysisUrl = `${API_BASE}/finance/analysis${params.toString() ? `?${params.toString()}` : ''}`;
+
+        const [summaryRes, customersRes, suppliersRes, productsRes, purchaseRes, salesRes, productionRes, projectRes, inventoryRes, financeRes, financeAnalysisRes, financeDecisionRes, operationsRes, executiveRes, mobileRes, bomTreeRes, invoicesRes, invoicesSummaryRes] = await Promise.all([
+          fetch(`${API_BASE}/summary`, { headers }),
+          fetch(`${API_BASE}/customers`, { headers }),
+          fetch(`${API_BASE}/suppliers`, { headers }),
+          fetch(`${API_BASE}/products`, { headers }),
+          fetch(`${API_BASE}/purchase-orders`, { headers }),
+          fetch(`${API_BASE}/sales-orders`, { headers }),
+          fetch(`${API_BASE}/production-orders`, { headers }),
+          fetch(`${API_BASE}/projects`, { headers }),
+          fetch(`${API_BASE}/inventory`, { headers }),
+          fetch(`${API_BASE}/finance`, { headers }),
+          fetch(financeAnalysisUrl, { headers }),
+          fetch(`${API_BASE}/finance/decision-support`, { headers }),
+          fetch(`${API_BASE}/dashboard/operations`, { headers }),
+          fetch(`${API_BASE}/dashboard/executive`, { headers }),
+          fetch(`${API_BASE}/mobile/dashboard`, { headers }),
+          fetch(`${API_BASE}/production-boms/tree`, { headers }),
+          fetch(`${API_BASE}/invoices`, { headers }),
+          fetch(`${API_BASE}/invoices/summary`, { headers }),
+        ]);
+
+        if (!summaryRes.ok || !customersRes.ok || !suppliersRes.ok || !productsRes.ok || !purchaseRes.ok || !salesRes.ok || !productionRes.ok || !projectRes.ok || !inventoryRes.ok || !financeRes.ok || !financeAnalysisRes.ok || !financeDecisionRes.ok || !operationsRes.ok || !executiveRes.ok || !mobileRes.ok || !bomTreeRes.ok || !invoicesRes.ok || !invoicesSummaryRes.ok) {
+          throw new Error('请求失败');
+        }
+
+        const [summaryData, customersData, suppliersData, productsData, purchaseData, salesData, productionData, projectData, inventoryData, financeData, financeAnalysisData, financeDecisionData, operationsData, executiveData, mobileData, bomTreeData, invoicesData, invoicesSummaryData] = await Promise.all([
+          summaryRes.json(),
+          customersRes.json(),
+          suppliersRes.json(),
+          productsRes.json(),
+          purchaseRes.json(),
+          salesRes.json(),
+          productionRes.json(),
+          projectRes.json(),
+          inventoryRes.json(),
+          financeRes.json(),
+          financeAnalysisRes.json(),
+          financeDecisionRes.json(),
+          operationsRes.json(),
+          executiveRes.json(),
+          mobileRes.json(),
+          bomTreeRes.json(),
+          invoicesRes.json(),
+          invoicesSummaryRes.json(),
+        ]);
+
+        setSummary(summaryData);
+        setCustomers(customersData);
+        setSuppliers(suppliersData);
+        setProducts(productsData);
+        setPurchaseOrders(purchaseData);
+        setSalesOrders(salesData);
+        setProductionOrders(productionData);
+        setProjects(projectData);
+        setInventory(inventoryData);
+        setFinance(financeData);
+        setFinanceAnalysis(financeAnalysisData);
+        setFinanceDecision(financeDecisionData);
+        setOperationsBoard(operationsData);
+        setExecutiveDashboard(executiveData);
+        setMobileDashboard(mobileData);
+        setBomTree(Array.isArray(bomTreeData) ? bomTreeData : []);
+        setInvoiceItems(Array.isArray(invoicesData) ? invoicesData.map(normalizeInvoiceRecord) : []);
+        setInvoiceAggregate(invoicesSummaryData);
+      } catch (err) {
+        //setError('无法连接到 ERP 后端，请确认后端已启动。');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadDashboard();
+  }, [authToken, analysisRange.startDate, analysisRange.endDate]);
+
+  const cards = useMemo(
+    () =>
+      summary
+        ? [
+            { label: '客户数', value: summary.customers ?? 0 },
+            { label: '供应商数', value: summary.suppliers ?? 0 },
+            { label: '产品数', value: summary.products ?? 0 },
+            { label: '销售总额', value: `¥${Number(summary.sales_total ?? 0).toLocaleString()}` },
+            { label: '采购总额', value: `¥${Number(summary.purchase_total ?? 0).toLocaleString()}` },
+            { label: '财务总额', value: `¥${Number(summary.finance_total ?? 0).toLocaleString()}` },
+          ]
+        : [],
+    [summary]
+  );
+
+  const overviewTrend = useMemo(() => {
+    if (Array.isArray(financeAnalysis.monthly_trend) && financeAnalysis.monthly_trend.length > 0) {
+      return financeAnalysis.monthly_trend.slice(-6).map((item) => ({
+        label: item.month || '本月',
+        income: Number(item.income || 0),
+        expense: Number(item.expense || 0),
+      }));
+    }
+
+    const baseSales = Number(summary?.sales_total || 0);
+    const basePurchase = Number(summary?.purchase_total || 0);
+    const baseFinance = Number(summary?.finance_total || 0);
+
+    return [
+      { label: '本月', income: baseSales, expense: basePurchase },
+      { label: '上月', income: Math.max(baseSales * 0.9, 0), expense: Math.max(basePurchase * 0.92, 0) },
+      { label: '前月', income: Math.max(baseSales * 0.8, 0), expense: Math.max(basePurchase * 0.86, 0) },
+      { label: '3月', income: Math.max(baseSales * 0.72, 0), expense: Math.max(basePurchase * 0.82, 0) },
+      { label: '4月', income: Math.max(baseSales * 0.68, 0), expense: Math.max(basePurchase * 0.78, 0) },
+      { label: '5月', income: Math.max(baseSales * 0.64, 0), expense: Math.max(basePurchase * 0.74, 0) },
+    ].map((item) => ({
+      ...item,
+      finance: baseFinance * 0.6,
+    }));
+  }, [financeAnalysis.monthly_trend, summary]);
+
+  const leadershipBoard = useMemo(() => {
+    const health = executiveDashboard.status?.health === 'healthy' ? 88 : 66;
+    const cashFlow = Math.min(100, Math.max(40, ((Number(summary?.sales_total || 0) - Number(summary?.purchase_total || 0)) / Math.max(Number(summary?.sales_total || 0), 1)) * 100 + 20));
+    const supplyRisk = Math.min(100, Math.max(15, (Number(executiveDashboard.status?.risk_count || 0) / 60) * 100));
+    const productionHealth = Number(operationsBoard.work_report_summary?.progress_rate || 0);
+
+    return {
+      cards: [
+        { label: '业务健康度', value: `${health}%`, tone: 'good' },
+        { label: '现金流健康', value: `${cashFlow.toFixed(0)}%`, tone: 'good' },
+        { label: '供应链风险', value: `${supplyRisk.toFixed(0)}%`, tone: supplyRisk > 60 ? 'warn' : 'good' },
+        { label: '生产节奏', value: `${productionHealth.toFixed(0)}%`, tone: productionHealth > 70 ? 'good' : 'warn' },
+      ],
+      actions: [
+        `优先处理 ${executiveDashboard.alerts?.[0]?.title || '库存风险'}，避免停线和交付延迟。`,
+        `继续压缩非必要采购支出，提升 ${(Number(summary?.sales_total || 0) - Number(summary?.purchase_total || 0)) > 0 ? '利润率' : '成本控制'}。`,
+        `盘点 ${operationsBoard.work_orders?.length || 0} 个工单的推进状态，确保生产线稳定运行。`,
+      ],
+    };
+  }, [executiveDashboard, operationsBoard, summary]);
+
+  const handleLoginChange = (field) => (event) => {
+    setLoginForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleCustomerChange = (field) => (event) => {
+    setCustomerForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleSupplierChange = (field) => (event) => {
+    setSupplierForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleProductChange = (field) => (event) => {
+    setProductForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handlePurchaseChange = (field) => (event) => {
+    setPurchaseForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleSalesChange = (field) => (event) => {
+    setSalesForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const updateSalesOrderStatus = async (orderId, nextStatus) => {
+    if (!orderId) return false;
+
+    try {
+      const response = await fetch(`${API_BASE}/sales-orders/${orderId}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '更新订单状态失败' }));
+        throw new Error(errorData.detail ?? '更新订单状态失败');
+      }
+
+      const updatedOrder = await response.json();
+      setSalesOrders((prev) => prev.map((item) => (item.id === orderId ? { ...item, status: updatedOrder.status || nextStatus } : item)));
+      setSelectedSalesOrder((prev) => (prev && prev.id === orderId ? { ...prev, status: updatedOrder.status || nextStatus } : prev));
+      setNotice(`订单 ${updatedOrder.order_no || orderId} 已更新为 ${updatedOrder.status || nextStatus}。`);
+      return true;
+    } catch (err) {
+      setNotice(err.message || '更新订单状态失败');
+      return false;
+    }
+  };
+
+  const handleInventoryChange = (field) => (event) => {
+    setInventoryForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleFinanceChange = (field) => (event) => {
+    setFinanceForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleProductionChange = (field) => (event) => {
+    setProductionForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleProjectChange = (field) => (event) => {
+    setProjectForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleBomFormChange = (field) => (event) => {
+    setBomForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!confirmDelete) return;
+    const { id, ids, endpoint, label, kind, force } = confirmDelete;
+    setConfirmDelete(null);
+    try {
+      const url = force
+        ? `${API_BASE}${endpoint}${endpoint.includes('?') ? '&' : '?'}force=true`
+        : `${API_BASE}${endpoint}`;
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: ids ? JSON.stringify({ ids }) : undefined,
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '删除失败' }));
+        // 档案被业务数据引用时后端返回 409，改为二次确认，让用户决定是否强制删除
+        if (response.status === 409 && ['customer', 'supplier', 'product'].includes(kind)) {
+          setConfirmDelete({ id, endpoint, label, kind, force: true, blockedReason: errorData.detail });
+          return;
+        }
+        throw new Error(errorData.detail ?? '删除失败');
+      }
+      if (kind === 'sales-order') {
+        setSalesOrders((prev) => prev.filter((row) => row.id !== id));
+      } else if (kind === 'bom') {
+        // BOM 是树形结构，删除后重新拉取整棵树
+        const refreshed = await fetch(`${API_BASE}/production-boms/tree`, {
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+        });
+        const bomData = await refreshed.json();
+        setBomTree(Array.isArray(bomData) ? bomData : []);
+      } else if (kind === 'invoice') {
+        setInvoiceItems((prev) => prev.filter((row) => row.id !== id));
+        await refreshInvoiceAggregate();
+      } else if (kind === 'invoice-batch') {
+        setInvoiceItems((prev) => prev.filter((row) => !ids.includes(row.id)));
+        setSelectedInvoiceIds([]);
+        await refreshInvoiceAggregate();
+      } else if (kind === 'customer') {
+        setCustomers((prev) => prev.filter((row) => row.id !== id));
+      } else if (kind === 'supplier') {
+        setSuppliers((prev) => prev.filter((row) => row.id !== id));
+      } else if (kind === 'product') {
+        setProducts((prev) => prev.filter((row) => row.id !== id));
+      }
+      setNotice(`${label}已删除。`);
+    } catch (err) {
+      setNotice(err.message || '删除失败');
+    }
+  };
+
+  const refreshInvoiceAggregate = async () => {
+    // 发票汇总数据跟着列表一起刷新
+    const summaryRes = await fetch(`${API_BASE}/invoices/summary`, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    if (summaryRes.ok) {
+      setInvoiceAggregate(await summaryRes.json());
+    }
+  };
+
+  const toggleInvoiceSelect = (invoiceId) => {
+    setSelectedInvoiceIds((prev) =>
+      prev.includes(invoiceId) ? prev.filter((x) => x !== invoiceId) : [...prev, invoiceId]
+    );
+  };
+
+  const toggleSelectAllInvoices = () => {
+    const visibleIds = invoiceItems.slice(0, 8).map((row) => row.id);
+    if (visibleIds.length > 0 && selectedInvoiceIds.length === visibleIds.length) {
+      setSelectedInvoiceIds([]);
+    } else {
+      setSelectedInvoiceIds(visibleIds);
+    }
+  };
+
+  const submitBomNode = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/production-boms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          product_id: Number(bomForm.product_id),
+          component_product_id: Number(bomForm.component_product_id),
+          parent_id: bomForm.parent_id ? Number(bomForm.parent_id) : null,
+          name: bomForm.name || null,
+          code: bomForm.code || null,
+          quantity: Number(bomForm.quantity || 1),
+          unit_cost: Number(bomForm.unit_cost || 0),
+          bom_type: bomForm.bom_type || 'component',
+          level: Number(bomForm.level || 0),
+          description: bomForm.description || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建 BOM 失败' }));
+        throw new Error(errorData.detail ?? '创建 BOM 失败');
+      }
+
+      const refreshed = await fetch(`${API_BASE}/production-boms/tree`, {
+        headers: { ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+      });
+      if (refreshed.ok) {
+        const bomData = await refreshed.json();
+        setBomTree(Array.isArray(bomData) ? bomData : []);
+      }
+      setBomForm({
+        product_id: '',
+        component_product_id: '',
+        parent_id: '',
+        name: '',
+        code: '',
+        quantity: '1',
+        unit_cost: '0',
+        bom_type: 'assembly',
+        level: '0',
+        description: '',
+      });
+      setNotice('BOM 节点已成功新增。');
+    } catch (err) {
+      setNotice(JSON.stringify(err) || 'BOM 新增失败');
+    }
+  };
+
+  const renderBomTree = (nodes, depth = 0) =>
+    nodes.map((node) => (
+      <li key={node.id} className="bom-node-item">
+        <div className="bom-node-row" style={{ marginLeft: `${depth * 18}px` }}>
+          <span className="bom-node-label">{node.name || node.code || `BOM-${node.id}`}</span>
+          <span className="bom-node-meta">{node.bom_type || 'component'} · {node.quantity}件</span>
+          <button
+            type="button"
+            className="danger-btn"
+            onClick={() =>
+              setConfirmDelete({
+                id: node.id,
+                endpoint: `/production-boms/${node.id}`,
+                label: `BOM 节点 ${node.name || node.code || node.id}`,
+                kind: 'bom',
+              })
+            }
+          >
+            删除
+          </button>
+        </div>
+        {node.children && node.children.length > 0 ? <ul className="bom-node-children">{renderBomTree(node.children, depth + 1)}</ul> : null}
+      </li>
+    ));
+
+  const submitProductionOrder = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/production-orders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          product_id: Number(productionForm.product_id),
+          order_no: productionForm.order_no,
+          quantity: Number(productionForm.quantity),
+          status: productionForm.status,
+          priority: productionForm.priority,
+          note: productionForm.note || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建生产单失败' }));
+        throw new Error(errorData.detail ?? '创建生产单失败');
+      }
+
+      const item = await response.json();
+      setProductionOrders((prev) => [item, ...prev]);
+      setProductionForm({ product_id: '', order_no: '', quantity: '1', status: 'planned', priority: 'normal', note: '' });
+      setNotice('生产单已成功新增。');
+    } catch (err) {
+      setNotice(err.message || '生产单新增失败');
+    }
+  };
+
+  const submitProject = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/projects`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          code: projectForm.code,
+          name: projectForm.name,
+          manager: projectForm.manager || null,
+          status: projectForm.status,
+          progress: Number(projectForm.progress),
+          budget: Number(projectForm.budget),
+          deadline: projectForm.deadline || null,
+          note: projectForm.note || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建项目失败' }));
+        throw new Error(errorData.detail ?? '创建项目失败');
+      }
+
+      const item = await response.json();
+      setProjects((prev) => [item, ...prev]);
+      setProjectForm({ code: '', name: '', manager: '', status: 'planned', progress: '0', budget: '0', deadline: '', note: '' });
+      setNotice('项目已成功新增。');
+    } catch (err) {
+      setNotice(err.message || '项目新增失败');
+    }
+  };
+
+  const inferInvoiceCategory = (item) => {
+    const noteText = `${item?.note || ''} ${item?.customer_name || ''} ${item?.status || ''}`.toLowerCase(); 
+    if (/采购|办公|耗材|设备|供应商|原材料|材料/.test(noteText)) return '采购';
+    if (/销售|收入|客户|服务|订单/.test(noteText)) return '销售';
+    if (/交通|差旅|出差|机票|酒店/.test(noteText)) return '差旅';
+    if (/税|增值税|手续费|银行|利息/.test(noteText)) return '税费';
+    return '其他';
+  };
+
+  const normalizeInvoiceRows = (list) =>
+    Array.isArray(list)
+      ? list.map((item, index) => ({
+          id: item.id || item.invoice_no || item.invoiceId || item.no || `INV-${index + 1}`,
+          customer_name: item.customer_name || item.customer || item.company || item.buyer || '未知客户',
+          amount: Number(item.amount || item.total || item.invoice_amount || item.money || 0),
+          date: item.date || item.invoice_date || item.issue_date || item.created_at || '—',
+          status: item.status || item.payment_status || '已确认',
+          note: item.note || item.remark || '',
+          category: item.category || inferInvoiceCategory(item),
+        }))
+      : [];
+
+  // 后端持久化发票 → 前端结构：保留全部字段，补上列表渲染用的别名
+  const normalizeInvoiceRecord = (item) => ({
+    ...item,
+    id: item.id || item.invoice_no,
+    invoice_no: item.invoice_no || item.id,
+    customer_name: item.counterparty_name || item.seller_name || item.customer_name || '未知单位',
+    seller_name: item.seller_name || item.counterparty_name || item.customer_name || '未知单位',
+    buyer_name: item.buyer_name || '—',
+    amount: Number(item.total_amount ?? item.amount ?? 0),
+    date: item.issue_date || item.date || '—',
+    status: item.status || '已确认',
+    category: item.category || inferInvoiceCategory(item),
+    items: Array.isArray(item.items) ? item.items : [],
+  });
+
+  // 月份渲染统一入口：解析失败（空值/不规范格式）显示"未知月份"，绝不输出 NaN
+  const formatMonth = (month) => {
+    const match = String(month || '').match(/^(\d{4})-(\d{1,2})$/);
+    if (!match) return '未知月份';
+    return `${match[1]}年${Number(match[2])}月`;
+  };
+
+  const parseStructuredInvoiceText = (rawText) => {
+    const text = String(rawText || '').trim();
+    if (!text) {
+      return [];
+    }
+
+    const parseCsvLine = (line) => {
+      const matches = line.match(/(".*?"|[^,]+)(?=,|$)/g) || [];
+      return matches.map((cell) => cell.replace(/^"|"$/g, '').trim());
+    };
+
+    try {
+      const parsed = JSON.parse(text);
+      const list = Array.isArray(parsed) ? parsed : parsed.invoices || parsed.data || parsed.items || [];
+      return normalizeInvoiceRows(list);
+    } catch {
+      if (/=/.test(text) && /(?:customer|amount|invoice|buyer|total)/i.test(text)) {
+        const records = text
+          .split(/[\r\n;]+/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const pairs = line.split(/\s*[,;]\s*/).filter(Boolean);
+            const entry = {};
+            pairs.forEach((part) => {
+              const match = part.match(/^([^:=]+)\s*[:=]\s*(.+)$/);
+              if (match) {
+                entry[match[1].trim().toLowerCase()] = match[2].trim();
+              }
+            });
+            return entry;
+          })
+          .filter((entry) => entry.customer || entry.customer_name || entry.amount || entry.total || entry.invoice_no);
+
+        if (records.length > 0) {
+          return records.map((entry, index) => ({
+            id: entry.invoice_no || entry.no || entry.id || `INV-${index + 1}`,
+            customer_name: entry.customer_name || entry.customer || entry.buyer || '未知客户',
+            amount: Number(entry.amount || entry.total || entry.invoice_amount || 0),
+            date: entry.date || entry.invoice_date || entry.issue_date || '—',
+            status: entry.status || entry.payment_status || '已确认',
+            note: entry.note || entry.remark || '',
+          }));
+        }
+      }
+
+      const rows = text.split(/\r?\n/).filter(Boolean);
+      if (rows.length < 2) return [];
+
+      const headers = parseCsvLine(rows[0]).map((header) => header.toLowerCase().replace(/\s+/g, '_'));
+      return rows.slice(1).map((line, index) => {
+        const values = parseCsvLine(line);
+        const record = {};
+        headers.forEach((header, idx) => {
+          record[header] = values[idx] || '';
+        });
+        return {
+          id: record.invoice_no || record.no || record.id || `INV-${index + 1}`,
+          customer_name: record.customer_name || record.customer || record.company || '未知客户',
+          amount: Number(record.amount || record.total || record.invoice_amount || 0),
+          date: record.date || record.invoice_date || record.issue_date || '—',
+          status: record.status || record.payment_status || '已确认',
+          note: record.note || record.remark || '',
+        };
+      }).filter((row) => row.customer_name || row.amount || row.id);
+    }
+  };
+
+  const readPdfInvoiceText = async (file) => {
+    const buffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+    let extractedText = '';
+
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const pageText = await page.getTextContent();
+      extractedText += pageText.items.map((item) => ('str' in item ? item.str : '')).join(' ') + '\n';
+    }
+
+    return normalizeInvoiceRows(parseStructuredInvoiceText(extractedText));
+  };
+
+  const readQrFromImage = async (file) => {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('二维码读取失败'));
+      reader.readAsDataURL(file);
+    });
+
+    const img = new Image();
+    img.src = dataUrl;
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
+
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    context.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
+
+    if (!code) {
+      return [];
+    }
+
+    return normalizeInvoiceRows(parseStructuredInvoiceText(code.data));
+  };
+
+  const readImageInvoiceText = async (file) => {
+    try {
+      const { data } = await Tesseract.recognize(file, 'chi_sim+eng');
+      const textFromOcr = data?.text || '';
+      const qrItems = await readQrFromImage(file);
+      const ocrItems = normalizeInvoiceRows(parseStructuredInvoiceText(textFromOcr));
+      const combined = [...qrItems, ...ocrItems];
+      if (combined.length > 0) {
+        return combined;
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  };
+
+  const classifyInvoiceBatch = async (records) => {
+    const sanitized = records.map((item) => ({
+      ...item,
+      category: item.category || inferInvoiceCategory(item),
+      amount: Number(item.amount || 0),
+    }));
+
+    try {
+      const response = await fetch(`${API_BASE}/invoices/analyze`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({ invoices: sanitized }),
+      });
+
+      if (!response.ok) {
+        throw new Error('classification failed');
+      }
+
+      const data = await response.json();
+      if (Array.isArray(data.items) && data.items.length > 0) {
+        // 与原始记录合并：保留 OCR 提取的双方信息、明细、原始文本
+        const originals = new Map(sanitized.map((record) => [record.invoice_no || record.id, record]));
+        return data.items.map((item) => {
+          const original = originals.get(item.invoice_no || item.id) || {};
+          return {
+            ...original,
+            ...item,
+            amount: Number(item.amount || original.amount || 0),
+            category: item.category || inferInvoiceCategory(item),
+          };
+        });
+      }
+    } catch {
+      // 回退到本地分类逻辑，确保功能可用。
+    }
+
+    return sanitized.map((item) => ({
+      ...item,
+      category: inferInvoiceCategory(item),
+    }));
+  };
+
+  const parseInvoiceText = async (file) => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+
+    if (extension === 'pdf') {
+      return readPdfInvoiceText(file);
+    }
+
+    if (['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp'].includes(extension)) {
+      return readImageInvoiceText(file);
+    }
+
+    const rawText = await file.text();
+    return normalizeInvoiceRows(parseStructuredInvoiceText(rawText));
+  };
+
+  const handleInvoiceUpload = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    try {
+      setNotice('正在批量识别发票内容，请稍候...');
+      const allItems = [];
+      let backendFailed = 0;
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const ocrResponse = await fetch(`${API_BASE}/invoices/parse`, {
+          method: 'POST',
+          headers: {
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+          body: formData,
+        });
+
+        if (ocrResponse.ok) {
+          const ocrData = await ocrResponse.json();
+          // 只有真实识别结果才入库（rapidocr/paddleocr=OCR、qrcode=二维码、pdf_text=PDF 文本层），
+          // 避免把兜底占位文字当成发票记录塞给用户
+          const realOcr = ocrData && ['rapidocr', 'paddleocr', 'qrcode', 'pdf_text'].includes(ocrData.provider);
+          if (realOcr) {
+            allItems.push({
+              id: ocrData.invoice_no,
+              invoice_no: ocrData.invoice_no || `INV-${allItems.length + 1}`,
+              customer_name: ocrData.seller_name || '本地发票',
+              amount: Number(ocrData.total_amount || 0),
+              date: ocrData.invoice_date || '—',
+              status: '已确认',
+              note: ({ rapidocr: '本地OCR识别', paddleocr: 'OCR识别', qrcode: '二维码识别', pdf_text: 'PDF文本提取' })[ocrData.provider] || 'OCR识别',
+              category: '采购',
+              invoice_type: ocrData.invoice_type || '未知',
+              invoice_code: ocrData.invoice_code || '',
+              tax_rate: ocrData.tax_rate ?? null,
+              tax_amount: ocrData.tax_amount ?? null,
+              excl_tax_amount: ocrData.excl_tax_amount ?? null,
+              deducted: false,
+              counterparty_name: ocrData.seller_name || '',
+              buyer_name: ocrData.buyer_name || '',
+              buyer_tax_no: ocrData.buyer_tax_no || '',
+              seller_name: ocrData.seller_name || '',
+              seller_tax_no: ocrData.seller_tax_no || '',
+              items: ocrData.items || [],
+              raw_text: ocrData.raw_text || '',
+            });
+          } else {
+            backendFailed += 1;
+          }
+        } else {
+          backendFailed += 1;
+        }
+
+        const parsedItems = await parseInvoiceText(file);
+        allItems.push(...parsedItems);
+      }
+
+      const classifiedItems = await classifyInvoiceBatch(allItems);
+
+      // 保存到数据库（后端按发票号码幂等去重，重复上传不会重复入库）
+      let savedCount = 0;
+      for (const item of classifiedItems) {
+        try {
+          const saveResponse = await fetch(`${API_BASE}/invoices`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+            },
+            body: JSON.stringify({
+              invoice_no: item.invoice_no || item.id,
+              invoice_type: item.invoice_type || (item.tax_rate ? '专票' : '未知'),
+              issue_date: item.date && item.date !== '—' ? item.date : null,
+              counterparty_name: item.customer_name,
+              invoice_code: item.invoice_code || null,
+              total_amount: Number(item.amount || 0),
+              tax_rate: item.tax_rate ?? null,
+              tax_amount: item.tax_amount ?? null,
+              excl_tax_amount: item.excl_tax_amount ?? null,
+              deducted: Boolean(item.deducted),
+              category: item.category || '其他',
+              status: item.status,
+              buyer_name: item.buyer_name || null,
+              buyer_tax_no: item.buyer_tax_no || null,
+              seller_name: item.seller_name || null,
+              seller_tax_no: item.seller_tax_no || null,
+              items: Array.isArray(item.items) ? item.items : [],
+              raw_text: item.raw_text || null,
+            }),
+          });
+          if (saveResponse.ok) {
+            savedCount += 1;
+          }
+        } catch {
+          // 保存失败不阻塞识别结果展示
+        }
+      }
+
+      // 展示以数据库为准（含历史发票），汇总数据同步刷新
+      try {
+        const headers = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+        const [listRes, summaryRes] = await Promise.all([
+          fetch(`${API_BASE}/invoices`, { headers }),
+          fetch(`${API_BASE}/invoices/summary`, { headers }),
+        ]);
+        if (listRes.ok) {
+          const dbList = await listRes.json();
+          setInvoiceItems(Array.isArray(dbList) ? dbList.map(normalizeInvoiceRecord) : classifiedItems);
+        } else {
+          setInvoiceItems(classifiedItems);
+        }
+        if (summaryRes.ok) {
+          setInvoiceAggregate(await summaryRes.json());
+        }
+      } catch {
+        setInvoiceItems(classifiedItems);
+      }
+
+      if (classifiedItems.length > 0) {
+        setNotice(
+          `已批量处理 ${files.length} 个文件，识别到 ${classifiedItems.length} 条发票记录，已保存 ${savedCount} 条到数据库` +
+          (backendFailed > 0 ? `（${backendFailed} 个后端识别失败，已用浏览器识别兜底）` : '。')
+        );
+      } else {
+        setNotice('未能从发票中识别出内容：请确认图片清晰、为印刷体，并检查本地 OCR 引擎依赖。');
+      }
+    } catch (err) {
+      setNotice('发票文件读取失败，请检查文件格式或图片质量。');
+    }
+  };
+
+  const handleDeepSeekInvoiceAnalysis = async () => {
+    if (invoiceItems.length === 0) {
+      setNotice('请先上传或解析发票后再执行智能分析。');
+      return;
+    }
+
+    try {
+      const data = await classifyInvoiceBatch(invoiceItems);
+      setInvoiceItems(data);
+      setNotice('智能发票分类已完成。');
+    } catch (err) {
+      setNotice('智能分析失败，已自动回退到本地分类。');
+    }
+  };
+
+  const handleInvoiceAgentAnalysis = async () => {
+    if (invoiceItems.length === 0) {
+      setNotice('请先上传发票后再让智能体分析。');
+      return;
+    }
+    setNotice('智能体正在分析发票汇总数据...');
+    try {
+      const response = await fetch(`${API_BASE}/invoices/agent-analysis`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({ summary: invoiceAggregate }),
+      });
+      if (response.ok) {
+        const report = await response.json();
+        setInvoiceAgentReport(report);
+        setNotice(report.provider === 'deepseek' ? '智能体分析完成（DeepSeek）。' : '智能体分析完成（本地规则兜底：未配置 DEEPSEEK_API_KEY）。');
+      } else {
+        setNotice('智能体分析失败，请稍后重试。');
+      }
+    } catch {
+      setNotice('智能体分析失败：无法连接后端。');
+    }
+  };
+
+  const handleSyncInvoicesToFinance = async () => {
+    if (invoiceItems.length === 0) {
+      setNotice('当前没有可同步到财务的发票。');
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE}/invoices/sync-finance`, {
+        method: 'POST',
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      });
+      if (response.ok) {
+        const result = await response.json();
+        setNotice(`财务同步完成：${result.message}`);
+        // 财务数据刷新
+        const headers = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+        const params = new URLSearchParams();
+        if (analysisRange.startDate) params.set('start_date', analysisRange.startDate);
+        if (analysisRange.endDate) params.set('end_date', analysisRange.endDate);
+        const [financeRes, analysisRes] = await Promise.all([
+          fetch(`${API_BASE}/finance`, { headers }),
+          fetch(`${API_BASE}/finance/analysis${params.toString() ? `?${params.toString()}` : ''}`, { headers }),
+        ]);
+        if (financeRes.ok) setFinance(await financeRes.json());
+        if (analysisRes.ok) setFinanceAnalysis(await analysisRes.json());
+      } else {
+        setNotice('财务同步失败，请稍后重试。');
+      }
+    } catch {
+      setNotice('财务同步失败：无法连接后端。');
+    }
+  };
+
+  const handleToggleDeducted = async (item) => {
+    if (!item || item.id == null) return;
+    const nextDeducted = !item.deducted;
+    try {
+      const response = await fetch(`${API_BASE}/invoices/${item.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({ deducted: nextDeducted }),
+      });
+      if (response.ok) {
+        const updated = await response.json();
+        setInvoiceItems((prev) => prev.map((row) => (row.id === updated.id ? normalizeInvoiceRecord(updated) : row)));
+        const summaryRes = await fetch(`${API_BASE}/invoices/summary`, {
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+        });
+        if (summaryRes.ok) setInvoiceAggregate(await summaryRes.json());
+        setNotice(nextDeducted ? '已标记为已抵扣。' : '已取消抵扣标记。');
+      } else {
+        setNotice('更新抵扣状态失败。');
+      }
+    } catch {
+      setNotice('更新抵扣状态失败：无法连接后端。');
+    }
+  };
+
+  // 勾选导出 Excel：只导出勾选的发票，按开票日期升序 + 同日期按购买方名称拼音排序
+  const exportInvoiceReportXlsx = () => {
+    if (selectedInvoiceIds.length === 0) {
+      setNotice('请先在发票列表里勾选要导出的条目。');
+      return;
+    }
+
+    const selected = invoiceItems.filter((item) => selectedInvoiceIds.includes(item.id));
+    if (selected.length === 0) {
+      setNotice('没有找到勾选的发票记录。');
+      return;
+    }
+
+    // 双重排序：日期升序（空日期排最后），同一日期按购买方名称首字母（拼音）排序
+    const sorted = [...selected].sort((a, b) => {
+      const dateA = String(a.date || '');
+      const dateB = String(b.date || '');
+      const cmp = dateA === dateB ? 0 : dateA ? (dateB ? dateA.localeCompare(dateB) : -1) : 1;
+      if (cmp !== 0) return cmp;
+      return String(a.buyer_name || '').localeCompare(String(b.buyer_name || ''), 'zh-Hans-CN');
+    });
+
+    const sheetRows = sorted.map((item) => ({
+      开票日期: item.date || '—',
+      发票号码: item.invoice_no || item.id || '—',
+      销售方名称: item.seller_name || '—',
+      购买方名称: item.buyer_name || '—',
+      发票代码: item.invoice_code || '—',
+      发票类型: item.invoice_type || '未知',
+      分类: item.category || inferInvoiceCategory(item),
+      税价合计: Number(item.amount || 0),
+      税率: item.tax_rate != null ? `${item.tax_rate}%` : '—',
+      不含税额: Number(item.excl_tax_amount || 0),
+      税额: Number(item.tax_amount || 0),
+      已抵扣: item.invoice_type === '专票' ? (item.deducted ? '是' : '否') : '—',
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(sheetRows);
+    worksheet['!cols'] = [
+      { wch: 12 }, { wch: 24 }, { wch: 28 }, { wch: 28 }, { wch: 14 }, { wch: 10 },
+      { wch: 10 }, { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 8 },
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, '发票报表');
+
+    const fileName = `erp_invoice_report_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    XLSX.writeFile(workbook, fileName);
+    setNotice(`已导出 ${sorted.length} 张发票到 ${fileName}`);
+  };
+
+  const exportInvoiceReport = () => {
+    if (invoiceItems.length === 0) {
+      setNotice('当前没有可导出的发票记录。');
+      return;
+    }
+
+    const rows = invoiceItems.map((item) => ({
+      invoice_no: item.id || item.invoice_no || '',
+      customer_name: item.customer_name || '',
+      category: item.category || inferInvoiceCategory(item),
+      amount: Number(item.amount || 0),
+      date: item.date || '',
+      status: item.status || '',
+      note: item.note || '',
+    }));
+
+    const headers = ['invoice_no', 'customer_name', 'category', 'amount', 'date', 'status', 'note'];
+    const csv = [headers.join(',')]
+      .concat(rows.map((row) => headers.map((key) => `"${String(row[key] ?? '').replace(/"/g, '""')}"`).join(',')))
+      .join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'erp_invoice_report.csv';
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setNotice('发票报表已导出为 CSV。');
+  };
+
+  const exportInvoiceReportHtml = () => {
+    if (invoiceItems.length === 0) {
+      setNotice('当前没有可导出的发票记录。');
+      return;
+    }
+
+    const rows = invoiceItems.map((item) => {
+      const detail = (item.items || [])
+        .map((line) => `${line.item_name || ''} ×${line.quantity ?? 1} ¥${Number(line.amount || 0).toFixed(2)}`)
+        .join('；');
+      return {
+        invoice_no: item.invoice_no || item.id || '—',
+        date: item.date || '—',
+        buyer: [item.buyer_name, item.buyer_tax_no].filter(Boolean).join('<br>') || '—',
+        seller: [item.seller_name || item.customer_name, item.seller_tax_no].filter(Boolean).join('<br>') || '—',
+        detail: detail || '—',
+        amount: Number(item.amount || 0),
+        category: item.category || inferInvoiceCategory(item),
+        status: item.status || '—',
+      };
+    });
+
+    const total = rows.reduce((sum, row) => sum + row.amount, 0);
+    const byCategory = {};
+    rows.forEach((row) => {
+      byCategory[row.category] = (byCategory[row.category] || 0) + row.amount;
+    });
+
+    const escapeHtml = (value) => String(value ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const categoryChips = Object.entries(byCategory)
+      .map(([category, amount]) => `<span class="chip">${escapeHtml(category)}：¥${Number(amount).toLocaleString()}</span>`)
+      .join('');
+
+    const bodyRows = rows.map((row) => `
+      <tr>
+        <td>${escapeHtml(row.invoice_no)}</td>
+        <td>${escapeHtml(row.date)}</td>
+        <td class="party">${escapeHtml(row.buyer)}</td>
+        <td class="party">${escapeHtml(row.seller)}</td>
+        <td class="detail">${escapeHtml(row.detail)}</td>
+        <td class="num">¥${Number(row.amount).toLocaleString()}</td>
+        <td>${escapeHtml(row.category)}</td>
+        <td>${escapeHtml(row.status)}</td>
+      </tr>`).join('');
+
+    const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>发票汇总报表</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #1e293b; background: #f1f5f9; padding: 32px; }
+  .sheet { max-width: 1080px; margin: 0 auto; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 16px rgba(15, 23, 42, .08); overflow: hidden; }
+  .head { background: linear-gradient(135deg, #2563eb, #1e40af); color: #fff; padding: 24px 32px; }
+  .head h1 { font-size: 22px; font-weight: 600; }
+  .head p { font-size: 13px; opacity: .85; margin-top: 6px; }
+  .summary { display: flex; gap: 12px; flex-wrap: wrap; padding: 20px 32px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
+  .summary .chip { background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; border-radius: 999px; padding: 6px 14px; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th { background: #f1f5f9; color: #475569; text-align: left; padding: 12px 14px; border-bottom: 2px solid #e2e8f0; white-space: nowrap; }
+  tbody td { padding: 12px 14px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  tbody tr:nth-child(even) { background: #f8fafc; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.party, td.detail { max-width: 200px; }
+  tfoot td { padding: 14px; font-weight: 700; background: #eff6ff; border-top: 2px solid #bfdbfe; }
+  .foot { padding: 16px 32px; color: #64748b; font-size: 12px; border-top: 1px solid #e2e8f0; }
+  @media print { body { background: #fff; padding: 0; } .sheet { box-shadow: none; border-radius: 0; } }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <div class="head">
+    <h1>发票汇总报表</h1>
+    <p>导出时间：${new Date().toLocaleString('zh-CN')} · 共 ${rows.length} 张 · 合计 ¥${Number(total).toLocaleString()}</p>
+  </div>
+  <div class="summary">${categoryChips}</div>
+  <table>
+    <thead>
+      <tr><th>发票号码</th><th>开票日期</th><th>购买方</th><th>销售方</th><th>产品明细</th><th>金额</th><th>分类</th><th>状态</th></tr>
+    </thead>
+    <tbody>${bodyRows}</tbody>
+    <tfoot>
+      <tr><td colspan="5">合计（${rows.length} 张发票）</td><td class="num">¥${Number(total).toLocaleString()}</td><td colspan="2"></td></tr>
+    </tfoot>
+  </table>
+  <div class="foot">本报表由本地 ERP 系统生成 · 表格可在浏览器中直接打印或另存为 PDF</div>
+</div>
+</body>
+</html>`;
+
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `erp_invoice_report_${new Date().toISOString().slice(0, 10)}.html`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setNotice('发票汇总已导出为美观表格（HTML，可打印为 PDF）。');
+  };
+
+  const exportDailyReport = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/reports/daily-export`, {
+        headers: {
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('日报导出失败');
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `erp_daily_report_${new Date().toISOString().slice(0, 10)}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setNotice('日报表已导出为 CSV。');
+    } catch (err) {
+      setNotice(err.message || '日报导出失败');
+    }
+  };
+
+  const invoiceSummary = useMemo(() => {
+    const total = invoiceItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const customerMap = new Map();
+    const categoryMap = new Map();
+
+    for (const item of invoiceItems) {
+      const key = item.customer_name || '未知客户';
+      customerMap.set(key, (customerMap.get(key) || 0) + Number(item.amount || 0));
+      const categoryKey = item.category || inferInvoiceCategory(item);
+      categoryMap.set(categoryKey, (categoryMap.get(categoryKey) || 0) + Number(item.amount || 0));
+    }
+
+    return {
+      total,
+      count: invoiceItems.length,
+      topCustomers: [...customerMap.entries()].map(([customer_name, totalAmount]) => ({ customer_name, totalAmount })).sort((a, b) => b.totalAmount - a.totalAmount).slice(0, 5),
+      byCategory: [...categoryMap.entries()].map(([category, totalAmount]) => ({ category, totalAmount })).sort((a, b) => b.totalAmount - a.totalAmount),
+    };
+  }, [invoiceItems]);
+
+  const handleAnalysisRangeChange = (field) => (event) => {
+    setAnalysisRange((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const submitAgentPrompt = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/agent/assistant`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          prompt: agentPrompt,
+          context: {
+            customers: summary?.customers ?? 0,
+            products: summary?.products ?? 0,
+            sales_total: summary?.sales_total ?? 0,
+            purchase_total: summary?.purchase_total ?? 0,
+            finance_total: summary?.finance_total ?? 0,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('智能体调用失败');
+      }
+
+      const data = await response.json();
+      setAgentResponse({
+        answer: data.answer || '暂无建议。',
+        summary: data.summary || {},
+        risk_level: data.risk_level || '健康',
+      });
+      setNotice('移动助手已完成分析。');
+    } catch (err) {
+      setNotice(err.message || '智能体分析失败');
+    }
+  };
+
+  const submitLogin = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '登录失败' }));
+        throw new Error(errorData.detail ?? '登录失败');
+      }
+
+      const data = await response.json();
+      const nextToken = data.access_token;
+      const nextRole = data.role || 'staff';
+      localStorage.setItem('erp_token', nextToken);
+      localStorage.setItem('erp_user', JSON.stringify({ username: loginForm.username, role: nextRole }));
+      setUserProfile({ username: loginForm.username, role: nextRole });
+      setAuthToken(nextToken);
+      setIsAuthenticated(true);
+      setLoginForm({ username: '', password: '' });
+      setNotice('登录成功。');
+    } catch (err) {
+      setNotice(err.message || '登录失败');
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('erp_token');
+    localStorage.removeItem('erp_user');
+    setUserProfile({ username: '', role: 'staff' });
+    setAuthToken('');
+    setIsAuthenticated(false);
+    setNotice('已退出登录。');
+  };
+
+  const submitCustomer = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/customers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          ...customerForm,
+          phone: customerForm.phone || null,
+          email: customerForm.email || null,
+          address: customerForm.address || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建客户失败' }));
+        throw new Error(errorData.detail ?? '创建客户失败');
+      }
+
+      const newCustomer = await response.json();
+      setCustomers((prev) => [newCustomer, ...prev]);
+      setCustomerForm(emptyCustomerForm);
+      setNotice('客户已成功新增。');
+    } catch (err) {
+      setNotice(err.message || '客户新增失败');
+    }
+  };
+
+  const submitSupplier = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/suppliers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          ...supplierForm,
+          phone: supplierForm.phone || null,
+          email: supplierForm.email || null,
+          address: supplierForm.address || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建供应商失败' }));
+        throw new Error(errorData.detail ?? '创建供应商失败');
+      }
+
+      const newSupplier = await response.json();
+      setSuppliers((prev) => [newSupplier, ...prev]);
+      setSupplierForm(emptySupplierForm);
+      setNotice('供应商已成功新增。');
+    } catch (err) {
+      setNotice(err.message || '供应商新增失败');
+    }
+  };
+
+  const submitProduct = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/products`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          ...productForm,
+          purchase_price: Number(productForm.purchase_price || 0),
+          sale_price: Number(productForm.sale_price || 0),
+          category: productForm.category || null,
+          unit: productForm.unit || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建产品失败' }));
+        throw new Error(errorData.detail ?? '创建产品失败');
+      }
+
+      const newProduct = await response.json();
+      setProducts((prev) => [newProduct, ...prev]);
+      setProductForm(emptyProductForm);
+      setNotice('产品已成功新增。');
+    } catch (err) {
+      setNotice(err.message || '产品新增失败');
+    }
+  };
+
+  const submitPurchaseOrder = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/purchase-orders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          supplier_id: Number(purchaseForm.supplier_id),
+          order_no: purchaseForm.order_no,
+          items: [
+            {
+              product_id: Number(purchaseForm.product_id),
+              quantity: Number(purchaseForm.quantity),
+              unit_price: Number(purchaseForm.unit_price),
+            },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建采购单失败' }));
+        throw new Error(errorData.detail ?? '创建采购单失败');
+      }
+
+      const newOrder = await response.json();
+      setPurchaseOrders((prev) => [newOrder, ...prev]);
+      setPurchaseForm(emptyPurchaseForm);
+      setNotice('采购单已成功新增。');
+    } catch (err) {
+      setNotice(err.message || '采购单新增失败');
+    }
+  };
+
+  const submitSalesOrder = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/sales-orders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          customer_id: Number(salesForm.customer_id),
+          order_no: salesForm.order_no,
+          items: [
+            {
+              product_id: Number(salesForm.product_id),
+              quantity: Number(salesForm.quantity),
+              unit_price: Number(salesForm.unit_price),
+            },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建销售单失败' }));
+        throw new Error(errorData.detail ?? '创建销售单失败');
+      }
+
+      const newOrder = await response.json();
+      setSalesOrders((prev) => [newOrder, ...prev]);
+      setSalesForm(emptySalesForm);
+      setNotice('销售单已成功新增。');
+    } catch (err) {
+      setNotice(err.message || '销售单新增失败');
+    }
+  };
+
+  // 用函数声明（而非 const 箭头）以便上面的 useEffect 能在渲染后安全调用
+  async function refreshStock() {
+    try {
+      const response = await fetch(`${API_BASE}/inventory/stock`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      });
+      if (response.ok) {
+        setStockData(await response.json());
+      }
+    } catch {
+      // 现存量拉取失败不影响其它功能，界面上保留上一次的数据
+    }
+  }
+
+  const submitInventory = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/inventory`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          product_id: Number(inventoryForm.product_id),
+          warehouse_id: Number(inventoryForm.warehouse_id),
+          transaction_type: inventoryForm.transaction_type,
+          quantity: Number(inventoryForm.quantity),
+          unit_price: Number(inventoryForm.unit_price),
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建库存记录失败' }));
+        throw new Error(errorData.detail ?? '创建库存记录失败');
+      }
+
+      const item = await response.json();
+      setInventory((prev) => [item, ...prev]);
+      setInventoryForm(emptyInventoryForm);
+      setNotice('库存记录已成功新增。');
+      await refreshStock();
+    } catch (err) {
+      setNotice(err.message || '库存新增失败');
+    }
+  };
+
+  const submitFinance = async (event) => {
+    event.preventDefault();
+    setNotice('');
+
+    try {
+      const response = await fetch(`${API_BASE}/finance`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          transaction_type: financeForm.transaction_type,
+          amount: Number(financeForm.amount),
+          currency: financeForm.currency,
+          note: financeForm.note || null,
+          related_order_id: financeForm.related_order_id ? Number(financeForm.related_order_id) : null,
+          customer_id: financeForm.customer_id ? Number(financeForm.customer_id) : null,
+          supplier_id: financeForm.supplier_id ? Number(financeForm.supplier_id) : null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '创建财务记录失败' }));
+        throw new Error(errorData.detail ?? '创建财务记录失败');
+      }
+
+      const item = await response.json();
+      setFinance((prev) => [item, ...prev]);
+      setFinanceForm(emptyFinanceForm);
+      setNotice('财务记录已成功新增。');
+    } catch (err) {
+      setNotice(err.message || '财务新增失败');
+    }
+  };
+
+  // 按角色过滤菜单：非管理员看不到报表中心
+  const visibleGroups = useMemo(
+    () =>
+      menuGroups
+        .map((group) => ({
+          ...group,
+          items: group.items.filter((item) => userProfile.role === 'admin' || item.key !== 'reports'),
+        }))
+        .filter((group) => group.items.length > 0),
+    [userProfile.role],
+  );
+
+  const toggleGroup = (groupKey) => {
+    setCollapsedGroups((prev) =>
+      prev.includes(groupKey) ? prev.filter((key) => key !== groupKey) : [...prev, groupKey],
+    );
+  };
+
+  const activeTab = useMemo(() => tabs.find((tab) => tab.key === selectedTab), [selectedTab]);
+
+  const mobileQuickActions = [
+    { label: '销售开单', target: 'sales', tone: 'blue' },
+    { label: '采购入库', target: 'purchase', tone: 'green' },
+    { label: '库存流水', target: 'inventory', tone: 'orange' },
+    { label: '财务流水', target: 'finance', tone: 'purple' },
+  ];
+
+  if (!isAuthenticated) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-card">
+          <div className="brand">ERP 核心系统</div>
+          <h2>登录后台</h2>
+          <p className="auth-subtitle">使用已注册的 ERP 账号登录后继续管理业务。</p>
+
+          <form onSubmit={submitLogin} className="erp-form auth-form">
+            <label>
+              用户名
+              <input value={loginForm.username} onChange={handleLoginChange('username')} required />
+            </label>
+            <label>
+              密码
+              <input type="password" value={loginForm.password} onChange={handleLoginChange('password')} required />
+            </label>
+            <button className="primary-btn" type="submit">登录</button>
+          </form>
+
+          {notice && <div className="notice-box">{notice}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand sidebar-brand">
+          <span className="brand-mark">ERP</span>
+          <span className="brand-text">核心系统</span>
+        </div>
+        <nav className="side-nav">
+          {visibleGroups.map((group) => {
+            const isCollapsed = collapsedGroups.includes(group.key);
+            const hasActive = group.items.some((item) => item.key === selectedTab);
+            const isSingle = group.items.length === 1;
+            return (
+              <div className={`nav-group ${hasActive ? 'has-active' : ''}`} key={group.key}>
+                <button
+                  type="button"
+                  className={`nav-group-title ${isCollapsed ? 'collapsed' : ''} ${isSingle ? 'is-single' : ''}`}
+                  onClick={() => toggleGroup(group.key)}
+                  aria-expanded={!isCollapsed}
+                >
+                  <span>{group.label}</span>
+                  <span className="nav-group-arrow" aria-hidden="true" />
+                </button>
+                {!isCollapsed && (
+                  <div className="nav-group-items">
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        className={`nav-item ${selectedTab === item.key ? 'active' : ''}`}
+                        onClick={() => setSelectedTab(item.key)}
+                        type="button"
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </nav>
+        <button className="logout-btn" type="button" onClick={handleLogout}>退出登录</button>
+      </aside>
+
+      <main className="main-panel">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">{activeTab?.groupLabel ?? '本地 ERP 管理后台'}</p>
+            <h1>{activeTab?.label ?? '运营概览'}</h1>
+          </div>
+          <button
+            className="primary-btn"
+            type="button"
+            onClick={() => {
+              setSelectedTab('sales');
+              setNotice('已切换到新增销售单页面。');
+            }}
+          >
+            新增订单
+          </button>
+        </header>
+
+        {loading ? (
+          <div className="status-box">加载中...</div>
+        ) : error ? (
+          <div className="status-box error">{error}</div>
+        ) : (
+          <>
+            {selectedTab === 'mobile' && (
+              <section className="mobile-app-shell">
+                <div className="mobile-hero">
+                  <div>
+                    <p className="eyebrow">移动经营视图</p>
+                    <h2>今日经营</h2>
+                  </div>
+                  <span className="status-badge">{mobileDashboard.status === 'healthy' ? '健康' : mobileDashboard.status === 'warning' ? '关注' : '风险'}</span>
+                </div>
+
+                <div className="mobile-summary-grid">
+                  {mobileDashboard.kpis?.map((item) => (
+                    <div className="mobile-stat-card" key={item.label}>
+                      <span>{item.label}</span>
+                      <strong>{item.unit === 'CNY' ? `¥${Number(item.value || 0).toLocaleString()}` : item.value}</strong>
+                    </div>
+                  )) || []}
+                </div>
+
+                <div className="mobile-quick-grid">
+                  {mobileQuickActions.map((action) => (
+                    <button
+                      key={action.label}
+                      type="button"
+                      className={`mobile-action-btn ${action.tone}`}
+                      onClick={() => setSelectedTab(action.target)}
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="panel mobile-panel">
+                  <div className="section-header">
+                    <h3>经营提醒</h3>
+                    <span className="status-badge">{mobileDashboard.risk_count ?? 0} 项风险</span>
+                  </div>
+                  <ul className="list">
+                    {(mobileDashboard.recommendations || []).map((item, index) => (
+                      <li key={`${item}-${index}`}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="panel mobile-panel">
+                  <div className="section-header">
+                    <h3>业务概览</h3>
+                    <span className="status-badge">{mobileDashboard.updated_at || '刚刚更新'}</span>
+                  </div>
+                  <div className="report-pill-row">
+                    <div className="report-pill">
+                      <span>销售</span>
+                      <strong>¥{Number(mobileDashboard.summary?.sales_total || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="report-pill">
+                      <span>采购</span>
+                      <strong>¥{Number(mobileDashboard.summary?.purchase_total || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="report-pill">
+                      <span>利润</span>
+                      <strong>¥{Number(mobileDashboard.summary?.net_profit || 0).toLocaleString()}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mobile-bottom-dock">
+                  <button type="button" className="dock-btn active" onClick={() => setSelectedTab('mobile')}>首页</button>
+                  <button type="button" className="dock-btn" onClick={() => setSelectedTab('sales')}>订单</button>
+                  <button type="button" className="dock-btn" onClick={() => setSelectedTab('finance')}>财务</button>
+                  <button type="button" className="dock-btn" onClick={() => setSelectedTab('agent')}>助手</button>
+                </div>
+              </section>
+            )}
+
+            {selectedTab === 'bom' && (
+              <section className="bom-shell">
+                <div className="panel">
+                  <div className="section-header">
+                    <h2>BOM 物料清单</h2>
+                    <span className="status-badge">{bomTree.length} 个根节点</span>
+                  </div>
+
+                  <form className="erp-form bom-form" onSubmit={submitBomNode}>
+                    <div className="form-row two-col">
+                      <label>
+                        产品 ID
+                        <input value={bomForm.product_id} onChange={handleBomFormChange('product_id')} required />
+                      </label>
+                      <label>
+                        组件 ID
+                        <input value={bomForm.component_product_id} onChange={handleBomFormChange('component_product_id')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        父节点 ID
+                        <input value={bomForm.parent_id} onChange={handleBomFormChange('parent_id')} placeholder="可为空" />
+                      </label>
+                      <label>
+                        节点类型
+                        <select value={bomForm.bom_type} onChange={handleBomFormChange('bom_type')}>
+                          <option value="assembly">装配</option>
+                          <option value="component">组件</option>
+                          <option value="raw_material">原材料</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        节点名称
+                        <input value={bomForm.name} onChange={handleBomFormChange('name')} />
+                      </label>
+                      <label>
+                        编码
+                        <input value={bomForm.code} onChange={handleBomFormChange('code')} />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        数量
+                        <input value={bomForm.quantity} onChange={handleBomFormChange('quantity')} type="number" min="1" />
+                      </label>
+                      <label>
+                        单位成本
+                        <input value={bomForm.unit_cost} onChange={handleBomFormChange('unit_cost')} type="number" min="0" step="0.01" />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        层级
+                        <input value={bomForm.level} onChange={handleBomFormChange('level')} type="number" min="0" />
+                      </label>
+                      <label>
+                        备注
+                        <input value={bomForm.description} onChange={handleBomFormChange('description')} />
+                      </label>
+                    </div>
+
+                    <button className="primary-btn" type="submit">新增 BOM 节点</button>
+                  </form>
+                </div>
+
+                <div className="panel">
+                  <div className="section-header">
+                    <h2>树形视图</h2>
+                  </div>
+                  {bomTree.length > 0 ? (
+                    <ul className="bom-tree-root">{renderBomTree(bomTree)}</ul>
+                  ) : (
+                    <div className="empty-state">暂无 BOM 树，请先新增节点。</div>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {selectedTab === 'overview' && (
+              <>
+                <section className="stats-grid">
+                  {cards.map((card) => (
+                    <div className="stat-card" key={card.label}>
+                      <span>{card.label}</span>
+                      <strong>{card.value}</strong>
+                    </div>
+                  ))}
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>经营驾驶舱</h2>
+                    <span className="status-badge">{executiveDashboard.status?.health === 'healthy' ? '健康' : '关注'}</span>
+                  </div>
+
+                  <div className="report-summary-grid">
+                    {executiveDashboard.kpis?.map((item) => (
+                      <div key={item.label} className="metric-card">
+                        <span>{item.label}</span>
+                        <strong>{item.unit === 'CNY' ? `¥${Number(item.value || 0).toLocaleString()}` : item.value}</strong>
+                      </div>
+                    )) || []}
+                  </div>
+
+                  <div className="management-grid" style={{ marginTop: '12px' }}>
+                    <div className="panel">
+                      <h3>运营状态</h3>
+                      <ul className="list">
+                        <li>运行状态：{executiveDashboard.status?.health === 'healthy' ? '正常' : '关注'}</li>
+                        <li>生产进度：{Number(executiveDashboard.status?.production || 0).toFixed(1)}%</li>
+                        <li>毛利率：{Number(executiveDashboard.status?.margin || 0).toFixed(1)}%</li>
+                        <li>风险项：{executiveDashboard.status?.risk_count ?? 0}</li>
+                      </ul>
+                    </div>
+
+                    <div className="panel">
+                      <h3>经营提醒</h3>
+                      <ul className="list">
+                        {executiveDashboard.alerts?.length ? (
+                          executiveDashboard.alerts.map((alert, index) => (
+                            <li key={`${alert.title}-${index}`}>{alert.title}：{alert.message}</li>
+                          ))
+                        ) : (
+                          <li>暂无经营提醒</li>
+                        )}
+                      </ul>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>经营总控台</h2>
+                    <span className="status-badge">管理视图</span>
+                  </div>
+
+                  <div className="report-summary-grid">
+                    {leadershipBoard.cards.map((item) => (
+                      <div key={item.label} className="metric-card" style={{ borderColor: item.tone === 'warn' ? '#f59e0b' : '#10b981' }}>
+                        <span>{item.label}</span>
+                        <strong style={{ color: item.tone === 'warn' ? '#b45309' : '#0f172a' }}>{item.value}</strong>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="management-grid" style={{ marginTop: '18px' }}>
+                    <div className="panel" style={{ marginTop: 0 }}>
+                      <h3>管理建议</h3>
+                      <ul className="list">
+                        {leadershipBoard.actions.map((item, index) => (
+                          <li key={`${item}-${index}`}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div className="panel" style={{ marginTop: 0 }}>
+                      <h3>关键关注</h3>
+                      <ul className="list">
+                        <li>产销平衡指数：{Math.min(100, Math.max(0, Number(executiveDashboard.status?.margin || 0) + 40)).toFixed(0)}%</li>
+                        <li>在产计划：{operationsBoard.production_orders?.length || 0} 个订单</li>
+                        <li>供应商绩效：{(operationsBoard.supplier_performance || []).length || 0} 家同行指标</li>
+                        <li>采购待办：{(operationsBoard.purchase_recommendations || []).length || 0} 条建议</li>
+                      </ul>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>移动端经营摘要</h2>
+                    <span className="status-badge">{mobileDashboard.status === 'healthy' ? '健康' : mobileDashboard.status === 'warning' ? '关注' : '风险'}</span>
+                  </div>
+
+                  <div className="report-summary-grid">
+                    {mobileDashboard.kpis?.map((item) => (
+                      <div key={item.label} className="metric-card">
+                        <span>{item.label}</span>
+                        <strong>{item.unit === 'CNY' ? `¥${Number(item.value || 0).toLocaleString()}` : item.value}</strong>
+                      </div>
+                    )) || []}
+                  </div>
+
+                  <ul className="list" style={{ marginTop: '14px' }}>
+                    {(mobileDashboard.recommendations || []).map((item, index) => (
+                      <li key={`${item}-${index}`}>{item}</li>
+                    ))}
+                  </ul>
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>经营趋势</h2>
+                    <button type="button" className="secondary-btn small-btn" onClick={exportDailyReport}>导出经营日报</button>
+                  </div>
+
+                  {overviewTrend.length > 0 ? (
+                    <div className="chart-bars">
+                      {(() => {
+                        const maxValue = Math.max(...overviewTrend.flatMap((item) => [Number(item.income || 0), Number(item.expense || 0)]), 1);
+                        return overviewTrend.map((item) => (
+                          <div className="chart-row" key={item.label}>
+                            <span>{item.label}</span>
+                            <div className="chart-track">
+                              <div className="chart-fill" style={{ width: `${((Number(item.income || 0) / maxValue) * 100)}%` }} />
+                            </div>
+                            <strong>¥{Number(item.income || 0).toLocaleString()}</strong>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="empty-state">暂无经营趋势数据</div>
+                  )}
+                </section>
+
+                <section className="panel">
+                  <h2>最近业务</h2>
+                  <ul className="list">
+                    <li>客户订单已同步到 ERP</li>
+                    <li>采购单待审核</li>
+                    <li>库存预警已更新</li>
+                    <li>财务流水已归档</li>
+                  </ul>
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>运营看板</h2>
+                    <span className="status-badge">{operationsBoard.production_orders.length} 个生产单</span>
+                  </div>
+
+                  <div className="report-summary-grid">
+                    <div className="metric-card">
+                      <span>在产单</span>
+                      <strong>{operationsBoard.status_breakdown.in_progress ?? 0}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>项目推进</span>
+                      <strong>{operationsBoard.project_summary.avg_progress ?? 0}%</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>高优先级</span>
+                      <strong>{operationsBoard.high_priority_orders.length}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>项目预算</span>
+                      <strong>¥{Number(operationsBoard.project_summary.budget_total ?? 0).toLocaleString()}</strong>
+                    </div>
+                  </div>
+
+                  <div className="report-summary-grid">
+                    <div className="metric-card">
+                      <span>材料成本</span>
+                      <strong>¥{Number(operationsBoard.cost_summary.material_cost ?? 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>人工成本</span>
+                      <strong>¥{Number(operationsBoard.cost_summary.labor_cost ?? 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>总成本</span>
+                      <strong>¥{Number(operationsBoard.cost_summary.total_cost ?? 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>里程碑</span>
+                      <strong>{operationsBoard.milestones.length}</strong>
+                    </div>
+                  </div>
+
+                  <div className="management-grid" style={{ marginTop: '12px' }}>
+                    <div className="panel">
+                      <h3>生产甘特</h3>
+                      <ul className="list">
+                        {operationsBoard.gantt.length > 0 ? (
+                          operationsBoard.gantt.map((item) => (
+                            <li key={item.id}>
+                              {item.title}：{item.start} ~ {item.end}，进度 {item.progress}%
+                            </li>
+                          ))
+                        ) : (
+                          <li>暂无生产排期</li>
+                        )}
+                      </ul>
+                    </div>
+
+                    <div className="panel">
+                      <h3>项目里程碑</h3>
+                      <ul className="list">
+                        {operationsBoard.milestones.length > 0 ? (
+                          operationsBoard.milestones.map((item, index) => (
+                            <li key={`${item.project_name}-${index}`}>
+                              {item.project_name}：{item.phase}（{item.deadline}，{item.progress}%）
+                            </li>
+                          ))
+                        ) : (
+                          <li>暂无项目里程碑</li>
+                        )}
+                      </ul>
+                    </div>
+
+                    <div className="panel">
+                      <h3>供应商绩效</h3>
+                      <ul className="list">
+                        {(operationsBoard.supplier_performance || []).length > 0 ? (
+                          operationsBoard.supplier_performance.slice(0, 4).map((item) => (
+                            <li key={item.supplier_id}>
+                              {item.supplier_name}：{item.order_count}单，准时率 {item.on_time_rate}%
+                            </li>
+                          ))
+                        ) : (
+                          <li>暂无供应商绩效</li>
+                        )}
+                      </ul>
+                    </div>
+
+                    <div className="panel">
+                      <h3>付款提醒</h3>
+                      <ul className="list">
+                        {(operationsBoard.payment_alerts || []).length > 0 ? (
+                          operationsBoard.payment_alerts.slice(0, 4).map((item) => (
+                            <li key={item.id}>
+                              {item.supplier_name}：¥{Number(item.amount || 0).toLocaleString()}，{item.risk_level}
+                            </li>
+                          ))
+                        ) : (
+                          <li>暂无付款提醒</li>
+                        )}
+                      </ul>
+                    </div>
+                  </div>
+
+                  <ul className="list" style={{ marginTop: '12px' }}>
+                    {operationsBoard.high_priority_orders.length > 0 ? (
+                      operationsBoard.high_priority_orders.slice(0, 4).map((order) => (
+                        <li key={order.id}>
+                          {order.order_no}：{order.quantity}件，优先级 {order.priority}
+                        </li>
+                      ))
+                    ) : (
+                      <li>暂无高优先级生产单</li>
+                    )}
+                  </ul>
+                </section>
+              </>
+            )}
+
+            {selectedTab === 'customers' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>新增客户</h2>
+                    <span className="status-badge">基础资料</span>
+                  </div>
+
+                  <form onSubmit={submitCustomer} className="erp-form">
+                    <div className="form-row two-col">
+                      <label>
+                        客户编码
+                        <input value={customerForm.code} onChange={handleCustomerChange('code')} required />
+                      </label>
+                      <label>
+                        客户名称
+                        <input value={customerForm.name} onChange={handleCustomerChange('name')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        联系电话
+                        <input value={customerForm.phone} onChange={handleCustomerChange('phone')} />
+                      </label>
+                      <label>
+                        邮箱
+                        <input type="email" value={customerForm.email} onChange={handleCustomerChange('email')} />
+                      </label>
+                    </div>
+
+                    <label>
+                      地址
+                      <textarea value={customerForm.address} onChange={handleCustomerChange('address')} rows="3" />
+                    </label>
+
+                    <button className="primary-btn" type="submit">保存客户</button>
+                  </form>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>客户列表</h2>
+                    <span className="status-badge">{customers.length} 人</span>
+                  </div>
+
+                  {customers.length === 0 ? (
+                    <div className="empty-state">暂无客户数据</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>编码</th>
+                          <th>名称</th>
+                          <th>电话</th>
+                          <th>邮箱</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {customers.map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.code}</td>
+                            <td>{row.name}</td>
+                            <td>{row.phone || '—'}</td>
+                            <td>{row.email || '—'}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="danger-btn"
+                                onClick={() =>
+                                  setConfirmDelete({
+                                    id: row.id,
+                                    endpoint: `/customers/${row.id}`,
+                                    label: `客户 ${row.name}`,
+                                    kind: 'customer',
+                                  })
+                                }
+                              >
+                                删除
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'suppliers' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>新增供应商</h2>
+                    <span className="status-badge">采购来源</span>
+                  </div>
+
+                  <form onSubmit={submitSupplier} className="erp-form">
+                    <div className="form-row two-col">
+                      <label>
+                        供应商编码
+                        <input value={supplierForm.code} onChange={handleSupplierChange('code')} required />
+                      </label>
+                      <label>
+                        供应商名称
+                        <input value={supplierForm.name} onChange={handleSupplierChange('name')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        联系电话
+                        <input value={supplierForm.phone} onChange={handleSupplierChange('phone')} />
+                      </label>
+                      <label>
+                        邮箱
+                        <input type="email" value={supplierForm.email} onChange={handleSupplierChange('email')} />
+                      </label>
+                    </div>
+
+                    <label>
+                      地址
+                      <textarea value={supplierForm.address} onChange={handleSupplierChange('address')} rows="3" />
+                    </label>
+
+                    <button className="primary-btn" type="submit">保存供应商</button>
+                  </form>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>供应商列表</h2>
+                    <span className="status-badge">{suppliers.length} 家</span>
+                  </div>
+
+                  {suppliers.length === 0 ? (
+                    <div className="empty-state">暂无供应商数据</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>编码</th>
+                          <th>名称</th>
+                          <th>电话</th>
+                          <th>邮箱</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {suppliers.map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.code}</td>
+                            <td>{row.name}</td>
+                            <td>{row.phone || '—'}</td>
+                            <td>{row.email || '—'}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="danger-btn"
+                                onClick={() =>
+                                  setConfirmDelete({
+                                    id: row.id,
+                                    endpoint: `/suppliers/${row.id}`,
+                                    label: `供应商 ${row.name}`,
+                                    kind: 'supplier',
+                                  })
+                                }
+                              >
+                                删除
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'products' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>新增产品</h2>
+                    <span className="status-badge">价格与库存</span>
+                  </div>
+
+                  <form onSubmit={submitProduct} className="erp-form">
+                    <div className="form-row two-col">
+                      <label>
+                        SKU
+                        <input value={productForm.sku} onChange={handleProductChange('sku')} required />
+                      </label>
+                      <label>
+                        产品名称
+                        <input value={productForm.name} onChange={handleProductChange('name')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        类别
+                        <input value={productForm.category} onChange={handleProductChange('category')} />
+                      </label>
+                      <label>
+                        单位
+                        <input value={productForm.unit} onChange={handleProductChange('unit')} />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        采购价
+                        <input type="number" step="0.01" value={productForm.purchase_price} onChange={handleProductChange('purchase_price')} />
+                      </label>
+                      <label>
+                        销售价
+                        <input type="number" step="0.01" value={productForm.sale_price} onChange={handleProductChange('sale_price')} />
+                      </label>
+                    </div>
+
+                    <button className="primary-btn" type="submit">保存产品</button>
+                  </form>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>产品列表</h2>
+                    <span className="status-badge">{products.length} 件</span>
+                  </div>
+
+                  {products.length === 0 ? (
+                    <div className="empty-state">暂无产品数据</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>SKU</th>
+                          <th>名称</th>
+                          <th>类别</th>
+                          <th>售价</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {products.map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.sku}</td>
+                            <td>{row.name}</td>
+                            <td>{row.category || '—'}</td>
+                            <td>¥{Number(row.sale_price || 0).toLocaleString()}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="danger-btn"
+                                onClick={() =>
+                                  setConfirmDelete({
+                                    id: row.id,
+                                    endpoint: `/products/${row.id}`,
+                                    label: `商品 ${row.name}`,
+                                    kind: 'product',
+                                  })
+                                }
+                              >
+                                删除
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'purchase' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>新增采购单</h2>
+                    <span className="status-badge">供应商订单</span>
+                  </div>
+
+                  <form onSubmit={submitPurchaseOrder} className="erp-form">
+                    <div className="form-row two-col">
+                      <label>
+                        采购单号
+                        <input value={purchaseForm.order_no} onChange={handlePurchaseChange('order_no')} required />
+                      </label>
+                      <label>
+                        供应商 ID
+                        <input type="number" value={purchaseForm.supplier_id} onChange={handlePurchaseChange('supplier_id')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        产品 ID
+                        <input type="number" value={purchaseForm.product_id} onChange={handlePurchaseChange('product_id')} required />
+                      </label>
+                      <label>
+                        数量
+                        <input type="number" min="1" value={purchaseForm.quantity} onChange={handlePurchaseChange('quantity')} required />
+                      </label>
+                    </div>
+
+                    <label>
+                      单价
+                      <input type="number" step="0.01" value={purchaseForm.unit_price} onChange={handlePurchaseChange('unit_price')} required />
+                    </label>
+
+                    <button className="primary-btn" type="submit">保存采购单</button>
+                  </form>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>采购订单列表</h2>
+                    <span className="status-badge">{purchaseOrders.length} 张</span>
+                  </div>
+
+                  {purchaseOrders.length === 0 ? (
+                    <div className="empty-state">暂无采购单数据</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>单号</th>
+                          <th>供应商</th>
+                          <th>状态</th>
+                          <th>金额</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {purchaseOrders.slice(0, 8).map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.order_no}</td>
+                            <td>{row.supplier_id}</td>
+                            <td>{row.status}</td>
+                            <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {purchaseOrders.length > 8 && (
+                    <div className="table-hint">共 {purchaseOrders.length} 条，仅显示最近 8 条</div>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'sales' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>新增销售单</h2>
+                    <span className="status-badge">客户订单</span>
+                  </div>
+
+                  <form onSubmit={submitSalesOrder} className="erp-form">
+                    <div className="form-row two-col">
+                      <label>
+                        销售单号
+                        <input value={salesForm.order_no} onChange={handleSalesChange('order_no')} required />
+                      </label>
+                      <label>
+                        客户 ID
+                        <input type="number" value={salesForm.customer_id} onChange={handleSalesChange('customer_id')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        产品 ID
+                        <input type="number" value={salesForm.product_id} onChange={handleSalesChange('product_id')} required />
+                      </label>
+                      <label>
+                        数量
+                        <input type="number" min="1" value={salesForm.quantity} onChange={handleSalesChange('quantity')} required />
+                      </label>
+                    </div>
+
+                    <label>
+                      单价
+                      <input type="number" step="0.01" value={salesForm.unit_price} onChange={handleSalesChange('unit_price')} required />
+                    </label>
+
+                    <button className="primary-btn" type="submit">保存销售单</button>
+                  </form>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>销售订单列表</h2>
+                    <span className="status-badge">{salesOrders.length} 张</span>
+                  </div>
+
+                  {salesOrders.length === 0 ? (
+                    <div className="empty-state">暂无销售单数据</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>单号</th>
+                          <th>客户</th>
+                          <th>状态</th>
+                          <th>金额</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {salesOrders.slice(0, 8).map((row) => (
+                          <tr
+                            key={row.id}
+                            onClick={() => setSelectedSalesOrder(row)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                setSelectedSalesOrder(row);
+                              }
+                            }}
+                            tabIndex={0}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <td>{row.order_no}</td>
+                            <td>{row.customer_id}</td>
+                            <td>{row.status}</td>
+                            <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className="danger-btn"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setConfirmDelete({
+                                    id: row.id,
+                                    endpoint: `/sales-orders/${row.id}`,
+                                    label: `销售订单 ${row.order_no}`,
+                                    kind: 'sales-order',
+                                  });
+                                }}
+                              >
+                                删除
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {salesOrders.length > 8 && (
+                    <div className="table-hint">共 {salesOrders.length} 条，仅显示最近 8 条</div>
+                  )}
+                </section>
+
+                {selectedSalesOrder && (
+                  <div className="modal-overlay" onClick={() => setSelectedSalesOrder(null)}>
+                    <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                      <div className="modal-header">
+                        <h3>销售订单详情</h3>
+                        <button type="button" className="secondary-btn small-btn" onClick={() => setSelectedSalesOrder(null)}>关闭</button>
+                      </div>
+
+                      <div className="modal-body">
+                        <p><strong>单号：</strong> {selectedSalesOrder.order_no}</p>
+                        <p><strong>客户：</strong> {selectedSalesOrder.customer_id}</p>
+                        <p><strong>状态：</strong> {selectedSalesOrder.status}</p>
+                        <p><strong>金额：</strong> ¥{Number(selectedSalesOrder.total_amount || 0).toLocaleString()}</p>
+                      </div>
+
+                      <div className="modal-actions">
+                        <button
+                          type="button"
+                          className="primary-btn"
+                          onClick={async () => {
+                            const success = await updateSalesOrderStatus(selectedSalesOrder.id, 'completed');
+                            if (success) {
+                              setSelectedSalesOrder(null);
+                            }
+                          }}
+                        >
+                          标记为已完结
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedTab === 'production' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>新增生产单</h2>
+                    <span className="status-badge">车间计划</span>
+                  </div>
+
+                  <form onSubmit={submitProductionOrder} className="erp-form">
+                    <div className="form-row two-col">
+                      <label>
+                        生产单号
+                        <input value={productionForm.order_no} onChange={handleProductionChange('order_no')} required />
+                      </label>
+                      <label>
+                        产品 ID
+                        <input type="number" value={productionForm.product_id} onChange={handleProductionChange('product_id')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        数量
+                        <input type="number" min="1" value={productionForm.quantity} onChange={handleProductionChange('quantity')} required />
+                      </label>
+                      <label>
+                        优先级
+                        <select value={productionForm.priority} onChange={handleProductionChange('priority')}>
+                          <option value="low">低</option>
+                          <option value="normal">正常</option>
+                          <option value="high">高</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <label>
+                      状态
+                      <select value={productionForm.status} onChange={handleProductionChange('status')}>
+                        <option value="planned">计划中</option>
+                        <option value="in_progress">生产中</option>
+                        <option value="completed">已完成</option>
+                      </select>
+                    </label>
+
+                    <label>
+                      备注
+                      <textarea value={productionForm.note} onChange={handleProductionChange('note')} rows="3" />
+                    </label>
+
+                    <button className="primary-btn" type="submit">保存生产单</button>
+                  </form>
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>生产流程状态</h2>
+                    <span className="status-badge">{operationsBoard.production_flow.length} 条流程</span>
+                  </div>
+
+                  {operationsBoard.production_flow.length === 0 ? (
+                    <div className="empty-state">暂无生产流程状态</div>
+                  ) : (
+                    <div className="flow-list">
+                      {operationsBoard.production_flow.map((flow) => (
+                        <div key={flow.order_no} className="flow-card">
+                          <div className="flow-header">
+                            <strong>{flow.order_no}</strong>
+                            <span className="status-badge">{flow.status}</span>
+                          </div>
+                          <div className="flow-steps">
+                            {flow.steps.map((step, index) => (
+                              <div key={`${flow.order_no}-${step.name}-${index}`} className={`flow-step ${step.status}`}>
+                                <span>{index + 1}</span>
+                                <small>{step.name}</small>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>工单 / 排程 / 产线看板</h2>
+                    <span className="status-badge">{operationsBoard.work_orders.length} 个工单</span>
+                  </div>
+
+                  <div className="operations-grid">
+                    <div className="mini-panel">
+                      <h3>工单执行</h3>
+                      {(operationsBoard.work_orders || []).length === 0 ? (
+                        <div className="empty-state">暂无工单</div>
+                      ) : (
+                        <ul className="mini-list">
+                          {operationsBoard.work_orders.map((workOrder) => (
+                            <li key={workOrder.id}>
+                              <div>
+                                <strong>{workOrder.order_no}</strong>
+                                <small>{workOrder.line_name} · {workOrder.product_id}</small>
+                              </div>
+                              <span>{workOrder.status}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="mini-panel">
+                      <h3>排程</h3>
+                      {(operationsBoard.production_schedule || []).length === 0 ? (
+                        <div className="empty-state">暂无排程</div>
+                      ) : (
+                        <ul className="mini-list">
+                          {operationsBoard.production_schedule.map((item, index) => (
+                            <li key={`${item.order_no}-${index}`}>
+                              <div>
+                                <strong>{item.order_no}</strong>
+                                <small>{item.line_name} · {item.date}</small>
+                              </div>
+                              <span>{item.status}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="mini-panel">
+                      <h3>BOM 缺料预警</h3>
+                      {(operationsBoard.bom_alerts || []).length === 0 ? (
+                        <div className="empty-state">暂无预警</div>
+                      ) : (
+                        <ul className="mini-list">
+                          {operationsBoard.bom_alerts.map((alert, index) => (
+                            <li key={`${alert.product_id}-${alert.component_id}-${index}`}>
+                              <div>
+                                <strong>{alert.message}</strong>
+                                <small>组件 {alert.component_id} · 用量 {alert.quantity}</small>
+                              </div>
+                              <span>{alert.level}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="mini-panel">
+                      <h3>自动排程</h3>
+                      {(operationsBoard.auto_schedule || []).length === 0 ? (
+                        <div className="empty-state">暂无排程结果</div>
+                      ) : (
+                        <ul className="mini-list">
+                          {operationsBoard.auto_schedule.map((item, index) => (
+                            <li key={`${item.order_no}-${index}`}>
+                              <div>
+                                <strong>{item.order_no}</strong>
+                                <small>{item.line_name} · {item.start_date}</small>
+                              </div>
+                              <span>{item.load_rate}%</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="mini-panel">
+                      <h3>工单报工</h3>
+                      <div className="report-pill-row">
+                        <div className="report-pill">
+                          <span>已完成</span>
+                          <strong>{operationsBoard.work_report_summary?.completed_today ?? 0}</strong>
+                        </div>
+                        <div className="report-pill">
+                          <span>进度</span>
+                          <strong>{operationsBoard.work_report_summary?.progress_rate ?? 0}%</strong>
+                        </div>
+                        <div className="report-pill">
+                          <span>OEE</span>
+                          <strong>{operationsBoard.work_report_summary?.oee ?? 0}%</strong>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mini-panel">
+                      <h3>产线看板</h3>
+                      {(operationsBoard.line_board || []).length === 0 ? (
+                        <div className="empty-state">暂无产线数据</div>
+                      ) : (
+                        <ul className="mini-list">
+                          {operationsBoard.line_board.map((line) => (
+                            <li key={line.line_name}>
+                              <div>
+                                <strong>{line.line_name}</strong>
+                                <small>产量 {line.output} · 利用率 {line.utilization}%</small>
+                              </div>
+                              <span>{line.status}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="mini-panel">
+                      <h3>库存预警</h3>
+                      {(operationsBoard.inventory_alerts || []).length === 0 ? (
+                        <div className="empty-state">库存正常</div>
+                      ) : (
+                        <ul className="mini-list">
+                          {operationsBoard.inventory_alerts.map((alert) => (
+                            <li key={`${alert.product_id}-${alert.warehouse_id}`}>
+                              <div>
+                                <strong>{alert.product_name}</strong>
+                                <small>仓库 {alert.warehouse_id} · 可用 {alert.available_quantity}</small>
+                              </div>
+                              <span>{alert.status === 'low_stock' ? '低库存' : '关注'}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="mini-panel">
+                      <h3>采购补货建议</h3>
+                      {(operationsBoard.purchase_recommendations || []).length === 0 ? (
+                        <div className="empty-state">暂无补货建议</div>
+                      ) : (
+                        <ul className="mini-list">
+                          {operationsBoard.purchase_recommendations.map((item, index) => (
+                            <li key={`${item.product_id}-${index}`}>
+                              <div>
+                                <strong>{item.product_name}</strong>
+                                <small>{item.reason}</small>
+                              </div>
+                              <span>{item.priority === 'high' ? '重点' : '建议'} {item.recommended_quantity}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>BOM 关联建议</h2>
+                    <span className="status-badge">{operationsBoard.bom_summary.total_items} 个 BOM</span>
+                  </div>
+
+                  <div className="recommendation-list">
+                    {(operationsBoard.recommendations || []).map((recommendation) => (
+                      <button
+                        key={recommendation.title}
+                        type="button"
+                        className={`recommendation-item ${selectedRecommendation === recommendation.title ? 'selected' : ''}`}
+                        onClick={() => setSelectedRecommendation(recommendation.title)}
+                      >
+                        <div className="recommendation-topline">
+                          <strong>{recommendation.title}</strong>
+                          <span className={`priority-tag ${recommendation.priority}`}>{recommendation.priority}</span>
+                        </div>
+                        <small>{recommendation.description}</small>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="selected-recommendation-box">
+                    {selectedRecommendation
+                      ? `已选择：${selectedRecommendation}`
+                      : '请选择一条建议，作为当前生产决策参考。'}
+                  </div>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>生产计划列表</h2>
+                    <span className="status-badge">{productionOrders.length} 张</span>
+                  </div>
+
+                  {productionOrders.length === 0 ? (
+                    <div className="empty-state">暂无生产计划</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>单号</th>
+                          <th>产品</th>
+                          <th>数量</th>
+                          <th>状态</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {productionOrders.slice(0, 8).map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.order_no}</td>
+                            <td>{row.product_id}</td>
+                            <td>{row.quantity}</td>
+                            <td>{row.status}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {productionOrders.length > 8 && (
+                    <div className="table-hint">共 {productionOrders.length} 条，仅显示最近 8 条</div>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'projects' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>新增项目</h2>
+                    <span className="status-badge">阶段管理</span>
+                  </div>
+
+                  <form onSubmit={submitProject} className="erp-form">
+                    <div className="form-row two-col">
+                      <label>
+                        项目编码
+                        <input value={projectForm.code} onChange={handleProjectChange('code')} required />
+                      </label>
+                      <label>
+                        项目名称
+                        <input value={projectForm.name} onChange={handleProjectChange('name')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        负责人
+                        <input value={projectForm.manager} onChange={handleProjectChange('manager')} />
+                      </label>
+                      <label>
+                        状态
+                        <select value={projectForm.status} onChange={handleProjectChange('status')}>
+                          <option value="planned">计划中</option>
+                          <option value="in_progress">进行中</option>
+                          <option value="delayed">延期</option>
+                          <option value="completed">已完成</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        进度 %
+                        <input type="number" min="0" max="100" value={projectForm.progress} onChange={handleProjectChange('progress')} />
+                      </label>
+                      <label>
+                        预算
+                        <input type="number" step="0.01" value={projectForm.budget} onChange={handleProjectChange('budget')} />
+                      </label>
+                    </div>
+
+                    <label>
+                      截止日期
+                      <input type="date" value={projectForm.deadline} onChange={handleProjectChange('deadline')} />
+                    </label>
+
+                    <label>
+                      备注
+                      <textarea value={projectForm.note} onChange={handleProjectChange('note')} rows="3" />
+                    </label>
+
+                    <button className="primary-btn" type="submit">保存项目</button>
+                  </form>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>项目列表</h2>
+                    <span className="status-badge">{projects.length} 个</span>
+                  </div>
+
+                  {projects.length === 0 ? (
+                    <div className="empty-state">暂无项目数据</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>编码</th>
+                          <th>名称</th>
+                          <th>负责人</th>
+                          <th>进度</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {projects.slice(0, 8).map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.code}</td>
+                            <td>{row.name}</td>
+                            <td>{row.manager || '—'}</td>
+                            <td>{row.progress}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {projects.length > 8 && (
+                    <div className="table-hint">共 {projects.length} 条，仅显示最近 8 条</div>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'reports' && (
+              <div className="report-grid">
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>经营报表</h2>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <span className="status-badge">实时汇总</span>
+                      <button type="button" className="secondary-btn small-btn" onClick={exportDailyReport}>导出日报</button>
+                    </div>
+                  </div>
+
+                  <div className="report-summary-grid">
+                    <div className="metric-card">
+                      <span>销售额</span>
+                      <strong>¥{Number(summary?.sales_total || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>采购额</span>
+                      <strong>¥{Number(summary?.purchase_total || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>财务额</span>
+                      <strong>¥{Number(summary?.finance_total || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>客户数</span>
+                      <strong>{summary?.customers ?? 0}</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>经营趋势</h2>
+                    <span className="status-badge">主数据</span>
+                  </div>
+
+                  <div className="chart-bars">
+                    {[
+                      { label: '销售', value: Number(summary?.sales_total || 0), max: Math.max(Number(summary?.sales_total || 0), Number(summary?.purchase_total || 0), Number(summary?.finance_total || 0), 1) },
+                      { label: '采购', value: Number(summary?.purchase_total || 0), max: Math.max(Number(summary?.sales_total || 0), Number(summary?.purchase_total || 0), Number(summary?.finance_total || 0), 1) },
+                      { label: '财务', value: Number(summary?.finance_total || 0), max: Math.max(Number(summary?.sales_total || 0), Number(summary?.purchase_total || 0), Number(summary?.finance_total || 0), 1) },
+                    ].map((item) => (
+                      <div className="chart-row" key={item.label}>
+                        <span>{item.label}</span>
+                        <div className="chart-track">
+                          <div className="chart-fill" style={{ width: `${(item.value / item.max) * 100}%` }} />
+                        </div>
+                        <strong>¥{Number(item.value).toLocaleString()}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'analysis' && (
+              <div className="report-grid">
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>财务分析窗口</h2>
+                    <span className="status-badge">实时汇总</span>
+                  </div>
+
+                  <div className="report-summary-grid">
+                    <div className="metric-card">
+                      <span>收入合计</span>
+                      <strong>¥{Number(financeAnalysis.total_revenue || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>支出合计</span>
+                      <strong>¥{Number(financeAnalysis.total_expense || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>净利润</span>
+                      <strong>¥{Number(financeAnalysis.net_profit || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>发票条数</span>
+                      <strong>{invoiceSummary.count}</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>按客户收入分析</h2>
+                    <span className="status-badge">Top客户</span>
+                  </div>
+
+                  <div className="analysis-filter-row">
+                    <label>
+                      <span>开始日期</span>
+                      <input type="date" value={analysisRange.startDate} onChange={handleAnalysisRangeChange('startDate')} />
+                    </label>
+                    <label>
+                      <span>结束日期</span>
+                      <input type="date" value={analysisRange.endDate} onChange={handleAnalysisRangeChange('endDate')} />
+                    </label>
+                  </div>
+
+                  {financeAnalysis.by_customer && financeAnalysis.by_customer.length > 0 ? (
+                    <>
+                      <div className="chart-bars">
+                        {(() => {
+                          const maxValue = Math.max(...financeAnalysis.by_customer.map((item) => Number(item.total || 0)), 1);
+                          return financeAnalysis.by_customer.slice(0, 6).map((item) => (
+                            <div className="chart-row" key={item.customer_id || item.customer_name}>
+                              <span>{item.customer_name}</span>
+                              <div className="chart-track">
+                                <div className="chart-fill" style={{ width: `${((Number(item.total || 0) / maxValue) * 100)}%` }} />
+                              </div>
+                              <strong>¥{Number(item.total || 0).toLocaleString()}</strong>
+                            </div>
+                          ));
+                        })()}
+                      </div>
+
+                      <div className="customer-rank-list">
+                        {financeAnalysis.by_customer.slice(0, 5).map((item, index) => (
+                          <div className="rank-item" key={`${item.customer_name}-${index}`}>
+                            <span className="rank-badge">#{index + 1}</span>
+                            <div>
+                              <strong>{item.customer_name}</strong>
+                              <small>贡献收入</small>
+                            </div>
+                            <div className="invoice-amount">¥{Number(item.total || 0).toLocaleString()}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="empty-state">暂无客户收入数据</div>
+                  )}
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>发票汇总</h2>
+                    <span className="status-badge">OCR 识别 · 财务关联 · 智能分析</span>
+                  </div>
+
+                  <label className="upload-box">
+                    <input type="file" multiple accept=".png,.jpg,.jpeg,.pdf" onChange={handleInvoiceUpload} />
+                    <span>批量选择本地发票文件（支持 PDF / 图片 / OCR 识别 / 二维码解析）</span>
+                  </label>
+
+                  <div className="invoice-action-row">
+                    <button type="button" className="primary-btn small-btn" onClick={handleDeepSeekInvoiceAnalysis}>智能分类分析</button>
+                    <button type="button" className="primary-btn small-btn" onClick={handleInvoiceAgentAnalysis}>智能体分析</button>
+                    <button type="button" className="primary-btn small-btn" onClick={handleSyncInvoicesToFinance}>同步到财务</button>
+                    <button type="button" className="secondary-btn" onClick={exportInvoiceReportXlsx}>导出报表</button>
+                    <button type="button" className="secondary-btn" onClick={exportInvoiceReportHtml}>导出美观表格</button>
+                  </div>
+
+                  {invoiceItems.length > 0 ? (
+                    <>
+                      <div className="invoice-chart-grid">
+                        <div className="chart-card">
+                          <div className="chart-card-title">发票类别对比</div>
+                          {(() => {
+                            const total = Math.max(Number(invoiceAggregate.total_amount || 0), 1);
+                            const spec = Number((invoiceAggregate.by_type || []).find((t) => t.type === '专票')?.amount || 0);
+                            const gen = Number((invoiceAggregate.by_type || []).find((t) => t.type === '普票')?.amount || 0);
+                            const other = Math.max(total - spec - gen, 0);
+                            const specPct = (spec / total) * 100;
+                            const genPct = (gen / total) * 100;
+                            return (
+                              <div className="donut-wrap">
+                                <div className="donut" style={{ background: `conic-gradient(#6366f1 0 ${specPct}%, #22c55e ${specPct}% ${specPct + genPct}%, #94a3b8 ${specPct + genPct}% 100%)` }}>
+                                  <div className="donut-hole" />
+                                </div>
+                                <div className="donut-legend">
+                                  <div><i className="legend-dot" style={{ background: '#6366f1' }} />专票 ¥{spec.toLocaleString()}（{specPct.toFixed(1)}%）</div>
+                                  <div><i className="legend-dot" style={{ background: '#22c55e' }} />普票 ¥{gen.toLocaleString()}（{genPct.toFixed(1)}%）</div>
+                                  {other > 0 && <div><i className="legend-dot" style={{ background: '#94a3b8' }} />其他 ¥{other.toLocaleString()}</div>}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+
+                        <div className="chart-card">
+                          <div className="chart-card-title">专票抵扣情况</div>
+                          <div className="deduct-legend">
+                            <div className="deduct-line">
+                              <i className="legend-dot" style={{ background: '#16a34a' }} />
+                              已抵扣 {invoiceAggregate.deduction.deducted_count} 张 ¥{Number(invoiceAggregate.deduction.deducted_amount || 0).toLocaleString()}
+                            </div>
+                            <div className="deduct-line red-text">
+                              <i className="legend-dot" style={{ background: '#dc2626' }} />
+                              未抵扣 {invoiceAggregate.deduction.undeducted_count} 张 ¥{Number(invoiceAggregate.deduction.undeducted_amount || 0).toLocaleString()}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="chart-card">
+                          <div className="chart-card-title">普票月度金额对比（元）</div>
+                          {(() => {
+                            const months = Object.keys(invoiceAggregate.monthly || {}).slice(-12);
+                            const values = months.map((m) => Number(invoiceAggregate.monthly[m]?.['普票']?.amount || 0));
+                            const max = Math.max(...values, 1);
+                            return (
+                              <div className="mini-bars">
+                                {months.map((m, i) => (
+                                  <div className="mini-bar-col" key={m} title={`${m}：¥${values[i].toLocaleString()}`}>
+                                    <div className="mini-bar-fill bar-green" style={{ height: `${Math.max((values[i] / max) * 100, values[i] > 0 ? 6 : 2)}%` }} />
+                                    <span>{m.slice(5)}月</span>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })()}
+                        </div>
+
+                        <div className="chart-card">
+                          <div className="chart-card-title">专票月度金额对比（元）</div>
+                          {(() => {
+                            const months = Object.keys(invoiceAggregate.monthly || {}).slice(-12);
+                            const values = months.map((m) => Number(invoiceAggregate.monthly[m]?.['专票']?.amount || 0));
+                            const max = Math.max(...values, 1);
+                            return (
+                              <div className="mini-bars">
+                                {months.map((m, i) => (
+                                  <div className="mini-bar-col" key={m} title={`${m}：¥${values[i].toLocaleString()}`}>
+                                    <div className="mini-bar-fill bar-indigo" style={{ height: `${Math.max((values[i] / max) * 100, values[i] > 0 ? 6 : 2)}%` }} />
+                                    <span>{m.slice(5)}月</span>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+
+                      {invoiceAgentReport && (
+                        <div className="agent-report-box">
+                          <div className="agent-report-header">
+                            <strong>智能体分析报告</strong>
+                            <span className="status-badge">{invoiceAgentReport.provider === 'deepseek' ? 'DeepSeek 智能体' : '本地规则分析'}</span>
+                          </div>
+                          <pre>{invoiceAgentReport.analysis}</pre>
+                        </div>
+                      )}
+
+                      <div className="invoice-summary-row">
+                        <div className="metric-card">
+                          <span>发票总额</span>
+                          <strong>¥{Number(invoiceAggregate.total_amount || 0).toLocaleString()}</strong>
+                        </div>
+                        <div className="metric-card">
+                          <span>发票数量</span>
+                          <strong>{invoiceAggregate.total_count}</strong>
+                        </div>
+                        <div className="metric-card">
+                          <span>税额合计</span>
+                          <strong>¥{Number(invoiceAggregate.total_tax || 0).toLocaleString()}</strong>
+                        </div>
+                        <div className="metric-card">
+                          <span>未抵扣专票</span>
+                          <strong className="red-text">¥{Number(invoiceAggregate.deduction.undeducted_amount || 0).toLocaleString()}</strong>
+                        </div>
+                      </div>
+
+                      {selectedInvoiceIds.length > 0 && (
+                        <div className="batch-delete-bar">
+                          <span>已勾选 {selectedInvoiceIds.length} 张发票</span>
+                          <button
+                            type="button"
+                            className="danger-btn"
+                            onClick={() =>
+                              setConfirmDelete({
+                                ids: selectedInvoiceIds,
+                                endpoint: '/invoices/batch',
+                                label: `已勾选的 ${selectedInvoiceIds.length} 张发票`,
+                                kind: 'invoice-batch',
+                              })
+                            }
+                          >
+                            批量删除
+                          </button>
+                          <button type="button" className="link-btn" onClick={() => setSelectedInvoiceIds([])}>取消勾选</button>
+                        </div>
+                      )}
+
+                      <div className="invoice-table-wrap">
+                        <table className="invoice-summary-table">
+                          <thead>
+                            <tr>
+                              <th className="select-col">
+                                <input
+                                  type="checkbox"
+                                  checked={invoiceItems.length > 0 && selectedInvoiceIds.length === invoiceItems.slice(0, 8).length}
+                                  onChange={toggleSelectAllInvoices}
+                                  aria-label="全选发票"
+                                />
+                              </th>
+                              <th>月份</th><th>税价合计</th>
+                              <th>序号</th><th>开票日期</th><th>发票号码</th><th>销售方名称</th><th>购买方名称</th><th>发票代码</th>
+                              <th>发票类型</th><th>税价合计</th><th>税率</th><th>不含税额</th><th>税额</th><th>已抵扣</th><th>操作</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(() => {
+                              const groups = new Map();
+                              invoiceItems.slice(0, 8).forEach((item) => {
+                                const month = String(item.date || '—').slice(0, 7);
+                                if (!groups.has(month)) groups.set(month, []);
+                                groups.get(month).push(item);
+                              });
+                              const months = Array.from(groups.keys()).sort();
+                              const rows = [];
+                              let serial = 0;
+                              months.forEach((month) => {
+                                const list = groups.get(month);
+                                const monthTotal = list.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+                                rows.push(
+                                  <tr key={`month-${month}`} className="invoice-month-row">
+                                    <td />
+                                    <td>{formatMonth(month)}</td>
+                                    <td>¥{monthTotal.toLocaleString()}</td>
+                                    <td colSpan={13} />
+                                  </tr>
+                                );
+                                list.forEach((item) => {
+                                  serial += 1;
+                                  const undeducted = item.invoice_type === '专票' && !item.deducted;
+                                  rows.push(
+                                    <tr key={`inv-${item.id || item.invoice_no}`} className={undeducted ? 'invoice-red-row' : ''}>
+                                      <td>
+                                        <input
+                                          type="checkbox"
+                                          checked={selectedInvoiceIds.includes(item.id)}
+                                          onChange={() => toggleInvoiceSelect(item.id)}
+                                          aria-label={`勾选发票 ${item.invoice_no}`}
+                                        />
+                                      </td>
+                                      <td colSpan={2} />
+                                      <td>{serial}</td>
+                                      <td>{item.date}</td>
+                                      <td>{item.invoice_no}</td>
+                                      <td>{item.seller_name || '—'}</td>
+                                      <td>{item.buyer_name || '—'}</td>
+                                      <td>{item.invoice_code || '—'}</td>
+                                      <td>{item.invoice_type || '未知'}</td>
+                                      <td>¥{Number(item.amount || 0).toLocaleString()}</td>
+                                      <td>{item.tax_rate != null ? `${item.tax_rate}%` : '—'}</td>
+                                      <td>¥{Number(item.excl_tax_amount || 0).toLocaleString()}</td>
+                                      <td>¥{Number(item.tax_amount || 0).toLocaleString()}</td>
+                                      <td>
+                                        {item.invoice_type === '专票' ? (
+                                          <label className="deduct-check">
+                                            <input type="checkbox" checked={Boolean(item.deducted)} onChange={() => handleToggleDeducted(item)} />
+                                            已抵扣
+                                          </label>
+                                        ) : '—'}
+                                      </td>
+                                      <td>
+                                        <button type="button" className="link-btn" onClick={() => setInvoiceDetail(item)}>查看</button>
+                                        <button
+                                          type="button"
+                                          className="danger-btn"
+                                          onClick={() =>
+                                            setConfirmDelete({
+                                              id: item.id,
+                                              endpoint: `/invoices/${item.id}`,
+                                              label: `发票 ${item.invoice_no || item.id}`,
+                                              kind: 'invoice',
+                                            })
+                                          }
+                                        >
+                                          删除
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                });
+                              });
+                              return rows;
+                            })()}
+                          </tbody>
+                          <tfoot>
+                            <tr>
+                              <td />
+                              <td>合计</td>
+                              <td>¥{Number(invoiceAggregate.total_amount || 0).toLocaleString()}</td>
+                              <td colSpan={13} />
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+
+                      {invoiceItems.length > 8 && (
+                        <div className="table-hint">共 {invoiceItems.length} 张发票，仅显示最近 8 张（勾选条目后点「导出报表」可生成 Excel）</div>
+                      )}
+
+                      {invoiceDetail && (
+                        <div className="modal-backdrop" onClick={() => setInvoiceDetail(null)}>
+                          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                            <div className="modal-header">
+                              <h3>发票详情</h3>
+                              <button type="button" className="close-btn" onClick={() => setInvoiceDetail(null)}>×</button>
+                            </div>
+                            <div className="invoice-detail-grid">
+                              <div className="detail-field"><span>发票号码</span><strong>{invoiceDetail.invoice_no || invoiceDetail.id || '—'}</strong></div>
+                              <div className="detail-field"><span>开票日期</span><strong>{invoiceDetail.date || '—'}</strong></div>
+                              <div className="detail-field"><span>金额</span><strong>¥{Number(invoiceDetail.amount || 0).toLocaleString()}</strong></div>
+                              <div className="detail-field"><span>分类</span><strong>{invoiceDetail.category || inferInvoiceCategory(invoiceDetail) || '其他'}</strong></div>
+                              <div className="detail-field"><span>发票代码</span><strong>{invoiceDetail.invoice_code || '—'}</strong></div>
+                              <div className="detail-field"><span>发票类型</span><strong>{invoiceDetail.invoice_type || '未知'}</strong></div>
+                              <div className="detail-field"><span>税率</span><strong>{invoiceDetail.tax_rate != null ? `${invoiceDetail.tax_rate}%` : '—'}</strong></div>
+                              <div className="detail-field"><span>税额</span><strong>¥{Number(invoiceDetail.tax_amount || 0).toLocaleString()}</strong></div>
+                              <div className="detail-field"><span>购买方</span><strong>{invoiceDetail.buyer_name || '—'}</strong><small>{invoiceDetail.buyer_tax_no || ''}</small></div>
+                              <div className="detail-field"><span>销售方</span><strong>{invoiceDetail.seller_name || invoiceDetail.customer_name || '—'}</strong><small>{invoiceDetail.seller_tax_no || ''}</small></div>
+                            </div>
+                            {Array.isArray(invoiceDetail.items) && invoiceDetail.items.length > 0 && (
+                              <table className="detail-table">
+                                <thead>
+                                  <tr><th>产品明细</th><th>数量</th><th>单价</th><th>金额</th></tr>
+                                </thead>
+                                <tbody>
+                                  {invoiceDetail.items.map((line, index) => (
+                                    <tr key={`${line.item_name || 'line'}-${index}`}>
+                                      <td>{line.item_name || '—'}</td>
+                                      <td>{line.quantity ?? '—'}</td>
+                                      <td>¥{Number(line.unit_price || 0).toLocaleString()}</td>
+                                      <td>¥{Number(line.amount || 0).toLocaleString()}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                            {invoiceDetail.raw_text && (
+                              <details className="raw-text-box">
+                                <summary>OCR 原始识别文字（可展开）</summary>
+                                <pre>{invoiceDetail.raw_text}</pre>
+                              </details>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="empty-state">未读取到本地发票文件</div>
+                  )}
+                </section>
+
+                <section className="panel">
+                  <div className="section-header">
+                    <h2>月度现金流</h2>
+                    <span className="status-badge">趋势</span>
+                  </div>
+
+                  {financeAnalysis.monthly_trend && financeAnalysis.monthly_trend.length > 0 ? (
+                    <div className="chart-bars">
+                      {(() => {
+                        const maxValue = Math.max(
+                          ...financeAnalysis.monthly_trend.map((item) => Math.max(Number(item.income || 0), Number(item.expense || 0))),
+                          1,
+                        );
+                        return financeAnalysis.monthly_trend.map((item) => (
+                          <div className="chart-row" key={item.month}>
+                            <span>{item.month}</span>
+                            <div className="chart-track">
+                              <div className="chart-fill" style={{ width: `${((Math.max(Number(item.income || 0), Number(item.expense || 0)) / maxValue) * 100)}%` }} />
+                            </div>
+                            <strong>¥{Number(item.income || 0).toLocaleString()}</strong>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="empty-state">暂无月度现金流数据</div>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'finance' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>新增财务记录</h2>
+                    <span className="status-badge">收支流水</span>
+                  </div>
+
+                  <form onSubmit={submitFinance} className="erp-form">
+                    <div className="report-summary-grid" style={{ marginBottom: '18px' }}>
+                      <div className="metric-card">
+                        <span>净现金流</span>
+                        <strong>¥{Number(financeDecision.summary.net_cash_flow || 0).toLocaleString()}</strong>
+                      </div>
+                      <div className="metric-card">
+                        <span>毛利率</span>
+                        <strong>{Number(financeDecision.summary.gross_margin_rate || 0).toFixed(1)}%</strong>
+                      </div>
+                      <div className="metric-card">
+                        <span>风险</span>
+                        <strong>{financeDecision.risk_level === 'healthy' ? '健康' : financeDecision.risk_level === 'watch' ? '关注' : '风险'}</strong>
+                      </div>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        类型
+                        <select value={financeForm.transaction_type} onChange={handleFinanceChange('transaction_type')}>
+                          <option value="income">收入</option>
+                          <option value="expense">支出</option>
+                        </select>
+                      </label>
+                      <label>
+                        金额
+                        <input type="number" step="0.01" value={financeForm.amount} onChange={handleFinanceChange('amount')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        货币
+                        <input value={financeForm.currency} onChange={handleFinanceChange('currency')} />
+                      </label>
+                      <label>
+                        关联订单 ID
+                        <input type="number" value={financeForm.related_order_id} onChange={handleFinanceChange('related_order_id')} />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        客户 ID
+                        <input type="number" value={financeForm.customer_id} onChange={handleFinanceChange('customer_id')} />
+                      </label>
+                      <label>
+                        供应商 ID
+                        <input type="number" value={financeForm.supplier_id} onChange={handleFinanceChange('supplier_id')} />
+                      </label>
+                    </div>
+
+                    <label>
+                      备注
+                      <textarea value={financeForm.note} onChange={handleFinanceChange('note')} rows="3" />
+                    </label>
+
+                    <button className="primary-btn" type="submit">保存财务记录</button>
+                  </form>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>财务流水</h2>
+                    <span className="status-badge">{finance.length} 条</span>
+                  </div>
+
+                  {finance.length === 0 ? (
+                    <div className="empty-state">暂无财务记录</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>类型</th>
+                          <th>金额</th>
+                          <th>货币</th>
+                          <th>备注</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {finance.slice(0, 8).map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.transaction_type}</td>
+                            <td>¥{Number(row.amount || 0).toLocaleString()}</td>
+                            <td>{row.currency}</td>
+                            <td>{row.note || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {finance.length > 8 && (
+                    <div className="table-hint">共 {finance.length} 条，仅显示最近 8 条</div>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'inventory' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>出入库登记</h2>
+                    <span className="status-badge">手工调整库存</span>
+                  </div>
+
+                  <form onSubmit={submitInventory} className="erp-form">
+                    <div className="form-row two-col">
+                      <label>
+                        产品 ID
+                        <input type="number" value={inventoryForm.product_id} onChange={handleInventoryChange('product_id')} required />
+                      </label>
+                      <label>
+                        仓库 ID
+                        <input type="number" value={inventoryForm.warehouse_id} onChange={handleInventoryChange('warehouse_id')} required />
+                      </label>
+                    </div>
+
+                    <div className="form-row two-col">
+                      <label>
+                        类型
+                        <select value={inventoryForm.transaction_type} onChange={handleInventoryChange('transaction_type')}>
+                          <option value="inbound">入库</option>
+                          <option value="outbound">出库</option>
+                        </select>
+                      </label>
+                      <label>
+                        数量
+                        <input type="number" min="1" value={inventoryForm.quantity} onChange={handleInventoryChange('quantity')} required />
+                      </label>
+                    </div>
+
+                    <label>
+                      单价
+                      <input type="number" step="0.01" value={inventoryForm.unit_price} onChange={handleInventoryChange('unit_price')} />
+                    </label>
+
+                    <button className="primary-btn" type="submit">保存库存记录</button>
+                  </form>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>现存量</h2>
+                    <span className="status-badge">{stockData.summary.stock_lines || 0} 条</span>
+                  </div>
+
+                  <div className="stock-kpis">
+                    <div className="stock-kpi">
+                      <span className="stock-kpi-label">库存总量</span>
+                      <strong>{Number(stockData.summary.total_quantity || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="stock-kpi">
+                      <span className="stock-kpi-label">库存金额（成本）</span>
+                      <strong>¥{Number(stockData.summary.estimated_value || 0).toLocaleString()}</strong>
+                    </div>
+                    <div className="stock-kpi">
+                      <span className="stock-kpi-label">缺货</span>
+                      <strong className="num-negative">{stockData.summary.shortage_count || 0}</strong>
+                    </div>
+                    <div className="stock-kpi">
+                      <span className="stock-kpi-label">低库存</span>
+                      <strong>{stockData.summary.low_stock_count || 0}</strong>
+                    </div>
+                    <div className="stock-kpi">
+                      <span className="stock-kpi-label">积压</span>
+                      <strong>{stockData.summary.overstock_count || 0}</strong>
+                    </div>
+                  </div>
+
+                  {(stockData.rows || []).length === 0 ? (
+                    <div className="empty-state">暂无库存数据，开一张采购单就会自动入库</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>仓库</th>
+                          <th>商品</th>
+                          <th>规格</th>
+                          <th>现存量</th>
+                          <th>下限</th>
+                          <th>上限</th>
+                          <th>状态</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(stockData.rows || []).map((row) => (
+                          <tr key={`${row.warehouse_id}-${row.product_id}`}>
+                            <td>{row.warehouse_name}</td>
+                            <td>{row.product_name}</td>
+                            <td>{row.standards || '—'}</td>
+                            <td className={row.quantity < 0 ? 'num-negative' : undefined}>
+                              {row.quantity}{row.unit ? ` ${row.unit}` : ''}
+                            </td>
+                            <td>{row.stock_lower ?? '—'}</td>
+                            <td>{row.stock_upper ?? '—'}</td>
+                            <td>
+                              <span className={`stock-tag ${row.status}`}>{stockStatusLabel(row.status)}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>库存流水</h2>
+                    <span className="status-badge">{inventory.length} 条</span>
+                  </div>
+
+                  {inventory.length === 0 ? (
+                    <div className="empty-state">暂无库存记录</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>来源单号</th>
+                          <th>产品</th>
+                          <th>类型</th>
+                          <th>数量</th>
+                          <th>单价</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {inventory.map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.doc_no || '手工登记'}</td>
+                            <td>{row.product_id}</td>
+                            <td>{row.transaction_type === 'inbound' ? '入库' : '出库'}</td>
+                            <td>{row.quantity}</td>
+                            <td>¥{Number(row.unit_price || 0).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {selectedTab === 'agent' && (
+              <div className="management-grid">
+                <section className="panel form-panel">
+                  <div className="section-header">
+                    <h2>移动智能体助手</h2>
+                    <span className="status-badge">iOS / Android / AI</span>
+                  </div>
+
+                  <div className="erp-form">
+                    <label>
+                      询问内容
+                      <textarea value={agentPrompt} onChange={(event) => setAgentPrompt(event.target.value)} rows="4" />
+                    </label>
+                    <button className="primary-btn" type="button" onClick={submitAgentPrompt}>启动智能分析</button>
+                  </div>
+                </section>
+
+                <section className="panel table-panel">
+                  <div className="section-header">
+                    <h2>分析结果</h2>
+                    <span className="status-badge">{agentResponse.risk_level || '健康'}</span>
+                  </div>
+
+                  <div className="agent-card">
+                    <p>{agentResponse.answer || '尚未进行分析。'}</p>
+                    <div className="agent-summary-grid">
+                      <div className="metric-card">
+                        <span>销售额</span>
+                        <strong>¥{Number(agentResponse.summary.sales_total || 0).toLocaleString()}</strong>
+                      </div>
+                      <div className="metric-card">
+                        <span>采购额</span>
+                        <strong>¥{Number(agentResponse.summary.purchase_total || 0).toLocaleString()}</strong>
+                      </div>
+                      <div className="metric-card">
+                        <span>毛利率</span>
+                        <strong>{Number(agentResponse.summary.gross_margin_rate || 0).toFixed(1)}%</strong>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {notice && <div className="notice-box">{notice}</div>}
+
+            {confirmDelete && (
+              <div className="modal-backdrop" onClick={() => setConfirmDelete(null)}>
+                <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                  <div className="modal-header">
+                    <h3>删除确认</h3>
+                    <button type="button" className="close-btn" onClick={() => setConfirmDelete(null)}>×</button>
+                  </div>
+                  <p className="confirm-text">确定要删除「{confirmDelete.label}」吗？</p>
+                  {confirmDelete.kind === 'bom' && (
+                    <p className="confirm-hint">BOM 节点是树形结构，删除会连同其子节点一起删除。</p>
+                  )}
+                  {confirmDelete.kind === 'sales-order' && (
+                    <p className="confirm-hint">订单明细也会一并删除。</p>
+                  )}
+                  {confirmDelete.force && (
+                    <div className="confirm-blocked">
+                      <p className="confirm-hint">{confirmDelete.blockedReason}</p>
+                      <p className="confirm-hint">强制删除只移除档案本身，历史单据里保存的名称快照仍然保留。</p>
+                    </div>
+                  )}
+                  <div className="modal-actions">
+                    <button type="button" className="secondary-btn" onClick={() => setConfirmDelete(null)}>取消</button>
+                    <button type="button" className="danger-btn" onClick={handleDeleteConfirm}>
+                      {confirmDelete.force ? '强制删除' : '确认删除'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+export default App;

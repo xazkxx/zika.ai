@@ -1,0 +1,904 @@
+[
+ {
+  "group": "00_登录与首页",
+  "name": "登录页",
+  "url": "http://www.janssa.com:18526/emk/loginController.do?login",
+  "file": "00_登录页.png"
+ },
+ {
+  "group": "00_登录与首页",
+  "name": "主框架-首页",
+  "url": "http://www.janssa.com:18526/emk/loginController.do?login",
+  "file": "01_00_登录与首页_主框架-首页.png",
+  "title": "浩技云进销存管理平台 5.0"
+ },
+ {
+  "group": "00_登录与首页",
+  "name": "主页内容",
+  "url": "http://www.janssa.com:18526/emk/loginController.do?fineuiHome",
+  "file": "02_00_登录与首页_主页内容.png",
+  "title": ""
+ },
+ {
+  "group": "99_系统",
+  "name": "系统参数-单据设置",
+  "url": "http://www.janssa.com:18526/emk/emkSysParamController.do?billSet",
+  "file": "03_99_系统_系统参数-单据设置.png",
+  "title": ""
+ },
+ {
+  "group": "01_进货",
+  "name": "采购入库",
+  "url": "http://www.janssa.com:18526/emk/emkMInStorageController.do?list",
+  "file": "04_01_进货_采购入库.png",
+  "title": ""
+ },
+ {
+  "group": "01_进货",
+  "name": "退货管理",
+  "url": "http://www.janssa.com:18526/emk/emkCancelOrderController.do?list",
+  "file": "05_01_进货_退货管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_进货",
+  "name": "采购对账单",
+  "url": "http://www.janssa.com:18526/emk/emkMInStorageController.do?listBill",
+  "file": "06_01_进货_采购对账单.png",
+  "title": ""
+ },
+ {
+  "group": "01_进货",
+  "name": "采购订单",
+  "url": "http://www.janssa.com:18526/emk/emkMInStorageController.do?list2",
+  "file": "07_01_进货_采购订单.png",
+  "title": ""
+ },
+ {
+  "group": "01_进货",
+  "name": "采购订单明细",
+  "url": "http://www.janssa.com:18526/emk/emkMInStorageController.do?listOrderBill",
+  "file": "08_01_进货_采购订单明细.png",
+  "title": ""
+ },
+ {
+  "group": "01_进货",
+  "name": "采购合同",
+  "url": "http://www.janssa.com:18526/emk/emkMaterialContractController.do?listCg",
+  "file": "09_01_进货_采购合同.png",
+  "title": ""
+ },
+ {
+  "group": "01_进货",
+  "name": "供应商管理",
+  "url": "http://www.janssa.com:18526/emk/emkFactoryArchivesController.do?list",
+  "file": "10_01_进货_供应商管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_销售",
+  "name": "开单管理",
+  "url": "http://www.janssa.com:18526/emk/emkMOutStorageController.do?list",
+  "file": "11_01_销售_开单管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_销售",
+  "name": "销售退货",
+  "url": "http://www.janssa.com:18526/emk/emkOutOrderController.do?list",
+  "file": "12_01_销售_销售退货.png",
+  "title": ""
+ },
+ {
+  "group": "01_销售",
+  "name": "订单管理",
+  "url": "http://www.janssa.com:18526/emk/emkProOrderController.do?list",
+  "file": "13_01_销售_订单管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_销售",
+  "name": "报价单",
+  "url": "http://www.janssa.com:18526/emk/emkOfferPriceController.do?list",
+  "file": "14_01_销售_报价单.png",
+  "title": ""
+ },
+ {
+  "group": "01_销售",
+  "name": "合同模板",
+  "url": "http://www.janssa.com:18526/emk/emkClauseController.do?list",
+  "file": "15_01_销售_合同模板.png",
+  "title": ""
+ },
+ {
+  "group": "01_销售",
+  "name": "合同管理",
+  "url": "http://www.janssa.com:18526/emk/emkMaterialContractController.do?list",
+  "file": "16_01_销售_合同管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_销售",
+  "name": "销售对账单",
+  "url": "http://www.janssa.com:18526/emk/emkMOutStorageController.do?listBill",
+  "file": "17_01_销售_销售对账单.png",
+  "title": ""
+ },
+ {
+  "group": "01_销售",
+  "name": "产品销售明细",
+  "url": "http://www.janssa.com:18526/emk/emkMOutStorageController.do?listBill2",
+  "file": "18_01_销售_产品销售明细.png",
+  "title": ""
+ },
+ {
+  "group": "01_销售",
+  "name": "销售订单明细",
+  "url": "http://www.janssa.com:18526/emk/emkProOrderController.do?listBill",
+  "file": "19_01_销售_销售订单明细.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "BOM清单",
+  "url": "http://www.janssa.com:18526/emk/emkBomController.do?list",
+  "file": "20_01_生产_BOM清单.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "生产计划",
+  "url": "http://www.janssa.com:18526/emk/emkProduceScheduleController.do?list",
+  "file": "21_01_生产_生产计划.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "MRP运算",
+  "url": "http://www.janssa.com:18526/emk/emkProduceScheduleController.do?mrp",
+  "file": "22_01_生产_MRP运算.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "生产单",
+  "url": "http://www.janssa.com:18526/emk/emkProduceController.do?list",
+  "file": "23_01_生产_生产单.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "生产领料",
+  "url": "http://www.janssa.com:18526/emk/emkReceptionController.do?list",
+  "file": "24_01_生产_生产领料.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "生产退料",
+  "url": "http://www.janssa.com:18526/emk/emkOutForumController.do?list",
+  "file": "25_01_生产_生产退料.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "验收管理",
+  "url": "http://www.janssa.com:18526/emk/emkCheckController.do?list",
+  "file": "26_01_生产_验收管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "成本管理",
+  "url": "http://www.janssa.com:18526/emk/emkProduceCostController.do?list",
+  "file": "27_01_生产_成本管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "成品入库",
+  "url": "http://www.janssa.com:18526/emk/emkScStorageController.do?list",
+  "file": "28_01_生产_成品入库.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "领料查询",
+  "url": "http://www.janssa.com:18526/emk/emkReceptionController.do?listBill",
+  "file": "29_01_生产_领料查询.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "生产日报",
+  "url": "http://www.janssa.com:18526/emk/emkProduceController.do?listBill",
+  "file": "30_01_生产_生产日报.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "成品入库统计",
+  "url": "http://www.janssa.com:18526/emk/emkScStorageController.do?report",
+  "file": "31_01_生产_成品入库统计.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "人工计件工资",
+  "url": "http://www.janssa.com:18526/emk/emkWorkWageController.do?list",
+  "file": "32_01_生产_人工计件工资.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "委外加工单",
+  "url": "http://www.janssa.com:18526/emk/emkWwjgController.do?list",
+  "file": "33_01_生产_委外加工单.png",
+  "title": ""
+ },
+ {
+  "group": "01_生产",
+  "name": "委外加工对账单",
+  "url": "http://www.janssa.com:18526/emk/emkWwjgController.do?listBill",
+  "file": "34_01_生产_委外加工对账单.png",
+  "title": ""
+ },
+ {
+  "group": "01_库存",
+  "name": "库存管理",
+  "url": "http://www.janssa.com:18526/emk/emkStorageController.do?list",
+  "file": "35_01_库存_库存管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_库存",
+  "name": "调拨管理",
+  "url": "http://www.janssa.com:18526/emk/emkStorageAllotController.do?list",
+  "file": "36_01_库存_调拨管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_库存",
+  "name": "盘点管理",
+  "url": "http://www.janssa.com:18526/emk/emkStroageCheckController.do?list",
+  "file": "37_01_库存_盘点管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_库存",
+  "name": "组合拆卸",
+  "url": "http://www.janssa.com:18526/emk/emkStorageConnactController.do?list",
+  "file": "38_01_库存_组合拆卸.png",
+  "title": ""
+ },
+ {
+  "group": "01_库存",
+  "name": "变动查询",
+  "url": "http://www.janssa.com:18526/emk/emkStorageLogController.do?list",
+  "file": "39_01_库存_变动查询.png",
+  "title": ""
+ },
+ {
+  "group": "01_库存",
+  "name": "报损管理",
+  "url": "http://www.janssa.com:18526/emk/emkStorageAllotController.do?bsList",
+  "file": "40_01_库存_报损管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_库存",
+  "name": "报溢管理",
+  "url": "http://www.janssa.com:18526/emk/emkStorageAllotController.do?byList",
+  "file": "41_01_库存_报溢管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "客户往来账",
+  "url": "http://www.janssa.com:18526/emk/emkYsPayController.do?list",
+  "file": "42_01_财务_客户往来账.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "供应商往来账",
+  "url": "http://www.janssa.com:18526/emk/emkFinanceYfCheckController.do?list",
+  "file": "43_01_财务_供应商往来账.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "现金银行",
+  "url": "http://www.janssa.com:18526/emk/emkBankRecordController.do?accountList",
+  "file": "44_01_财务_现金银行.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "应收账款",
+  "url": "http://www.janssa.com:18526/emk/emkYsPayController.do?listBill",
+  "file": "45_01_财务_应收账款.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "应付账款",
+  "url": "http://www.janssa.com:18526/emk/emkFinanceYfCheckController.do?listBill",
+  "file": "46_01_财务_应付账款.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "日常收入",
+  "url": "http://www.janssa.com:18526/emk/emkFinanceReceivableController.do?list",
+  "file": "47_01_财务_日常收入.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "日常支出",
+  "url": "http://www.janssa.com:18526/emk/emkFinanceCheckController.do?list",
+  "file": "48_01_财务_日常支出.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "工资管理",
+  "url": "http://www.janssa.com:18526/emk/emkWagesController.do?list",
+  "file": "49_01_财务_工资管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "销售开票",
+  "url": "http://www.janssa.com:18526/emk/emkInvoicesController.do?list2",
+  "file": "50_01_财务_销售开票.png",
+  "title": ""
+ },
+ {
+  "group": "01_财务",
+  "name": "进货开票",
+  "url": "http://www.janssa.com:18526/emk/emkInvoicesController.do?list1",
+  "file": "51_01_财务_进货开票.png",
+  "title": ""
+ },
+ {
+  "group": "01_资料",
+  "name": "客户管理",
+  "url": "http://www.janssa.com:18526/emk/ymkCustomController.do?list",
+  "file": "52_01_资料_客户管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_资料",
+  "name": "商品管理",
+  "url": "http://www.janssa.com:18526/emk/emkProductController.do?list",
+  "file": "53_01_资料_商品管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_资料",
+  "name": "仓库管理",
+  "url": "http://www.janssa.com:18526/emk/emkStorageSetController.do?list",
+  "file": "54_01_资料_仓库管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_资料",
+  "name": "员工管理",
+  "url": "http://www.janssa.com:18526/emk/hmStaffController.do?list",
+  "file": "55_01_资料_员工管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_资料",
+  "name": "商品期初库存",
+  "url": "http://www.janssa.com:18526/emk/emkProductController.do?list1",
+  "file": "56_01_资料_商品期初库存.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "用户管理",
+  "url": "http://www.janssa.com:18526/emk/userController.do?user",
+  "file": "57_01_系统管理_用户管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "角色管理",
+  "url": "http://www.janssa.com:18526/emk/roleController.do?role",
+  "file": "58_01_系统管理_角色管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "组织机构管理",
+  "url": "http://www.janssa.com:18526/emk/departController.do?depart",
+  "file": "59_01_系统管理_组织机构管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "参数设置",
+  "url": "http://www.janssa.com:18526/emk/emkSysParamController.do?list",
+  "file": "60_01_系统管理_参数设置.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "字段表管理",
+  "url": "http://www.janssa.com:18526/emk/hmCategoryController.do?list",
+  "file": "61_01_系统管理_字段表管理.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "期初建账",
+  "url": "http://www.janssa.com:18526/emk/emkSysParamController.do?billSet",
+  "file": "62_01_系统管理_期初建账.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "打印模板表",
+  "url": "http://www.janssa.com:18526/emk/hmPrintModelController.do?list",
+  "file": "63_01_系统管理_打印模板表.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "打印字段表",
+  "url": "http://www.janssa.com:18526/emk/hmCategoryPrintController.do?list",
+  "file": "64_01_系统管理_打印字段表.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "数字字典",
+  "url": "http://www.janssa.com:18526/emk/systemController.do?typeGroupList",
+  "file": "65_01_系统管理_数字字典.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "系统日记",
+  "url": "http://www.janssa.com:18526/emk/logController.do?log",
+  "file": "66_01_系统管理_系统日记.png",
+  "title": ""
+ },
+ {
+  "group": "01_系统管理",
+  "name": "公司LOGO",
+  "url": "http://www.janssa.com:18526/emk/emkLogoController.do?goUpdate",
+  "file": "67_01_系统管理_公司LOGO.png",
+  "title": "logo"
+ },
+ {
+  "group": "9_进货",
+  "name": "采购入库-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkMInStorageController.do?goAdd",
+  "file": "68_9_进货_采购入库-新增表单.png",
+  "title": "入库单"
+ },
+ {
+  "group": "9_进货",
+  "name": "退货管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkCancelOrderController.do?goAdd",
+  "file": "69_9_进货_退货管理-新增表单.png",
+  "title": "退货单"
+ },
+ {
+  "group": "9_进货",
+  "name": "采购合同-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkMaterialContractController.do?goAdd",
+  "file": null,
+  "error": "page exception: Exception!"
+ },
+ {
+  "group": "9_进货",
+  "name": "供应商管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkFactoryArchivesController.do?goAdd",
+  "file": "71_9_进货_供应商管理-新增表单.png",
+  "title": "供应商"
+ },
+ {
+  "group": "9_销售",
+  "name": "开单管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkMOutStorageController.do?goAdd",
+  "file": "72_9_销售_开单管理-新增表单.png",
+  "title": "采购出库表"
+ },
+ {
+  "group": "9_销售",
+  "name": "销售退货-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkOutOrderController.do?goAdd",
+  "file": "73_9_销售_销售退货-新增表单.png",
+  "title": "销售退货表"
+ },
+ {
+  "group": "9_销售",
+  "name": "订单管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkProOrderController.do?goAdd",
+  "file": "74_9_销售_订单管理-新增表单.png",
+  "title": "订单管理"
+ },
+ {
+  "group": "9_销售",
+  "name": "报价单-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkOfferPriceController.do?goAdd",
+  "file": "75_9_销售_报价单-新增表单.png",
+  "title": "报价单"
+ },
+ {
+  "group": "9_销售",
+  "name": "合同模板-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkClauseController.do?goAdd",
+  "file": "76_9_销售_合同模板-新增表单.png",
+  "title": "合同条款表"
+ },
+ {
+  "group": "9_生产",
+  "name": "BOM清单-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkBomController.do?goAdd",
+  "file": "77_9_生产_BOM清单-新增表单.png",
+  "title": "bom清单"
+ },
+ {
+  "group": "9_生产",
+  "name": "生产计划-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkProduceScheduleController.do?goAdd",
+  "file": "78_9_生产_生产计划-新增表单.png",
+  "title": "生产计划"
+ },
+ {
+  "group": "9_生产",
+  "name": "生产单-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkProduceController.do?goAdd",
+  "file": "79_9_生产_生产单-新增表单.png",
+  "title": "生产计划"
+ },
+ {
+  "group": "9_生产",
+  "name": "生产领料-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkReceptionController.do?goAdd",
+  "file": "80_9_生产_生产领料-新增表单.png",
+  "title": "生产领料"
+ },
+ {
+  "group": "9_生产",
+  "name": "生产退料-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkOutForumController.do?goAdd",
+  "file": "81_9_生产_生产退料-新增表单.png",
+  "title": "生产退料"
+ },
+ {
+  "group": "9_生产",
+  "name": "验收管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkCheckController.do?goAdd",
+  "file": "82_9_生产_验收管理-新增表单.png",
+  "title": "验收单"
+ },
+ {
+  "group": "9_生产",
+  "name": "成本管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkProduceCostController.do?goAdd",
+  "file": "83_9_生产_成本管理-新增表单.png",
+  "title": "成本管理"
+ },
+ {
+  "group": "9_生产",
+  "name": "成品入库-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkScStorageController.do?goAdd",
+  "file": "84_9_生产_成品入库-新增表单.png",
+  "title": "成品入库"
+ },
+ {
+  "group": "9_生产",
+  "name": "人工计件工资-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkWorkWageController.do?goAdd",
+  "file": "85_9_生产_人工计件工资-新增表单.png",
+  "title": "人工计件工资"
+ },
+ {
+  "group": "9_生产",
+  "name": "委外加工单-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkWwjgController.do?goAdd",
+  "file": "86_9_生产_委外加工单-新增表单.png",
+  "title": "生产领料"
+ },
+ {
+  "group": "9_库存",
+  "name": "库存管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkStorageController.do?goAdd",
+  "file": "87_9_库存_库存管理-新增表单.png",
+  "title": "库存表"
+ },
+ {
+  "group": "9_库存",
+  "name": "调拨管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkStorageAllotController.do?goAdd",
+  "file": "88_9_库存_调拨管理-新增表单.png",
+  "title": "库存组装表"
+ },
+ {
+  "group": "9_库存",
+  "name": "盘点管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkStroageCheckController.do?goAdd",
+  "file": "89_9_库存_盘点管理-新增表单.png",
+  "title": "盘点表"
+ },
+ {
+  "group": "9_库存",
+  "name": "组合拆卸-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkStorageConnactController.do?goAdd",
+  "file": "90_9_库存_组合拆卸-新增表单.png",
+  "title": "库存组装表"
+ },
+ {
+  "group": "9_库存",
+  "name": "变动查询-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkStorageLogController.do?goAdd",
+  "file": "91_9_库存_变动查询-新增表单.png",
+  "title": "库存日记表"
+ },
+ {
+  "group": "9_财务",
+  "name": "客户往来账-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkYsPayController.do?goAdd",
+  "file": "92_9_财务_客户往来账-新增表单.png",
+  "title": "收款"
+ },
+ {
+  "group": "9_财务",
+  "name": "供应商往来账-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkFinanceYfCheckController.do?goAdd",
+  "file": "93_9_财务_供应商往来账-新增表单.png",
+  "title": "收款"
+ },
+ {
+  "group": "9_财务",
+  "name": "现金银行-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkBankRecordController.do?goAdd",
+  "file": "94_9_财务_现金银行-新增表单.png",
+  "title": "现金银行"
+ },
+ {
+  "group": "9_财务",
+  "name": "日常收入-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkFinanceReceivableController.do?goAdd",
+  "file": "95_9_财务_日常收入-新增表单.png",
+  "title": "日常收入"
+ },
+ {
+  "group": "9_财务",
+  "name": "日常支出-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkFinanceCheckController.do?goAdd",
+  "file": "96_9_财务_日常支出-新增表单.png",
+  "title": "日常收入"
+ },
+ {
+  "group": "9_财务",
+  "name": "工资管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkWagesController.do?goAdd",
+  "file": "97_9_财务_工资管理-新增表单.png",
+  "title": "工资管理"
+ },
+ {
+  "group": "9_财务",
+  "name": "销售开票-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkInvoicesController.do?goAdd",
+  "file": "98_9_财务_销售开票-新增表单.png",
+  "title": "发票"
+ },
+ {
+  "group": "9_资料",
+  "name": "客户管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/ymkCustomController.do?goAdd",
+  "file": "99_9_资料_客户管理-新增表单.png",
+  "title": "客户表"
+ },
+ {
+  "group": "9_资料",
+  "name": "商品管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkProductController.do?goAdd",
+  "file": "100_9_资料_商品管理-新增表单.png",
+  "title": "商品表"
+ },
+ {
+  "group": "9_资料",
+  "name": "仓库管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkStorageSetController.do?goAdd",
+  "file": "101_9_资料_仓库管理-新增表单.png",
+  "title": "仓库表"
+ },
+ {
+  "group": "9_资料",
+  "name": "员工管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/hmStaffController.do?goAdd",
+  "file": "102_9_资料_员工管理-新增表单.png",
+  "title": "人员信息表"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "用户管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/userController.do?goAdd",
+  "file": null,
+  "error": "page exception: Exception!"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "角色管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/roleController.do?goAdd",
+  "file": null,
+  "error": "page exception: Exception!"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "组织机构管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/departController.do?goAdd",
+  "file": null,
+  "error": "page exception: Exception!"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "参数设置-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkSysParamController.do?goAdd",
+  "file": "106_9_系统管理_参数设置-新增表单.png",
+  "title": "参数表"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "字段表管理-新增表单",
+  "url": "http://www.janssa.com:18526/emk/hmCategoryController.do?goAdd",
+  "file": "107_9_系统管理_字段表管理-新增表单.png",
+  "title": "字段表"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "打印模板表-新增表单",
+  "url": "http://www.janssa.com:18526/emk/hmPrintModelController.do?goAdd",
+  "file": "108_9_系统管理_打印模板表-新增表单.png",
+  "title": "打印模板表"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "打印字段表-新增表单",
+  "url": "http://www.janssa.com:18526/emk/hmCategoryPrintController.do?goAdd",
+  "file": "109_9_系统管理_打印字段表-新增表单.png",
+  "title": "字段表"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "数字字典-新增表单",
+  "url": "http://www.janssa.com:18526/emk/systemController.do?goAdd",
+  "file": null,
+  "error": "page exception: Exception!"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "系统日记-新增表单",
+  "url": "http://www.janssa.com:18526/emk/logController.do?goAdd",
+  "file": null,
+  "error": "page exception: Exception!"
+ },
+ {
+  "group": "9_系统管理",
+  "name": "公司LOGO-新增表单",
+  "url": "http://www.janssa.com:18526/emk/emkLogoController.do?goAdd",
+  "file": "112_9_系统管理_公司LOGO-新增表单.png",
+  "title": "logo"
+ },
+ {
+  "group": "01_报表",
+  "name": "商品销售日报",
+  "url": "http://www.janssa.com:18526/emk/saleDayControl.do?list",
+  "file": "04_01_报表_商品销售日报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "商品销售月报",
+  "url": "http://www.janssa.com:18526/emk/saleMonthControl.do?list",
+  "file": "05_01_报表_商品销售月报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "商品销售季报",
+  "url": "http://www.janssa.com:18526/emk/saleQuarterControl.do?list",
+  "file": "06_01_报表_商品销售季报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "商品销售年报",
+  "url": "http://www.janssa.com:18526/emk/saleYearControl.do?list",
+  "file": "07_01_报表_商品销售年报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "客户分类日报",
+  "url": "http://www.janssa.com:18526/emk/cusDayControl.do?list",
+  "file": "08_01_报表_客户分类日报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "客户分类月报",
+  "url": "http://www.janssa.com:18526/emk/cusMonthControl.do?list",
+  "file": "09_01_报表_客户分类月报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "客户分类季报",
+  "url": "http://www.janssa.com:18526/emk/cusQuarterControl.do?list",
+  "file": "10_01_报表_客户分类季报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "客户分类年报",
+  "url": "http://www.janssa.com:18526/emk/cusYearControl.do?list",
+  "file": "11_01_报表_客户分类年报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "商品分类日报",
+  "url": "http://www.janssa.com:18526/emk/cateDayControl.do?list",
+  "file": "12_01_报表_商品分类日报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "商品分类月报",
+  "url": "http://www.janssa.com:18526/emk/cateMonthControl.do?list",
+  "file": "13_01_报表_商品分类月报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "商品分类季报",
+  "url": "http://www.janssa.com:18526/emk/cateQuarterControl.do?list",
+  "file": "14_01_报表_商品分类季报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "商品分类年报",
+  "url": "http://www.janssa.com:18526/emk/cateYearControl.do?list",
+  "file": "15_01_报表_商品分类年报.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "商品出入统计",
+  "url": "http://www.janssa.com:18526/emk/saleDayControl.do?crList",
+  "file": "16_01_报表_商品出入统计.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "销售员报表",
+  "url": "http://www.janssa.com:18526/emk/saleStaffControl.do?list",
+  "file": "17_01_报表_销售员报表.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "商品销售明细表",
+  "url": "http://www.janssa.com:18526/emk/saleDetailControl.do?list",
+  "file": "18_01_报表_商品销售明细表.png",
+  "title": ""
+ },
+ {
+  "group": "01_报表",
+  "name": "老板报表",
+  "url": "http://www.janssa.com:18526/emk/saleBossControl.do?list",
+  "file": "19_01_报表_老板报表.png",
+  "title": ""
+ }
+]

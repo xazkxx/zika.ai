@@ -1,0 +1,49 @@
+{
+ "datagrid": "emkStorageSetController.do?datagrid&field=id,createName,createBy,createDate,sysOrgCode,storageName,storageAddress,remark,",
+ "field": "id,createName,createBy,createDate,sysOrgCode,storageName,storageAddress,remark,",
+ "total": 3,
+ "columns": {
+  "id": "主键",
+  "createName": "创建人名称",
+  "createBy": "创建人登录名称",
+  "sysOrgCode": "所属部门",
+  "storageName": "仓库名称",
+  "storageAddress": "仓库地址",
+  "remark": "备注"
+ },
+ "rows": [
+  {
+   "createBy": "zika2023",
+   "sysOrgCode": "甲47",
+   "remark": "",
+   "state": "closed",
+   "id": "2c9262259622134c019624e6f6873f12",
+   "storageAddress": "陕西省西安市高新区唐延南路11号逸翠园i都会3号楼919室",
+   "createName": "范先生",
+   "createDate": "2025-04-11 20:50:38.0",
+   "storageName": "寨卡仓库"
+  },
+  {
+   "createBy": "zika2023",
+   "sysOrgCode": "甲47",
+   "remark": "",
+   "state": "closed",
+   "id": "2c926225977947b401977d4e5f4b5f3c",
+   "storageAddress": "",
+   "createName": "范先生",
+   "createDate": "2025-06-17 17:52:58.0",
+   "storageName": "寨纬仓库"
+  },
+  {
+   "createBy": "zika2023",
+   "sysOrgCode": "甲47",
+   "remark": "",
+   "state": "closed",
+   "id": "2c926225977947b401977d4e85235f53",
+   "storageAddress": "",
+   "createName": "范先生",
+   "createDate": "2025-06-17 17:53:07.0",
+   "storageName": "华诺迈仓库"
+  }
+ ]
+}

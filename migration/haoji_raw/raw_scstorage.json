@@ -1,0 +1,58 @@
+{
+ "datagrid": "emkScStorageController.do?datagrid&flag=0&state=&field=id,createBy,createDate,sysOrgCode,scheduleName,produceName,a01a34a01,a01a34a03,storageName,a01a34a07,businesser,a01a34a02,total,money,state,isFinish,",
+ "field": "id,createBy,createDate,sysOrgCode,scheduleName,produceName,a01a34a01,a01a34a03,storageName,a01a34a07,businesser,a01a34a02,total,money,state,isFinish,",
+ "total": 2,
+ "columns": {
+  "scheduleName": "生产计划单号",
+  "produceName": "生产单号",
+  "id": "主键",
+  "createBy": "创建人登录名称",
+  "sysOrgCode": "所属部门",
+  "a01a34a01": "成品入库单号",
+  "a01a34a03": "入库日期",
+  "storageName": "入库仓库",
+  "a01a34a07": "生产车间",
+  "businesser": "经办人",
+  "a01a34a02": "备注",
+  "total": "商品数量",
+  "money": "金额"
+ },
+ "rows": [
+  {
+   "scheduleName": "请选择",
+   "a01a34a03": "2025-04-08",
+   "a01a34a02": "",
+   "a01a34a01": "CPRK202504080001",
+   "produceName": "请选择",
+   "isFinish": "1",
+   "a01a34a07": "01",
+   "storageName": "西安",
+   "createBy": "zika2023",
+   "total": "2.000",
+   "money": "460.000",
+   "sysOrgCode": "甲47",
+   "state": "1",
+   "id": "2c9262259610cec5019615754f0a10e2",
+   "businesser": "范先生",
+   "createDate": "2025-04-08 20:52:12.0"
+  },
+  {
+   "scheduleName": "SCJH202507160001",
+   "a01a34a03": "2025-07-16",
+   "a01a34a02": "",
+   "a01a34a01": "CPRK202507160001",
+   "produceName": "",
+   "isFinish": "1",
+   "a01a34a07": "",
+   "storageName": "华诺迈仓库",
+   "createBy": "zika2023",
+   "total": "5.00",
+   "money": "1150.00",
+   "sysOrgCode": "甲47",
+   "state": "1",
+   "id": "2c926228980e92b90198127c68cf6347",
+   "businesser": "范先生",
+   "createDate": "2025-07-16 17:06:40.0"
+  }
+ ]
+}
