@@ -89,7 +89,7 @@ E:\AI\Postgres\bin\pg_restore.exe -h 127.0.0.1 -U erp -d erp --clean --if-exists
   "E:\AI\ERP软件\backup\erp_20261019_final.dump"
 ```
 
-密码 `erp123456`（或先 `set PGPASSWORD=erp123456`）。
+密码见本机 `E:\AI\ERP软件\.env` 的 `DATABASE_URL`（**该文件不在仓库内**，绝不写进文档）。
 
 ---
 

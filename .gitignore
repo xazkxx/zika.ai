@@ -63,6 +63,18 @@ test_invoices/*.tmp
 .env.*
 !.env.example
 
+# 私钥与证书：certs/ 里是 mkcert 的 CA 私钥与站点私钥，绝不能进仓库
+# （frontend/public/ca/rootCA.pem 是公开 CA 证书，供手机安装，保留在库内）
+certs/
+*.key
+*-key.pem
+*.pfx
+*.p12
+*.jks
+
+# 归档快照目录：.backup/ 里有明文连接串（2026-10-26 已移出版本控制）
+.backup/
+
 # ---- 8. Python / 测试缓存 ----
 __pycache__/
 *.py[cod]

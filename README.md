@@ -47,8 +47,9 @@ frontend/           # 前端（React + Vite）
   public/           # PWA 清单、服务工作者、图标、CA 证书
   src/              # App.jsx 主界面
 harmonyos/          # 鸿蒙端（DevEco Studio / ArkTS，WebView 壳）
-certs/              # mkcert 生成的 HTTPS 证书
+certs/              # mkcert 生成的 HTTPS 证书（私钥不入库，见「证书说明」）
 tests/              # 后端回归测试（342 例，含 prod_snapshot.py 正式库快照保护）
+scripts/ops/        # 运维脚本（库+附件备份 / 数据库密码轮换）
 ```
 
 ## 快速开始
@@ -85,6 +86,30 @@ npm run dev
 - 证书由 mkcert 生成，位于 certs/ 目录，有效期至 2028-12-24
 - 电脑 IP 若变化（路由器 DHCP），需重新生成证书：
   `certs\mkcert.exe -cert-file certs\cert.pem -key-file certs\key.pem <新IP> localhost 127.0.0.1`
+- **私钥不在 Git 里**：`certs/` 已加入 .gitignore（2026-10-26 移出版本控制）。
+  换电脑或重装系统前，请手工把 `certs\key.pem`、`certs\rootCA-key.pem` 复制到安全位置，
+  否则手机端要重新安装 CA。公开 CA 证书 `frontend/public/ca/rootCA.pem` 仍在库内（给手机安装用）。
+
+## 运维脚本（scripts/ops）
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts\ops\backup_db.ps1` | pg_dump 全库 + 打包 `data/` 附件（合同/发票原件），各保留最近 14 份，追加写 `backup\backup_history.log` |
+| `scripts\ops\rotate_db_password.ps1` | 改 PostgreSQL 密码 → 同步 `.env` → 用新密码回连验证，一条命令完成 |
+
+数据库密码只存在 `.env`（不入库），所有脚本都从那里读，**改密码不需要改任何脚本**：
+
+```powershell
+# 1) 干跑：只打印将要做的事，不动数据库
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\rotate_db_password.ps1 -DryRun
+# 2) 真改：自动生成 24 位强密码（也可 -NewPassword '自定义'）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\rotate_db_password.ps1
+# 3) 改完重启后端（uvicorn 只在启动时读 .env）
+```
+
+- 计划任务「ERP数据库备份」（每日 21:37）入口仍是 `backup\backup.ps1`，
+  它现在只是 3 行转发器，真正的脚本是版本化的 `scripts\ops\backup_db.ps1`，任务本身无需改动。
+- `backup/` 整个目录被 .gitignore 忽略，所以脚本的权威副本放在 `scripts/ops/`。
 
 ## 下一步计划
 
