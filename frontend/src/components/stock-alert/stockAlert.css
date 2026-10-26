@@ -1,0 +1,606 @@
+/* ==========================================================================
+ * 库存预警看板 · 样式
+ * --------------------------------------------------------------------------
+ * 【融入 45 页系统的三个硬约束】
+ *   1. 没有 body / html 这类全局选择器。
+ *   2. 所有类名带 erpstock- 前缀，所有 CSS 变量挂在 .erpstock 上而不是 :root，
+ *      不会和现有主题变量撞名。
+ *   3. 盒模型重置收进 .erpstock 作用域，不外溢。
+ *
+ * 想换肤：只改 .erpstock 里那一组变量。
+ * ========================================================================== */
+
+.erpstock {
+  /* ---- 主题变量 ---- */
+  --erpstock-bg: #f4f5f7;
+  --erpstock-card: #ffffff;
+  --erpstock-border: #e8eaed;
+  --erpstock-text-1: #1f2329;
+  --erpstock-text-2: #646a73;
+  --erpstock-text-3: #8f959e;
+  --erpstock-brand: #3370ff;
+  --erpstock-accent: #f59e0b;
+  --erpstock-up: #e5484d;      /* 涨 = 红（国内习惯） */
+  --erpstock-down: #17a34a;    /* 跌 = 绿 */
+  --erpstock-grid: #eef0f3;
+  --erpstock-radius: 12px;
+  --erpstock-shadow: 0 1px 2px rgba(31, 35, 41, 0.04), 0 2px 8px rgba(31, 35, 41, 0.04);
+
+  /* ---- 容器 ----
+   * 和 eprdash 同一套策略：不设背景 / 留白 / 圆角，
+   * 底色交给宿主 body 的浅蓝渐变，内边距交给页面容器。
+   * 将来要独立使用（比如单独一个白底页面），把下面三行注释打开即可。 */
+  max-width: none;
+  margin: 0 auto;
+  padding: 0;
+  /* padding: 24px 20px 40px; */
+  /* background: var(--erpstock-bg); */
+  /* border-radius: 8px; */
+
+  color: var(--erpstock-text-1);
+  font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 盒模型只在本组件内生效 */
+.erpstock *,
+.erpstock *::before,
+.erpstock *::after {
+  box-sizing: border-box;
+}
+
+.erpstock__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.erpstock__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.erpstock__sub {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--erpstock-text-3);
+}
+
+/* 汇总条：把关键异常数量摆到标题右侧，进页面第一眼就能看到 */
+.erpstock__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.erpstock__sum-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--erpstock-text-2);
+  background: var(--erpstock-card);
+  border: 1px solid var(--erpstock-border);
+  border-radius: 8px;
+}
+
+.erpstock__sum-num {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.erpstock__sum-num--urgent { color: var(--erpstock-up); }
+.erpstock__sum-num--warn { color: var(--erpstock-accent); }
+/* 「正常」刻意弱化：汇总条要突出的是需要处理的，不是不需要处理的 */
+.erpstock__sum-num--normal { color: var(--erpstock-text-3); }
+
+/* ============ 错误态 ============ */
+.erpstock-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #a8071a;
+  background: #fff1f0;
+  border: 1px solid #ffccc7;
+  border-radius: 8px;
+}
+
+.erpstock-error__btn {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: #a8071a;
+  background: #fff;
+  border: 1px solid #ffa39e;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.erpstock-error__btn:hover { background: #fff5f5; }
+
+/* ============ 1. 顶部 4 个 KPI 卡片 ============ */
+.erpstock-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.erpstock-kpi {
+  position: relative;
+  padding: 18px 18px 14px;
+  overflow: hidden;
+  background: var(--erpstock-card);
+  border: 1px solid var(--erpstock-border);
+  border-radius: var(--erpstock-radius);
+  box-shadow: var(--erpstock-shadow);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.erpstock-kpi:hover {
+  box-shadow: 0 4px 16px rgba(31, 35, 41, 0.08);
+  transform: translateY(-1px);
+}
+
+.erpstock-kpi__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--erpstock-text-2);
+}
+
+.erpstock-kpi__dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.erpstock-kpi__value {
+  margin-top: 10px;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.erpstock-kpi__unit {
+  margin-left: 4px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--erpstock-text-3);
+}
+
+.erpstock-kpi__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.erpstock-kpi__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.erpstock-kpi__delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.erpstock-kpi__delta--up { color: var(--erpstock-up); }
+.erpstock-kpi__delta--down { color: var(--erpstock-down); }
+.erpstock-kpi__delta--flat { color: var(--erpstock-text-3); }
+
+.erpstock-kpi__note {
+  font-size: 12px;
+  color: var(--erpstock-text-3);
+}
+
+/* 反向指标状态标：上涨 = 需关注 */
+.erpstock-kpi__chip {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  border-radius: 4px;
+}
+
+.erpstock-kpi__chip--warn { color: #d4380d; background: #fff2e8; }
+.erpstock-kpi__chip--ok { color: #0f9d58; background: #e9f7ef; }
+
+.erpstock-kpi__spark {
+  flex: 0 0 auto;
+  height: 28px;
+}
+
+/* ============ 2. 中间主图表 ============ */
+.erpstock-panel {
+  padding: 18px 18px 12px;
+  background: var(--erpstock-card);
+  border: 1px solid var(--erpstock-border);
+  border-radius: var(--erpstock-radius);
+  box-shadow: var(--erpstock-shadow);
+}
+
+.erpstock-panel + .erpstock-panel { margin-top: 16px; }
+
+.erpstock-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+
+.erpstock-panel__title {
+  display: flex;
+  align-items: center;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.erpstock-panel__count {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--erpstock-text-3);
+}
+
+.erpstock-panel__desc {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--erpstock-text-3);
+}
+
+.erpstock-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.erpstock-tabs {
+  display: inline-flex;
+  padding: 3px;
+  background: #f4f5f7;
+  border-radius: 8px;
+}
+
+.erpstock-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--erpstock-text-2);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.erpstock-tab:hover { color: var(--erpstock-text-1); }
+
+.erpstock-tab.is-active {
+  color: var(--erpstock-brand);
+  font-weight: 500;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(31, 35, 41, 0.06);
+}
+
+.erpstock-tab__num {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.68;
+}
+
+/* 图表容器：宽度自适应，高度固定；pan-y 让移动端横滑看图、竖滑继续滚页面 */
+.erpstock-chart {
+  position: relative;
+  width: 100%;
+  height: 300px;
+  touch-action: pan-y;
+}
+
+.erpstock-chart__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+/* ============ 悬浮提示 ============ */
+.erpstock-tooltip {
+  position: absolute;
+  z-index: 5;
+  min-width: 158px;
+  padding: 8px 10px;
+  pointer-events: none;
+  opacity: 0;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid var(--erpstock-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(31, 35, 41, 0.12);
+  transform: translate(-50%, -100%);
+  transition: opacity 0.12s ease;
+}
+
+.erpstock-tooltip.is-show { opacity: 1; }
+
+/* 上方放不下时翻到数据点下方，避免顶到面板标题 */
+.erpstock-tooltip.is-below { transform: translate(-50%, 0); }
+
+.erpstock-tooltip__date {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--erpstock-text-3);
+}
+
+.erpstock-tooltip__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.erpstock-tooltip__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--erpstock-text-2);
+}
+
+.erpstock-tooltip__key {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.erpstock-tooltip__val {
+  font-weight: 600;
+  color: var(--erpstock-text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============ 图例 ============ */
+.erpstock-legend {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 2px 4px 8px 56px;
+}
+
+.erpstock-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--erpstock-text-2);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.erpstock-legend__item.is-off { opacity: 0.38; }
+
+.erpstock-legend__key {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.erpstock-legend__key--dash {
+  height: 0;
+  background: none !important;
+  border-top: 2px dashed currentColor;
+}
+
+.erpstock-legend__axis {
+  font-size: 11px;
+  color: var(--erpstock-text-3);
+}
+
+/* ============ 3. 底部：缺货预警商品明细 ============ */
+.erpstock-table-wrap {
+  position: relative;
+  overflow-x: auto;
+  margin-top: 6px;
+}
+
+.erpstock-table {
+  width: 100%;
+  /* 9 列，窄屏靠横向滚动兜住，不挤压内容 */
+  min-width: 880px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.erpstock-table th {
+  padding: 9px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--erpstock-text-3);
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--erpstock-border);
+}
+
+.erpstock-table td {
+  padding: 11px 10px;
+  border-bottom: 1px solid #f2f3f5;
+  vertical-align: middle;
+}
+
+/* 最后一行不画线，避免和面板底部叠出一道双线 */
+.erpstock-table tbody tr:last-child td { border-bottom: 0; }
+
+.erpstock-table tbody tr:hover td { background: #fafbfc; }
+
+.erpstock-table__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.erpstock-table__center { text-align: center; }
+
+.erpstock-table__col-name { min-width: 180px; }
+
+.erpstock-table__name {
+  font-weight: 500;
+  color: var(--erpstock-text-1);
+}
+
+.erpstock-table__sku {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--erpstock-text-3);
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+.erpstock-table__muted { color: var(--erpstock-text-2); }
+.erpstock-table__strong { font-weight: 600; }
+
+/* 预计可用天数：这列是"紧急不紧急"的直接依据，比缺口更该抓眼球，
+   所以按档位着色，并把字号提一档 */
+.erpstock-table__days {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.erpstock-table__days--urgent { color: var(--erpstock-up); }
+.erpstock-table__days--warn { color: #d46b08; }
+.erpstock-table__days--normal { color: var(--erpstock-text-3); font-weight: 400; }
+
+/* 缺口：整表里最该被看到的一列 */
+.erpstock-table__gap {
+  display: inline-block;
+  padding: 1px 7px;
+  color: #e5484d;
+  background: #fff1f0;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.erpstock-empty {
+  padding: 40px 0;
+  font-size: 13px;
+  color: var(--erpstock-text-3);
+  text-align: center;
+}
+
+/* ============ 紧急度标签 ============ */
+.erpstock-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+.erpstock-chip--urgent {
+  color: #a8071a;
+  background: #fff1f0;
+  border-color: #ffccc7;
+}
+
+.erpstock-chip--warn {
+  color: #d46b08;
+  background: #fff7e6;
+  border-color: #ffe7ba;
+}
+
+.erpstock-chip--normal {
+  color: #0f7b3f;
+  background: #e9f7ef;
+  border-color: #b7ebd2;
+}
+
+/* ============ 骨架屏 & loading ============ */
+.erpstock-skel {
+  background: linear-gradient(90deg, #f2f3f5 25%, #e9ebef 37%, #f2f3f5 63%);
+  background-size: 400% 100%;
+  border-radius: 6px;
+  animation: erpstock-shimmer 1.4s ease infinite;
+}
+
+.erpstock-skel--label { width: 40%; height: 14px; }
+.erpstock-skel--value { width: 62%; height: 28px; margin-top: 12px; }
+.erpstock-skel--foot { width: 80%; height: 18px; margin-top: 14px; }
+.erpstock-skel--chart { width: 100%; height: 100%; border-radius: 8px; }
+.erpstock-skel--table { width: 100%; height: 260px; margin-top: 10px; }
+
+.erpstock-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #dfe3e8;
+  border-top-color: var(--erpstock-brand);
+  border-radius: 50%;
+  animation: erpstock-spin 0.7s linear infinite;
+}
+
+@keyframes erpstock-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+@keyframes erpstock-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .erpstock-skel,
+  .erpstock-spinner { animation: none; }
+}
+
+/* ============ 响应式 ============ */
+@media (max-width: 1080px) {
+  .erpstock-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  /* 这里刻意不再给 .erpstock 加 padding —— 内边距统一由宿主页面提供，
+     否则小屏会突然多出一圈留白，和桌面端不一致 */
+  .erpstock-kpis { grid-template-columns: 1fr; }
+  .erpstock-kpi__value { font-size: 24px; }
+  .erpstock-legend { padding-left: 8px; }
+  .erpstock__head { flex-direction: column; }
+  .erpstock-panel__head { flex-direction: column; gap: 10px; }
+}

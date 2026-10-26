@@ -29,7 +29,16 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 # 文件名里允许保留的字符；其余一律换成下划线
 _SAFE_NAME_RE = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff._-]+")
-_ALLOWED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff", ".ofd"}
+# 允许**原样保留**后缀的名单。不在名单里的一律改写成 `.bin` ——
+# 这是为了不让落盘文件名变成 `.exe` / `.bat` 这类"双击就能跑"的东西。
+#
+# 第 13 批加 `.doc` / `.docx`：合同原件大量是 Word。之前它们会被写成 `.bin`，
+# 用户下载下来双击打不开 —— 而 `.doc` 只是**被保存**，本系统从不执行它，
+# 加进白名单不会带来新的执行面。`.exe` / `.bat` / `.cmd` / `.ps1` / `.js` 仍然没有。
+_ALLOWED_SUFFIXES = {
+    ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff", ".ofd",
+    ".doc", ".docx",
+}
 
 
 def storage_root() -> Path:

@@ -62,8 +62,10 @@ def list_journal_entries(
             "related_order_id": e.related_order_id,
             "doc_no": e.doc_no,
             "flow_id": e.flow_id,
-            "total_debit": e.total_debit,
-            "total_credit": e.total_credit,
+            # 金额列是 numeric → SQLAlchemy 回来是 Decimal，FastAPI 会把它序列化成**字符串**，
+            # 前端/断言做 `-` 运算会直接 TypeError。这里显式转 float，保证接口契约是数字。
+            "total_debit": float(e.total_debit or 0),
+            "total_credit": float(e.total_credit or 0),
         }
         for e in q.all()
     ]
@@ -91,14 +93,14 @@ def get_journal_entry(entry_id: int, db: Session = Depends(get_db), _: User = De
         "related_order_id": entry.related_order_id,
         "doc_no": entry.doc_no,
         "flow_id": entry.flow_id,
-        "total_debit": entry.total_debit,
-        "total_credit": entry.total_credit,
+        "total_debit": float(entry.total_debit or 0),
+        "total_credit": float(entry.total_credit or 0),
         "lines": [
             {
                 "account_code": l.account_code,
                 "account_name": l.account_name,
-                "debit": l.debit,
-                "credit": l.credit,
+                "debit": float(l.debit or 0),
+                "credit": float(l.credit or 0),
                 "summary": l.summary,
             }
             for l in lines

@@ -1,0 +1,159 @@
+/**
+ * 档案导入弹窗（ArchiveImportDialog）的样式
+ *
+ * 只写 `.archive-import*`，复用全局 `.modal-*` 骨架。
+ *
+ * ⚠️ `.modal-card` 的宽度有全局上限（`max-width`），所以这里必须
+ *    **width + max-width 双写**：只写一个会被基础类的 640px 钳住，
+ *    三步流程挤在 640 里会变成一列小字，看不出"这是三步"。
+ */
+
+.archive-import {
+  width: 620px;
+  max-width: 620px;
+}
+
+.archive-import .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 62vh;
+  overflow-y: auto;
+}
+
+/* 一步一块：序号圆点 + 右侧说明。竖排的"① ② ③"比水平步骤条更适合
+   内容长度不一的场景（模板步骤只有一句话，预检步骤有统计和错误清单） */
+.archive-import__step {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border, #d8e0ea);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.archive-import__step--done {
+  border-color: rgba(22, 163, 74, 0.35);
+  background: rgba(22, 163, 74, 0.05);
+}
+
+.archive-import__no {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--primary, #2563eb);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.archive-import__no--ok {
+  background: #16a34a;
+}
+
+.archive-import__body {
+  flex: 1 1 auto;
+  /* ⚠️ flex 子项省略号/换行的必备项：不给 min-width:0，长中文会把这一行撑破 */
+  min-width: 0;
+}
+
+.archive-import__body h4 {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg-strong, #0f172a);
+}
+
+.archive-import__body p {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-muted, #64748b);
+}
+
+.archive-import__file {
+  display: block;
+  width: 100%;
+  font-size: 12.5px;
+}
+
+.archive-import__busy {
+  margin: 8px 0 0 !important;
+  color: var(--primary, #2563eb) !important;
+}
+
+/* 预检统计：四个小胶囊并排，数字加粗 —— 一眼看出"会动多少条" */
+.archive-import__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.archive-import__stat {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--gray-50, #f8fafc);
+  border: 1px solid var(--divider, #eef2f7);
+  font-size: 12.5px;
+  color: var(--text-muted, #64748b);
+}
+
+.archive-import__stat b {
+  font-size: 14px;
+  color: var(--fg-strong, #0f172a);
+}
+
+.archive-import__stat--new {
+  border-color: rgba(37, 99, 235, 0.3);
+  background: rgba(37, 99, 235, 0.06);
+}
+
+.archive-import__stat--upd {
+  border-color: rgba(217, 119, 6, 0.3);
+  background: rgba(217, 119, 6, 0.07);
+}
+
+.archive-import__stat--bad {
+  border-color: rgba(220, 38, 38, 0.3);
+  background: rgba(220, 38, 38, 0.07);
+}
+
+.archive-import__stat--bad b {
+  color: #b91c1c;
+}
+
+.archive-import__warn {
+  margin: 10px 0 0 !important;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(217, 119, 6, 0.3);
+  background: rgba(217, 119, 6, 0.07);
+  color: #92400e !important;
+}
+
+.archive-import__errors {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #b91c1c;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.archive-import__error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  background: rgba(220, 38, 38, 0.06);
+  color: #b91c1c;
+  font-size: 12.5px;
+  line-height: 1.6;
+}

@@ -34,7 +34,6 @@ PERMISSION_CATALOG: list[dict[str, object]] = [
             {"key": "warehouses", "label": "仓库档案"},
             {"key": "staff", "label": "员工档案"},
             {"key": "opening-stock", "label": "商品期初库存"},
-            {"key": "dataio", "label": "导入导出"},
         ],
     },
     {
@@ -56,7 +55,15 @@ PERMISSION_CATALOG: list[dict[str, object]] = [
             {"key": "quotation", "label": "报价单"},
             {"key": "sales-return", "label": "销售退货"},
             {"key": "contracts", "label": "购销合同"},
-            {"key": "sales-statement", "label": "销售对账单"},
+            # 第 13 批（第三阶段）：合同台账 —— 进/出双向台账、导出、原件与 OCR 展示。
+            # **必须追加在组末**：`default_menu_specs()` 用 items 下标 ×10 当 sort_order，
+            # 插在中间会与既有行撞号；`_backfill_builtin_menus` 只补不改不重编号，
+            # 所以新菜单只能落在分组末尾（想调整顺序由管理员在「菜单管理」里拖）。
+            {"key": "contracts-ledger", "label": "合同台账"},
+            # 第 13 批（第三阶段第三步）：增强版对账单编辑器。
+            # 与老页面「销售对账单」（sales-statement，实时聚合、只读）是两套东西：
+            # 这个操作 statements/statement_items 真表，能存草稿、勾选核对、打印。
+            {"key": "statements-editor", "label": "增强对账单"},
         ],
     },
     {
@@ -69,6 +76,7 @@ PERMISSION_CATALOG: list[dict[str, object]] = [
             {"key": "stocktaking", "label": "盘点管理"},
             {"key": "assembly", "label": "组合拆卸"},
             {"key": "loss-overflow", "label": "报损报溢"},
+            {"key": "stock-alert", "label": "库存预警"},
         ],
     },
     {
@@ -98,6 +106,7 @@ PERMISSION_CATALOG: list[dict[str, object]] = [
             {"key": "income-expense", "label": "日常收支"},
             {"key": "payroll", "label": "工资管理"},
             {"key": "invoices", "label": "开票管理"},
+            {"key": "three-way-match", "label": "三单匹配"},
         ],
     },
     {

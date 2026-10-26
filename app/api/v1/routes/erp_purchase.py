@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from app.core.doc_status import assert_transition, is_approved, status_label
 from app.db.session import get_db
 from app.models.finance import FinancialTransaction
 from app.models.product import Product
@@ -26,12 +27,16 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.routes.erp_common import (
     _apply_stock,
+    _clean_order_lines,
     _next_doc_no,
     _paginate,
     _prev_debt_total,
     _purchase_return_items,
     _resolve_item_snapshot,
+    _resolve_unit_factor,
     _resolve_warehouse_id,
+    _assert_no_payment_flows,
+    _assert_source_order_no_payment,
     _revert_finance,
     _revert_stock,
     _write_finance,
@@ -83,6 +88,9 @@ def _build_purchase_payload(item: PurchaseOrder, rows: list[PurchaseOrderItem]) 
                 "product_name": row.product_name,
                 "standards": row.standards,
                 "unit": row.unit,
+                # ⚠️ 手写 dict **最容易漏字段**，而漏了 unit_factor 不会报错 ——
+                # Pydantic 会用默认值 1 填上，于是前端**永远看到 1**，比不显示更糟。
+                "unit_factor": row.unit_factor,
                 "note": row.note,
             }
             for row in rows
@@ -125,11 +133,25 @@ def create_purchase_order(payload: PurchaseOrderCreate, db: Session = Depends(ge
     if doc_type not in ("order", "inbound"):
         raise HTTPException(status_code=400, detail="doc_type 仅支持 order / inbound")
 
+    # 空行 / 半填行先过一遍：整行空白的部分静默丢弃，选了商品却没数量的直接 400。
+    # 必须放在**取单号之前** —— 否则校验失败会白白消耗一个流水号。
+    lines_in = _clean_order_lines(payload.items, "采购单")
+
     order_no = (payload.order_no or "").strip() or _next_doc_no(db, PurchaseOrder, "CGD" if doc_type == "order" else "CG")
     if db.query(PurchaseOrder).filter(PurchaseOrder.order_no == order_no).first():
         raise HTTPException(status_code=400, detail="采购单号已存在")
 
     order_date = payload.order_date or datetime.now().strftime("%Y-%m-%d")
+
+    # ⚠️ 换算率解析必须在**落表头之前**做完 —— 和采购退货那边同一个道理：
+    # 表头在下面明细循环之前就 `db.commit()` 了，若 400 发生在循环里，
+    # 库里会留下一张「只有表头、没有明细」的空入库单。
+    # 快照与换算率各只算一遍，循环里按下标取，避免重复查库。
+    snapshots = [_resolve_item_snapshot(db, line) for line in lines_in]
+    unit_factors = [
+        _resolve_unit_factor(db, line.product_id, snapshot[2])
+        for line, snapshot in zip(lines_in, snapshots)
+    ]
 
     # 注意：必须在插入本单之前取"前次欠款"，否则会把本单自己算成上一张单
     # 采购订单不产生欠款（还没入库结算），欠款链字段保持 0
@@ -163,8 +185,8 @@ def create_purchase_order(payload: PurchaseOrderCreate, db: Session = Depends(ge
 
     total = 0.0
     rows: list[PurchaseOrderItem] = []
-    for line in payload.items:
-        name, standards, unit = _resolve_item_snapshot(db, line)
+    for index, line in enumerate(lines_in):
+        name, standards, unit = snapshots[index]
         row = PurchaseOrderItem(
             purchase_order_id=item.id,
             product_id=line.product_id,
@@ -174,6 +196,8 @@ def create_purchase_order(payload: PurchaseOrderCreate, db: Session = Depends(ge
             product_name=name,
             standards=standards,
             unit=unit,
+            # 服务端解析出来的快照，不是客户端传的
+            unit_factor=unit_factors[index],
             note=line.note,
         )
         total += row.amount
@@ -257,6 +281,10 @@ def create_purchase_order(payload: PurchaseOrderCreate, db: Session = Depends(ge
             quantity=row.quantity,
             transaction_type="inbound",
             unit_price=row.unit_price,
+            # 换算在这里发生：流水 quantity = 录入数量 × factor，
+            # unit_price 同步 ÷ factor 换成"每基本单位成本"。
+            # 因为 (q×f)×(p÷f) = q×p，单据金额/应付/收发存入库金额**一分不变**。
+            unit_factor=row.unit_factor,
             related_type="purchase_in",
             related_order_id=item.id,
             doc_no=item.order_no,
@@ -271,17 +299,19 @@ def create_purchase_order(payload: PurchaseOrderCreate, db: Session = Depends(ge
 
 @router.patch("/purchase-orders/{order_id}/status")
 def update_purchase_order_status(order_id: int, payload: dict[str, object], db: Session = Depends(get_db)) -> PurchaseOrderRead:
+    """改单据状态 —— 与销售侧同一套状态机（`app/core/doc_status.py`）。
+
+    采购/销售/现货单共用同一份流转表，任何一边单独加状态都会让两套账口径分叉。
+    """
     item = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if item is None:
         raise HTTPException(status_code=404, detail="Purchase order not found")
 
-    status_value = str(payload.get("status") or "submitted").strip()
-    if not status_value:
-        raise HTTPException(status_code=400, detail="status is required")
-
-    item.status = status_value
-    db.commit()
-    db.refresh(item)
+    status_value = assert_transition(item.doc_type, item.status, payload.get("status"), item.order_no)
+    if status_value != item.status:
+        item.status = status_value
+        db.commit()
+        db.refresh(item)
     order_items = db.query(PurchaseOrderItem).filter(PurchaseOrderItem.purchase_order_id == item.id).all()
     return _build_purchase_payload(item, order_items)
 
@@ -293,6 +323,8 @@ def purchase_order_to_inbound(order_id: int, db: Session = Depends(get_db)) -> P
 
     生成一张新的入库单（doc_type=inbound，写库存流水与应付财务流水），
     复制订单的头信息与明细；订单本身置 completed 并保留可追溯。
+
+    ⚠️ **必须审核通过才允许转单**（与销售侧同一道闸口，2026-10-18 定）。
     """
     order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if order is None:
@@ -301,6 +333,12 @@ def purchase_order_to_inbound(order_id: int, db: Session = Depends(get_db)) -> P
         raise HTTPException(status_code=400, detail="只有采购订单才能转入库单")
     if order.status == "completed":
         raise HTTPException(status_code=409, detail="该订单已转入库单，不能重复转单")
+    if not is_approved(order.doc_type, order.status):
+        raise HTTPException(
+            status_code=409,
+            detail=f"订单 {order.order_no} 当前是「{status_label(order.status)}」，"
+            "必须先审核通过（approved）才能转入库单",
+        )
 
     order_items = db.query(PurchaseOrderItem).filter(PurchaseOrderItem.purchase_order_id == order.id).all()
     payload = PurchaseOrderCreate(
@@ -358,9 +396,16 @@ def delete_purchase_order(order_id: int, db: Session = Depends(get_db)) -> Respo
         and db.query(PurchaseOrder).filter(PurchaseOrder.source_order_id == order_id).first() is not None
     ):
         raise HTTPException(status_code=409, detail="该订单已转入库单，请先删除对应的入库单")
+    # 已登记过付款/收款的单据禁止删除（2026-10-18）—— 同销售侧，
+    # 必须排在 _revert_stock / _revert_finance 之前（先动库存再报错会留下半截状态）
+    _assert_no_payment_flows(db, order_id, item.order_no or f"#{order_id}")
+    # 删入库单时，来源订单上也可能已登记付款（同销售侧，避免订单变成死锁单）
+    if item.source_order_id:
+        _assert_source_order_no_payment(db, db.get(PurchaseOrder, item.source_order_id), "采购入库单")
     # 库存联动回滚：这张单产生的入库流水一并冲销（订单没有流水，此处自然为空操作）
     _revert_stock(db, "purchase_in", order_id)
-    # 财务联动回滚：入库产生的应付 / 付款流水一并冲销，避免留下指向已删单据的孤儿
+    # 财务联动回滚：只冲销"入库自己产生的"应付（related_type=purchase_in）。
+    # 收付款（receipt/payment）不在这里删 —— 上面那道闸口已经拦下了。
     _revert_finance(db, "purchase_in", order_id)
     db.query(PurchaseOrderItem).filter(PurchaseOrderItem.purchase_order_id == order_id).delete(synchronize_session=False)
     db.delete(item)
@@ -441,6 +486,173 @@ def supplier_performance(db: Session = Depends(get_db)) -> list[dict[str, object
 
 
 
+def _purchase_return_quantity(value: object, index: int) -> float:
+    """校验退货明细的数量是整数，返回 float（该列类型本来就是 double precision）。
+
+    `PurchaseReturnItem.quantity` 是 `double precision`（而采购 / 销售明细是 `integer`），
+    写库存流水那一侧过去用的是 `int(...)` —— 于是「退 3.5 件」会**静默**变成扣 3，
+    少的 0.5 既没有报错也没有日志。接了多单位换算之后更糟：
+    `int(3.5) * 10 = 30`，而单据的意思是 35 —— 一次丢 5 件。
+
+    库存的硬规则是「绝不存小数」，所以这里**不截断、也不四舍五入**，
+    直接把不合法的数量挡在门外。
+    """
+    try:
+        qty = float(value or 0.0)
+    except (TypeError, ValueError):
+        # PATCH 那条路的 payload 是**裸 dict**（不像 POST 有 Pydantic 挡在前面），
+        # 所以 "abc" 这种脏值会走到这里 —— 不能让它冒成 500
+        raise HTTPException(
+            status_code=400,
+            detail=f"第 {index + 1} 行的退货数量不是合法数字",
+        ) from None
+    # is_integer() 对 inf / nan 都返回 False，所以这一句同时把它们挡掉了
+    if not qty.is_integer():
+        raise HTTPException(
+            status_code=400,
+            detail=f"第 {index + 1} 行的退货数量必须是整数（库存按整数计量），当前填的是 {qty}",
+        )
+    # ⚠️ 只判"整数"是不够的：`float(None or 0.0)`、`float("" or 0.0)` 都是 0.0，
+    # 而 0.0 是"合法整数" —— 实测（见 verify_patch0 的 [4]）PATCH 传 `quantity: null`
+    # 会**静默**把这张退货单改成"退 0 件"：金额变 0，而且因为 `_apply_stock`
+    # 对 qty==0 是直接 return None，它还会顺手把原来的库存流水冲销掉。
+    # 退货单上一行"退 0 件"本来就没有任何业务含义，所以正整数才是唯一合法输入。
+    if qty <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"第 {index + 1} 行的退货数量必须大于 0",
+        )
+    return qty
+
+
+def _purchase_return_unit_price(
+    raw: object,
+    index: int,
+    *,
+    product: Product | None,
+    factor: int,
+    fallback: float | None,
+) -> float:
+    """解析退货明细行的单价 —— **绝不允许把一个 0 写进单据**。
+
+    ⚠️ 这是一个真实的财务口子：退货单的 `unit_price` 一旦被静默写成 0，
+    金额、应付冲减、财务流水**全部变成 0**，而**库存照样扣** ——
+    单据、库存、财务三个数字从此永久对不上，而且一声不响。
+    （补丁验证台 `verify_patch0` 的 [8] 实测过：只传 quantity、不传 unit_price，
+    HTTP 200，单据金额 0.0，库存流水 unit_price 0.0。）
+
+    三处调用点传进来的 `raw` 来源不同，但"非正数"的形态是一样的：
+      · POST：Pydantic 的 `unit_price: float = 0.0` —— **字段缺失就是 0.0**
+      · POST 前端：`Number(row.unit_price) || 0` —— 用户把价格留空就是 0
+      · PATCH：裸 dict 的 `.get("unit_price")` —— 缺失是 None
+    所以这里**刻意不去区分**"显式填了 0"和"根本没填"：两者都是"没提供有效价格"，
+    一律走兜底。退货单价为 0 在业务上没有正向含义，把它当默认值处理才对。
+
+    兜底顺序由调用方通过 `fallback` 决定（None = 没有可继承的来源）：
+      · PATCH：回查这张单**原来的同商品明细单价**（用户明确要求的口径）
+      · POST ：没有原单可查，回落到 `products.purchase_price × factor`
+        —— 档案进价是**基本单位**口径，必须乘 factor 才等于"每录入单位"的价；
+        不乘的话「1 箱」会按「1 盒」的价记账，少 factor 倍（`DESIGN_3B` §7.2 的同类陷阱）
+
+    兜底也拿不到 >0 的数就 **400**。宁可挡在门外，也不要往库里写一个 0。
+    """
+    try:
+        value = float(raw or 0.0)
+    except (TypeError, ValueError):
+        # PATCH 那条路是裸 dict，脏值会走到这里 —— 不能让它冒成 500
+        raise HTTPException(
+            status_code=400,
+            detail=f"第 {index + 1} 行的退货单价不是合法数字",
+        ) from None
+    if value > 0:
+        return value
+    if value < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"第 {index + 1} 行的退货单价不能是负数（当前填的是 {value}）",
+        )
+    # 走兜底
+    if fallback is not None and fallback > 0:
+        return float(fallback)
+    if product is not None:
+        hint = f"商品「{product.name}」的档案里也没有进价"
+    else:
+        hint = "该商品档案不存在，无法回查进价"
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"第 {index + 1} 行的退货单价必须大于 0（留空或填 0 都不允许）。"
+            f"{hint}，请在明细里显式填写单价。"
+        ),
+    )
+
+
+def _purchase_return_apply_stock(
+    db: Session, item: PurchaseReturn, rows: list[PurchaseReturnItem]
+) -> None:
+    """把这张退货单的明细写成 outbound 库存流水（**先冲销旧的**）。
+
+    退货是减少现存量，方向和采购入库相反。单据没填仓库时回退到默认仓库，
+    并把结果回填到单据上，保证单据与流水指向同一个仓。
+
+    ⚠️ 建单（`create_purchase_return`）和改单（`update_purchase_return`）**都**调它。
+    以前改单那条路是「整单替换明细但完全不碰流水」，于是
+    「建单退 3 件 → 改成退 5 件」会留下「单据说 5、流水还是 −3」——
+    单据与库存永久对不上，而且没有任何报错。**先冲后写**才是一致的。
+    """
+    _revert_stock(db, "purchase_return", item.id)
+    stock_warehouse_id = _resolve_warehouse_id(db, item.warehouse_id)
+    if stock_warehouse_id is not None and item.warehouse_id is None:
+        item.warehouse_id = stock_warehouse_id
+    for row in rows:
+        _apply_stock(
+            db,
+            product_id=row.product_id,
+            warehouse_id=stock_warehouse_id,
+            # 不在这里 int() —— 取整交给 `_apply_stock` 统一做，
+            # 数量必须先由 `_purchase_return_quantity` 校验成整数才走到这儿。
+            quantity=row.quantity,
+            transaction_type="outbound",
+            unit_price=row.unit_price,
+            # 与采购入库同一套换算（方向相反）：流水 −(数量×factor) 个基本单位
+            unit_factor=row.unit_factor,
+            related_type="purchase_return",
+            related_order_id=item.id,
+            doc_no=item.return_no,
+            note=f"采购退货 {item.return_no}",
+        )
+
+
+
+def _purchase_return_apply_finance(db: Session, item: PurchaseReturn, total: float) -> None:
+    """把退货单的「应付冲减」写成财务流水（**先冲销旧的**）。
+
+    金额记负数（方向 out），对账时自然抵减采购产生的应付。
+
+    ⚠️ 和 `_purchase_return_apply_stock` 是同一类问题的两半：
+    改了明细却只重算库存、不重算财务，会留下
+    「单据说退 5 件（−500）、库存 −5、财务还是 −300」——
+    比两样都不改**更难查**，因为三个数字互不相等，谁对谁错说不清。
+    所以派生数据要么一起重算，要么一起不动。
+    """
+    _revert_finance(db, "purchase_return", item.id)
+    if total > 0:
+        _write_finance(
+            db,
+            transaction_type="payable",
+            direction="out",
+            amount=-total,
+            related_type="purchase_return",
+            related_order_id=item.id,
+            doc_no=item.return_no,
+            supplier_id=item.supplier_id,
+            warehouse_id=item.warehouse_id,
+            occurred_at=item.return_date,
+            note=f"采购退货 {item.return_no} 冲减应付",
+        )
+
+
+
 def _purchase_return_payload(item: PurchaseReturn, rows: list[PurchaseReturnItem]) -> dict[str, object]:
     return {
         "id": item.id,
@@ -470,6 +682,7 @@ def _purchase_return_payload(item: PurchaseReturn, rows: list[PurchaseReturnItem
                 "product_name": row.product_name,
                 "standards": row.standards,
                 "unit": row.unit,
+                "unit_factor": row.unit_factor,
                 "quantity": row.quantity,
                 "unit_price": row.unit_price,
                 "amount": row.amount,
@@ -543,6 +756,42 @@ def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(
 
     return_date = payload.return_date or datetime.now().strftime("%Y-%m-%d")
 
+    # ⚠️ 明细校验必须在**落表头之前**做完。
+    # 表头在下面明细循环之前就 `db.commit()` 了，所以如果等循环里才抛 400，
+    # 库里会留下一张「只有表头、没有明细」的空退货单 —— 用户看到报错以为没成功，
+    # 列表里却多了一张金额为 0 的单。
+    # 换算率解析同样会 400（单位查不到 / 已停用），所以一并提前算。
+    snapshots = [_resolve_item_snapshot(db, line) for line in payload.items]
+    quantities = [
+        _purchase_return_quantity(line.quantity, index)
+        for index, line in enumerate(payload.items)
+    ]
+    unit_factors = [
+        _resolve_unit_factor(db, line.product_id, snapshot[2])
+        for line, snapshot in zip(payload.items, snapshots)
+    ]
+    # ⚠️ 单价校验也必须在**落表头之前**做完（单价缺失会 400）。
+    # 建退货单没有"原单"可回查，所以兜底用**档案进价 × 换算率**：
+    # 档案进价是基本单位口径，乘 factor 才是"每录入单位"的价。
+    products = [
+        db.get(Product, line.product_id) if line.product_id else None
+        for line in payload.items
+    ]
+    unit_prices = [
+        _purchase_return_unit_price(
+            line.unit_price,
+            index,
+            product=products[index],
+            factor=unit_factors[index],
+            fallback=(
+                float(products[index].purchase_price or 0.0) * unit_factors[index]
+                if products[index] is not None
+                else None
+            ),
+        )
+        for index, line in enumerate(payload.items)
+    ]
+
     item = PurchaseReturn(
         return_no=return_no,
         supplier_id=payload.supplier_id,
@@ -567,16 +816,17 @@ def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(
 
     total = 0.0
     rows: list[PurchaseReturnItem] = []
-    for line in payload.items:
-        name, standards, unit = _resolve_item_snapshot(db, line)
-        quantity = float(line.quantity or 0.0)
-        unit_price = float(line.unit_price or 0.0)
+    for index, line in enumerate(payload.items):
+        name, standards, unit = snapshots[index]
+        quantity = quantities[index]
+        unit_price = unit_prices[index]
         row = PurchaseReturnItem(
             purchase_return_id=item.id,
             product_id=line.product_id,
             product_name=name or line.product_name,
             standards=standards,
             unit=unit,
+            unit_factor=unit_factors[index],
             quantity=quantity,
             unit_price=unit_price,
             amount=round(quantity * unit_price, 2),
@@ -592,38 +842,10 @@ def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(
     db.refresh(item)
 
     # —— 库存联动：退货减少现存量（outbound）——
-    stock_warehouse_id = _resolve_warehouse_id(db, item.warehouse_id)
-    if stock_warehouse_id is not None and item.warehouse_id is None:
-        item.warehouse_id = stock_warehouse_id
-    for row in rows:
-        _apply_stock(
-            db,
-            product_id=row.product_id,
-            warehouse_id=stock_warehouse_id,
-            quantity=int(row.quantity or 0),
-            transaction_type="outbound",
-            unit_price=row.unit_price,
-            related_type="purchase_return",
-            related_order_id=item.id,
-            doc_no=item.return_no,
-            note=f"采购退货 {item.return_no}",
-        )
+    _purchase_return_apply_stock(db, item, rows)
 
     # —— 财务联动：退货冲减应付。金额记负数（方向 out），对账时自然抵减 ——
-    if total > 0:
-        _write_finance(
-            db,
-            transaction_type="payable",
-            direction="out",
-            amount=-total,
-            related_type="purchase_return",
-            related_order_id=item.id,
-            doc_no=item.return_no,
-            supplier_id=payload.supplier_id,
-            warehouse_id=item.warehouse_id,
-            occurred_at=return_date,
-            note=f"采购退货 {item.return_no} 冲减应付",
-        )
+    _purchase_return_apply_finance(db, item, total)
 
     db.commit()
     db.refresh(item)
@@ -658,22 +880,47 @@ def update_purchase_return(
 
     rows = _purchase_return_items(db, item.id)
     # 传了明细就整单替换并重算金额/大写
+    items_replaced = False
     if isinstance(payload.get("items"), list):
+        # ⚠️ 整单替换是"先删后建"，所以**必须先把原明细的单价抄下来** ——
+        # 调用方（例如只改数量的脚本）不传 unit_price 时要拿它兜底。
+        # 不抄的话就会静默把整张单的金额冲成 0（库存照扣、应付不再冲减），
+        # 详见 `_purchase_return_unit_price` 的 docstring。
+        previous_prices: dict[int, float] = {}
+        for old in db.query(PurchaseReturnItem).filter(
+            PurchaseReturnItem.purchase_return_id == item.id
+        ).all():
+            old_price = float(old.unit_price or 0.0)
+            if old.product_id is not None and old_price > 0:
+                # setdefault：同一商品在旧单里出现多次时，取第一次（与明细顺序一致）
+                previous_prices.setdefault(int(old.product_id), old_price)
         db.query(PurchaseReturnItem).filter(PurchaseReturnItem.purchase_return_id == item.id).delete()
         rows = []
         total = 0.0
-        for line in payload["items"]:
+        for index, line in enumerate(payload["items"]):
             line_data = line if isinstance(line, dict) else {}
             product_id = line_data.get("product_id")
-            product = db.get(Product, int(product_id)) if product_id else None
-            quantity = float(line_data.get("quantity") or 0.0)
-            unit_price = float(line_data.get("unit_price") or 0.0)
+            pid = int(product_id) if product_id else None
+            product = db.get(Product, pid) if pid else None
+            quantity = _purchase_return_quantity(line_data.get("quantity"), index)
+            unit = line_data.get("unit") or (product.unit if product else None)
+            # 走 PATCH 时是**裸 dict**，和 POST 一样按 unit 现场解析，不信客户端传 factor
+            factor = _resolve_unit_factor(db, pid, unit)
+            # 单价缺失 → 回查这张单原来的同商品单价；查不到（新加的行）→ 400
+            unit_price = _purchase_return_unit_price(
+                line_data.get("unit_price"),
+                index,
+                product=product,
+                factor=factor,
+                fallback=previous_prices.get(pid) if pid else None,
+            )
             row = PurchaseReturnItem(
                 purchase_return_id=item.id,
-                product_id=int(product_id) if product_id else None,
+                product_id=pid,
                 product_name=line_data.get("product_name") or (product.name if product else None),
                 standards=line_data.get("standards") or (product.standards if product else None),
-                unit=line_data.get("unit") or (product.unit if product else None),
+                unit=unit,
+                unit_factor=factor,
                 quantity=quantity,
                 unit_price=unit_price,
                 amount=round(quantity * unit_price, 2),
@@ -684,6 +931,23 @@ def update_purchase_return(
         db.add_all(rows)
         item.total_amount = round(total, 2)
         item.amount_chinese = amount_to_chinese(item.total_amount)
+        items_replaced = True
+
+    # —— 库存联动：改单必须**重写**流水（不是"不动"）——
+    # 以前这里是「整单替换明细但完全不碰流水」，于是
+    # 「建单退 3 件 → 改成退 5 件」会留下「单据说 5、流水还是 −3」：
+    # 单据与库存永久对不上，而且没有任何报错。
+    # 明细或仓库**任一**被改动过都要重算 —— 只换明细不换仓、或只换仓不换明细，
+    # 都会让流水指向一个和单据不一致的口径。
+    if items_replaced or "warehouse_id" in payload:
+        _purchase_return_apply_stock(db, item, rows)
+
+    # —— 财务联动：和库存同样的道理。改了明细/供应商/仓库/退货日期，
+    #    应付冲减的金额与归属就都变了，必须一起重算 ——
+    if items_replaced or any(
+        key in payload for key in ("supplier_id", "warehouse_id", "return_date")
+    ):
+        _purchase_return_apply_finance(db, item, item.total_amount)
 
     db.commit()
     db.refresh(item)

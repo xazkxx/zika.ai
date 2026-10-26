@@ -43,8 +43,20 @@ class Role(Base):
 _MANAGER_MENUS = [key for key in all_menu_keys() if key not in system_menu_keys()]
 
 
-# 内置角色及其默认权限点。
-# 播种（app/main.py 的 ensure_default_roles）**只补不覆盖**：管理员改过的权限不会被重启冲掉。
+# ⚠️ 2026-10-18：「销售出库（多单位）」(`sales-units`) 已**整体下架**。
+#    它和「开单管理」做同一件事（都写 doc_type=outbound、都扣库存与应收），
+#    只是表单是另一套、编号与辅助单位算法不共享 —— 两套并存只会让"到底哪张单出的货"
+#    说不清，而且它是唯一一个能删「已转单开单」的界面入口（Bug 1 的现场）。
+#
+#    下架动作是**四处一起改**，漏一处就会出现"菜单还在/点了白屏"：
+#      代码：`app/core/permissions.py` 的 PERMISSION_CATALOG（不再播种）
+#            `frontend/src/App.jsx` 的 menuGroups / 分发区 / import
+#            `app/main.py` 的 MENU_RETIRED_KEYS（启动时删掉库里已有行 + 角色里残留的 key）
+#      数据：启动迁移自动完成，**不需要**手动跑脚本，也不要用 POST /menus/reset
+#            （reset 会把默认树整棵重播，管理员自建的菜单会被清掉）
+#
+#    组件源码 `frontend/src/components/sales-units/` 保留但不再被引用（只作参考实现）；
+#    真要用回来，必须先把 Bug 1 的删单闸口接进它的 handleDelete。
 BUILTIN_ROLES: list[dict[str, object]] = [
     {
         "code": "admin",
@@ -69,6 +81,10 @@ BUILTIN_ROLES: list[dict[str, object]] = [
             "menus": [
                 "overview", "customers", "products", "warehouses",
                 "sales", "sales-order", "quotation", "sales-return", "contracts",
+                # 第 13 批：合同台账与「购销合同」同权限口径（谁能看购销合同，谁就能看台账）
+                "contracts-ledger",
+                # 增强对账单：销售员要能自己生成应收对账单去催款
+                "statements-editor",
                 "inventory", "stock-logs", "reports", "mobile",
             ],
         },
@@ -97,7 +113,7 @@ BUILTIN_ROLES: list[dict[str, object]] = [
             "menus": [
                 "overview", "products", "warehouses",
                 "purchase", "sales",
-                "inventory", "stock-logs", "transfer", "stocktaking", "loss-overflow",
+                "inventory", "stock-logs", "transfer", "stocktaking", "loss-overflow", "stock-alert",
                 "reports", "mobile",
             ],
         },
@@ -109,7 +125,12 @@ BUILTIN_ROLES: list[dict[str, object]] = [
         "description": "财务流水、应收应付、往来对账与财务类报表",
         "permissions": {
             "all": False,
-            "menus": ["overview", "customers", "suppliers", "finance", "receivable", "payable", "ledger", "reports"],
+            "menus": [
+                "overview", "customers", "suppliers", "finance",
+                "receivable", "payable", "ledger", "general-ledger", "reports",
+                # 对账是财务的核心动作：应收/应付对账单都能在这里出
+                "statements-editor",
+            ],
         },
         "sort_order": 60,
     },

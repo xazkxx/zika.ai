@@ -1,0 +1,97 @@
+/* ERP PWA 服务工作者
+ *
+ * 作用：
+ * 1. 首次安装时缓存应用外壳（页面、图标、清单）
+ * 2. 静态资源：优先用缓存（离线也能打开），后台悄悄更新
+ * 3. 业务接口 /api：永远走网络，不缓存（保证数据实时）
+ *
+ * 注意：改了版本号 CACHE_VERSION 后，旧缓存会自动清理（activate 里删掉所有非当前版本）。
+ *
+ * 什么时候要 bump：**每次发布**都建议 +1。历史教训：
+ * 这个值曾经长期停在 'erp-pwa-v1'，而 shell 缓存里存着 '/'(index.html)，
+ * 于是浏览器一直拿着旧首页 → 指向旧 hash 的 js → 前端明明重新构建了却「改了没变化」。
+ * 现在服务端已给 index.html / sw.js 发 `Cache-Control: no-cache`（见 app/main.py 的
+ * CacheControlledStaticFiles），bump 版本号只是**兜底**，防止老客户端残留。
+ *
+ * v2 → v3（2026-10-15）：侧边栏菜单字体改版。bump 后 activate 会删掉
+ * 'erp-pwa-v2-shell'（里面存着旧 '/'），老客户端下次导航即自动恢复。
+ * 同时把导航请求改成 `cache: 'no-store'`，让 index.html 永不从 HTTP 缓存里取。
+ */
+const CACHE_VERSION = 'erp-pwa-v5';
+const CACHE_NAME = `${CACHE_VERSION}-shell`;
+
+// 应用外壳：离线打开至少要有的文件
+const APP_SHELL = [
+  '/',
+  '/manifest.webmanifest',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+];
+
+// 安装：预缓存应用外壳
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.addAll(APP_SHELL))
+      .then(() => self.skipWaiting())
+  );
+});
+
+// 激活：删除旧版本缓存
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((key) => key !== CACHE_NAME)
+            .map((key) => caches.delete(key))
+        )
+      )
+      .then(() => self.clients.claim())
+  );
+});
+
+// 请求拦截策略
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+
+  // 业务接口：只走网络，失败时返回提示（不缓存真实数据）
+  if (url.pathname.startsWith('/api/')) {
+    return;
+  }
+
+  // 页面导航：网络优先（强制 cache:'no-store'，绕过 HTTP 缓存），断网时退回缓存首页
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request, { cache: 'no-store' })
+        .then((response) => {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
+          return response;
+        })
+        .catch(() => caches.match('/'))
+    );
+    return;
+  }
+
+  // 其他静态资源：缓存优先 + 后台更新（stale-while-revalidate）
+  if (event.request.method === 'GET') {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        const network = fetch(event.request)
+          .then((response) => {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) =>
+              cache.put(event.request, copy)
+            );
+            return response;
+          })
+          .catch(() => cached);
+        return cached || network;
+      })
+    );
+  }
+});

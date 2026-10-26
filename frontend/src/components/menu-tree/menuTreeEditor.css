@@ -1,0 +1,404 @@
+/* ===========================================================================
+   MenuTreeEditor 样式
+   全部类名以 .mtree- 前缀，变量挂在 .mtree 下（不污染 :root，与 erpdash-/erpstock- 同一约定）
+   ⚠️ 行缩进**不在这里逐层枚举**，由 JSX 的 inline style 算：paddingLeft = 20 + depth*16
+      所以这里只留基础 padding-left，不要写死 .mtree-row { padding-left: N }
+   =========================================================================== */
+
+.mtree {
+  --mtree-border: #e2e8f0;
+  --mtree-border-strong: #cbd5e1;
+  --mtree-bg: #ffffff;
+  --mtree-bg-soft: #f8fafc;
+  --mtree-bg-head: #f1f5f9;
+  --mtree-text: #111827;
+  --mtree-text-soft: #6b7280;
+  --mtree-accent: #2563eb;
+  --mtree-accent-soft: #eff6ff;
+  --mtree-warn: #b45309;
+  --mtree-warn-bg: #fef3c7;
+  --mtree-error: #b91c1c;
+  --mtree-error-bg: #fee2e2;
+  --mtree-ok: #15803d;
+  --mtree-ok-bg: #dcfce7;
+  --mtree-row-h: 44px;
+
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--mtree-text);
+  font-size: 14px;
+}
+
+/* ── 工具条 ─────────────────────────────────────────────────────────────── */
+.mtree-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.mtree-toolbar__left,
+.mtree-toolbar__right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mtree-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--mtree-text);
+}
+
+.mtree-stat {
+  font-size: 13px;
+  color: var(--mtree-text-soft);
+}
+
+.mtree-stat--bad {
+  color: var(--mtree-error);
+  font-weight: 500;
+}
+
+.mtree-saving {
+  font-size: 13px;
+  color: var(--mtree-accent);
+}
+
+.mtree-btn {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--mtree-border-strong);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--mtree-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.mtree-btn:hover {
+  border-color: var(--mtree-accent);
+  color: var(--mtree-accent);
+}
+
+/* ── 提示条 ─────────────────────────────────────────────────────────────── */
+.mtree-hint {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #475569;
+  background: var(--mtree-bg-soft);
+  border-left: 3px solid var(--mtree-accent);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.mtree-msg {
+  font-size: 13px;
+  line-height: 1.7;
+  border-radius: 6px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+}
+
+.mtree-msg code {
+  background: rgba(15, 23, 42, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.mtree-msg--ok {
+  background: var(--mtree-ok-bg);
+  color: var(--mtree-ok);
+  border-color: #86efac;
+}
+.mtree-msg--warn {
+  background: var(--mtree-warn-bg);
+  color: var(--mtree-warn);
+  border-color: #fcd34d;
+}
+.mtree-msg--error {
+  background: var(--mtree-error-bg);
+  color: var(--mtree-error);
+  border-color: #fca5a5;
+}
+.mtree-msg--info {
+  background: var(--mtree-accent-soft);
+  color: var(--mtree-accent);
+  border-color: #bfdbfe;
+}
+
+.mtree-msg ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+/* ── 树体 ───────────────────────────────────────────────────────────────── */
+.mtree-body {
+  border: 1px solid var(--mtree-border);
+  border-radius: 10px;
+  background: var(--mtree-bg);
+  overflow: hidden;
+}
+
+.mtree-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--mtree-text-soft);
+  font-size: 13px;
+}
+
+/* ⚠️ 这里只给基础左右内边距；缩进由 inline style 的 paddingLeft 覆盖 */
+.mtree-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--mtree-row-h);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--mtree-border);
+  background: var(--mtree-bg);
+  transition: background 0.12s ease;
+}
+
+.mtree-row:last-child {
+  border-bottom: none;
+}
+
+.mtree-row:hover {
+  background: var(--mtree-bg-soft);
+}
+
+.mtree-row.is-active {
+  background: var(--mtree-accent-soft);
+  box-shadow: inset 3px 0 0 var(--mtree-accent);
+}
+
+.mtree-row.is-disabled .mtree-label {
+  color: var(--mtree-text-soft);
+  text-decoration: line-through;
+}
+
+.mtree-row.is-source {
+  opacity: 0.4;
+}
+
+.mtree-row.is-dragging {
+  z-index: 5;
+}
+
+/* 拖拽落点提示：上/下缘一条实线 = 同级插入；中段整行高亮 = 变成下级 */
+.mtree-row.drop-before::before,
+.mtree-row.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--mtree-accent);
+  pointer-events: none;
+}
+
+.mtree-row.drop-before::before {
+  top: -1px;
+}
+
+.mtree-row.drop-after::after {
+  bottom: -1px;
+}
+
+.mtree-row.drop-inside {
+  background: var(--mtree-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--mtree-accent);
+}
+
+/* ── 行内元素 ───────────────────────────────────────────────────────────── */
+.mtree-caret {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--mtree-text-soft);
+  padding: 0;
+}
+
+.mtree-caret > span {
+  display: block;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transform: rotate(90deg);
+  transition: transform 0.12s ease;
+}
+
+.mtree-caret.is-collapsed > span {
+  transform: rotate(0deg);
+}
+
+.mtree-caret--empty {
+  cursor: default;
+}
+
+.mtree-handle {
+  flex: 0 0 auto;
+  width: 20px;
+  text-align: center;
+  color: #94a3b8;
+  cursor: grab;
+  user-select: none;
+  font-size: 14px;
+  line-height: 1;
+  touch-action: none; /* 触摸设备上交给 dnd-kit 处理，别让浏览器滚屏 */
+}
+
+.mtree-handle:active {
+  cursor: grabbing;
+}
+
+.mtree-kind {
+  flex: 0 0 auto;
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.mtree-kind--group {
+  color: #475569;
+  background: var(--mtree-bg-head);
+}
+
+.mtree-kind--menu {
+  color: var(--mtree-accent);
+  background: var(--mtree-accent-soft);
+}
+
+.mtree-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.mtree-page {
+  flex: 0 0 auto;
+  border: 1px dashed var(--mtree-border-strong);
+  background: transparent;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  color: var(--mtree-text-soft);
+  cursor: pointer;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mtree-page:hover {
+  color: var(--mtree-accent);
+  border-color: var(--mtree-accent);
+}
+
+.mtree-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.mtree-badge--off {
+  color: var(--mtree-warn);
+  background: var(--mtree-warn-bg);
+}
+
+.mtree-badge--builtin {
+  color: #475569;
+  background: var(--mtree-bg-head);
+}
+
+.mtree-count {
+  flex: 0 0 auto;
+  min-width: 18px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--mtree-text-soft);
+  background: var(--mtree-bg-head);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+.mtree-depth {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.mtree-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.mtree-row:hover .mtree-actions,
+.mtree-row:focus-within .mtree-actions {
+  opacity: 1;
+}
+
+.mtree-actions button {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--mtree-border-strong);
+  border-radius: 4px;
+  background: #fff;
+  color: #475569;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.mtree-actions button:hover {
+  border-color: var(--mtree-accent);
+  color: var(--mtree-accent);
+}
+
+/* 拖拽时跟随鼠标的影子 */
+.mtree-drag-overlay {
+  padding: 6px 14px;
+  border: 1px solid var(--mtree-accent);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 24px -10px rgba(37, 99, 235, 0.55);
+  cursor: grabbing;
+}
+
+/* 窄屏：按钮常显（没有 hover 可用），页面 key 收起 */
+@media (max-width: 760px) {
+  .mtree-actions {
+    opacity: 1;
+  }
+
+  .mtree-page {
+    display: none;
+  }
+}

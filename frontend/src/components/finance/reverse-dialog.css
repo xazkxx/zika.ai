@@ -1,0 +1,210 @@
+/* 红冲确认弹窗 + 财务流水表里的「已冲销 / 红冲」标签
+ *
+ * ⚠️ 组件 CSS 在打包顺序上**排在 styles.css 之前** → 同权重时会被后者反压。
+ *    所以这里一律用自己的 `.reverse-flow*` / `.flow-tag*` 独占类名，
+ *    不去改 `.data-table`、`.primary-btn` 这些公共类，避免影响别的页面。
+ * ✅ 变量名对齐 tokens.css：--fg-strong / --fg-muted / --bg-soft / --surface /
+ *    --border / --color-danger(-soft/-border) / --color-primary。
+ */
+
+.reverse-flow__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal, 1000);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(15 23 42 / 46%);
+  backdrop-filter: blur(2px);
+}
+
+.reverse-flow {
+  width: 100%;
+  max-width: 460px;
+  padding: 20px 22px 18px;
+  border-radius: var(--radius-xl, 12px);
+  background: var(--surface, #fff);
+  box-shadow: var(--shadow-modal, 0 24px 64px rgb(15 23 42 / 24%));
+  animation: reverse-flow-in 0.16s ease-out;
+}
+
+@keyframes reverse-flow-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+
+.reverse-flow__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.reverse-flow__head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg-strong, #0f172a);
+}
+
+.reverse-flow__no {
+  font-size: 12px;
+  color: var(--fg-muted, #64748b);
+  font-variant-numeric: tabular-nums;
+}
+
+.reverse-flow__summary {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg, 8px);
+  background: var(--bg-soft, #f1f5f9);
+}
+
+.reverse-flow__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+}
+
+.reverse-flow__row > span {
+  flex: 0 0 auto;
+  color: var(--fg-muted, #64748b);
+}
+
+/* 关键：值必须能换行省略，否则长单号会把标签挤没（flex 子项要显式 min-width:0） */
+.reverse-flow__row > b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-strong, #0f172a);
+  font-variant-numeric: tabular-nums;
+}
+
+.reverse-flow__field {
+  display: block;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--fg-muted, #64748b);
+}
+
+.reverse-flow__field input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-md, 6px);
+  font-size: 13px;
+  color: var(--fg-strong, #0f172a);
+  background: var(--surface, #fff);
+}
+
+.reverse-flow__field input:focus {
+  outline: none;
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 12%);
+}
+
+.reverse-flow__hint {
+  margin: 12px 0 0;
+  padding: 9px 11px;
+  border-left: 3px solid var(--color-danger, #dc2626);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-danger-soft, #fef2f2);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--fg-strong, #0f172a);
+}
+
+.reverse-flow__hint b {
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.reverse-flow__error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-danger-soft, #fef2f2);
+  font-size: 12px;
+  color: var(--color-danger, #dc2626);
+}
+
+.reverse-flow__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+/* ---------- 流水表里的状态标签 ---------- */
+.flow-tag {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill, 999px);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+/* 已冲销：红字实底，第一眼就要看见"这条作废了" */
+.flow-tag--reversed {
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-danger, #dc2626);
+  border: 1px solid var(--color-danger-border, #fecaca);
+}
+
+/* 红冲行（负数那条）：红字虚线框 —— 跟"已冲销"区分开：
+   一个是"被冲的"，一个是"冲别人的"，混同一个样式会看不懂谁冲了谁 */
+.flow-tag--reversal {
+  background: transparent;
+  color: var(--color-danger, #dc2626);
+  border: 1px dashed var(--color-danger-border, #fecaca);
+}
+
+.flow-tag--plain {
+  background: transparent;
+  color: var(--fg-muted, #64748b);
+  border: 1px solid transparent;
+}
+
+/* 红字金额：中式账本里负数一律红字 */
+.flow-amount--red {
+  color: var(--color-danger, #dc2626);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 操作列里的「红冲」——比「详情」重一档，但不能抢成主按钮 */
+.link-btn--danger {
+  color: var(--color-danger, #dc2626);
+}
+
+.link-btn--danger:hover {
+  color: var(--color-danger-strong, #b91c1c);
+  text-decoration: underline;
+}
+
+/* 红冲成功提示条：和抽屉共用一套配色，不引入新样式体系 */
+.reverse-notice {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--color-success, #16a34a);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-success-soft, #f0fdf4);
+  font-size: 13px;
+  color: var(--fg-strong, #0f172a);
+}
+
+@media (max-width: 560px) {
+  .reverse-flow {
+    padding: 16px;
+  }
+}

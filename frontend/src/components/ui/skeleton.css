@@ -1,0 +1,184 @@
+/**
+ * Skeleton 样式 —— 命名空间 `.erp-skel`
+ *
+ * 扫光原理：一条「透明 → 白 → 透明」的渐变条，用 transform 从 -100% 平移到 100%。
+ * 用 transform 而不是改 background-position，是因为 transform 走合成层，
+ * 不触发布局/重绘，长列表里几十个骨架同时动也不掉帧。
+ */
+
+/* 屏幕阅读器专用文字（视觉隐藏，但会被朗读） */
+.erp-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --------------------------------------------------------------- 基础骨块 */
+.erp-skel {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: var(--skeleton-base);
+  border-radius: var(--skeleton-radius);
+  /* 骨块本身也跟着做一次极淡的明暗呼吸，避免大块区域死板 */
+  transition: background-color var(--dur-slow) var(--ease-in-out);
+}
+
+/* 扫光条 */
+.erp-skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--skeleton-sheen) 50%,
+    transparent 100%
+  );
+  animation: erp-skel-sheen var(--skeleton-dur) var(--ease-in-out) infinite;
+  pointer-events: none;
+}
+
+@keyframes erp-skel-sheen {
+  0% {
+    transform: translateX(-100%);
+  }
+  60%,
+  100% {
+    /* 留 40% 的空档：两条扫光之间有停顿，比连续扫更"贵" */
+    transform: translateX(100%);
+  }
+}
+
+/* 静态模式：截图、打印、或用户开了"减少动画"时用 */
+.erp-skel--static .erp-skel::after {
+  animation: none;
+  display: none;
+}
+
+/* --------------------------------------------------------------- 组合布局 */
+.erp-skel-root {
+  display: block;
+  width: 100%;
+}
+
+.erp-skel-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+/* 表格骨架 */
+.erp-skel-table {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.erp-skel-table__row {
+  display: grid;
+  grid-template-columns: repeat(var(--skel-cols, 4), minmax(0, 1fr));
+  gap: var(--space-4);
+  align-items: center;
+}
+
+.erp-skel-table__row--head {
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--divider);
+}
+
+.erp-skel-table__row--head .erp-skel {
+  background: var(--skeleton-base-strong);
+}
+
+/* 卡片骨架 */
+.erp-skel-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.erp-skel-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.erp-skel-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ------------------------------------------------------------ 液态玻璃底 */
+/* 玻璃必须加在容器上：backdrop-filter 模糊的是"元素背后的内容"，
+   加在内层小方块上什么也看不到。
+   这里给容器垫一层极淡的品牌色渐变，磨砂后才有"底下有颜色"的液态感，
+   否则白底玻璃 = 纯白，看不出效果。 */
+.erp-skel-glass {
+  padding: var(--space-5) var(--space-6);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--glass-border);
+  background:
+    linear-gradient(
+      135deg,
+      rgba(37, 99, 235, 0.07) 0%,
+      rgba(14, 165, 233, 0.05) 38%,
+      rgba(255, 255, 255, 0.55) 100%
+    ),
+    var(--glass-bg);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+/* 玻璃底里的骨块要用更亮一档的白，否则在磨砂面上发灰 */
+.erp-skel-glass .erp-skel {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.erp-skel-glass .erp-skel::after {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.95) 50%,
+    transparent 100%
+  );
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .erp-skel-glass {
+    background: var(--glass-bg-strong);
+  }
+}
+
+/* ------------------------------------------------------------------ 响应式 */
+@media (max-width: 720px) {
+  .erp-skel-glass {
+    padding: var(--space-4);
+  }
+
+  /* 列多了在手机上会挤成一片，最多显示 3 列 */
+  .erp-skel-table__row {
+    grid-template-columns: repeat(min(var(--skel-cols, 4), 3), minmax(0, 1fr));
+  }
+}
+
+/* 用户开了"减少动画"：把扫光停掉，只保留灰块占位 */
+@media (prefers-reduced-motion: reduce) {
+  .erp-skel::after {
+    animation: none;
+    display: none;
+  }
+}

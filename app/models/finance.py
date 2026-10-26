@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Float, Integer, String, func
+from sqlalchemy import DateTime, Float, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -46,7 +47,7 @@ class FinancialTransaction(Base):
     category: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     handler: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 经手人
 
-    amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="CNY", nullable=False)
 
     occurred_at: Mapped[str | None] = mapped_column(String(20), nullable=True)  # 业务发生日期 YYYY-MM-DD
@@ -54,6 +55,34 @@ class FinancialTransaction(Base):
 
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # ---- 红冲（Reverse，2026-10-19）----------------------------------------
+    # 只有**红字行**会填 reversal_of_id，指向被它冲掉的那条原始流水。
+    # 反查"这条有没有被冲过"就靠它（`reversal_of_id == 本行 id` 存在 = 已冲销），
+    # 不再另存一个 is_reversed 布尔 —— 两处状态一旦不同步，就会出现
+    # 「显示已冲销、却还能再冲一次」这种自相矛盾的账。
+    reversal_of_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # 这笔收付款**实际冲抵到单据上**的金额（= min(收款额, 该单未付余额)）。
+    # 预收/预付那部分不进单据，所以红冲时必须按它回退，不能按 amount：
+    # 例：单欠 1000、收了 1500，applied=1000；若按 1500 回退，
+    # 订单的 received_amount 会变成 -500（冲成了负数）。
+    applied_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+
+    # ---- 业财一体化（2026-10-22）：付款流水挂进项发票 ----------------------
+    # 业务背景是"先款后票"：钱先付了，发票后到。这张表原来只有金额和单据，
+    # 于是"付了钱但没有票"这件事在系统里**看不见** —— 既没法提醒去催票，
+    # 也没法在汇算清缴时把"暂估"挑出来。
+    #
+    # `invoice_id` 就是那根挂票的钩子：付款登记时可以指定一张进项发票，
+    # 挂上之后这张单的"未开票金额"立刻减少（完结闸、对账单同步生效）。
+    # 可空：允许先付款后补票 —— 那正是"先款后票"的常态。
+    invoice_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
+    # 流水号（2026-10-22）。库里本来就有这一列（历史数据 7 行有值），但**模型里没映射**，
+    # 于是新写的流水全是 NULL，对账单的「收款流水号」自然一片空白。
+    # 现在补进模型并在 `_write_finance` 里自动生成：`FL<yyyymmdd><3位序号>`。
+    # 对账时"这笔记账到底对应哪笔银行流水"就靠它来对。
+    flow_no: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
 
 
 # 单据类型字典：财务流水 related_type 的合法取值。

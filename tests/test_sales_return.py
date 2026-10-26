@@ -383,6 +383,12 @@ def test_update_return_replaces_items_and_recomputes():
 
 
 def test_return_status_patch_and_invalid_value():
+    """状态接口的边界：只认 draft/submitted；cancelled 必须走 /void（2026-10-20 重构）。
+
+    为什么 cancelled 要被拒：作废会**撤回库存与应收**，是不可逆的账务动作，
+    不能出现在「改状态」这种廉价接口里 —— 否则任何一次手滑都能把账冲掉。
+    这里同时验非法值仍然 400、作废走 /void 后状态确实落 cancelled。
+    """
     customer_id = _new_customer()
     return_id = None
     try:
@@ -392,12 +398,27 @@ def test_return_status_patch_and_invalid_value():
         ).json()
         return_id = r["id"]
 
-        ok = client.patch(f"/api/v1/sales-returns/{return_id}/status", json={"status": "cancelled"})
-        assert ok.status_code == 200, ok.text
-        assert ok.json()["status"] == "cancelled"
+        # ① 状态接口不许直接把单子置 cancelled
+        blocked = client.patch(
+            f"/api/v1/sales-returns/{return_id}/status", json={"status": "cancelled"}
+        )
+        assert blocked.status_code == 400, blocked.text
+        assert "作废" in blocked.json()["detail"]
 
+        # ② 非法值仍然 400（回归）
         bad = client.patch(f"/api/v1/sales-returns/{return_id}/status", json={"status": "nonsense"})
         assert bad.status_code == 400, bad.text
+
+        # ③ 作废走专用入口，落 cancelled
+        voided = client.post(
+            f"/api/v1/sales-returns/{return_id}/void", json={"reason": "单元测试作废"}
+        )
+        assert voided.status_code == 200, voided.text
+        assert voided.json()["status"] == "cancelled"
+        # ④ 幂等：再点一次不报错、不二次冲账
+        again = client.post(f"/api/v1/sales-returns/{return_id}/void", json={"reason": "再来一次"})
+        assert again.status_code == 200, again.text
+        assert again.json()["status"] == "cancelled"
     finally:
         if return_id:
             client.delete(f"/api/v1/sales-returns/{return_id}")

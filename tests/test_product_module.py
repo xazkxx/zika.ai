@@ -107,13 +107,18 @@ def test_category_tree_crud_and_nesting(fx):
     assert node["children"][0]["name"] == f"子类-{tag}"
 
 
-def test_category_duplicate_name_under_same_parent_400(fx):
-    """同一父级下类别名唯一（商品按名称回写 category 字符串，重名会歧义）。"""
+def test_category_duplicate_name_under_same_parent_409(fx):
+    """同一父级下类别名唯一（商品按名称回写 category 字符串，重名会歧义）。
+
+    2026-10-22 起统一改回 **409**：重名属于"和库里数据冲突"，不是"参数格式错"，
+    前端要据此弹红字（400 会被当成输入格式问题）。
+    """
     h, tag = fx["h"], fx["tag"]
     r1 = client.post("/api/v1/product-categories", json={"name": f"重名-{tag}"}, headers=h)
     assert r1.status_code == 201
     r2 = client.post("/api/v1/product-categories", json={"name": f"重名-{tag}"}, headers=h)
-    assert r2.status_code == 400, r2.text
+    assert r2.status_code == 409, r2.text
+    assert "同名类别" in r2.json().get("detail", "")
 
 
 def test_category_delete_with_children_409(fx):

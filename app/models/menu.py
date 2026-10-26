@@ -28,8 +28,10 @@
 这样只用"有没有 page_key"一个判据就区分了两类节点，不需要额外的 type 字段，
 也不会出现"既是菜单项又能展开"这种会让侧边栏行为含糊的节点。
 
-深度上限 `MAX_MENU_DEPTH = 3`（分组 → 子分组 → 菜单项）：左侧导航再深就该换设计了，
-而且每多一层，"这个菜单位置对不对"的排查成本就翻一倍。
+深度上限默认 8 层（可用环境变量 `ERP_MAX_MENU_DEPTH` 覆盖）：左侧导航是纵向空间，
+再深下去每行只剩几十像素、实际已经点不中，而且每多一层"这个菜单位置对不对"的
+排查成本就翻一倍。**留一条上限而不是设成无限**，出问题时报错是"最多 8 层"（可理解），
+而不是界面先崩掉。要更深自行调环境变量，不必改代码。
 
 ## 播种与"恢复默认"
 
@@ -38,6 +40,7 @@
 想回到出厂状态用 `POST /system/menus/reset`（需管理员，且界面上会二次确认）。
 """
 
+import os
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Integer, String, func
@@ -45,8 +48,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-# 左侧导航的最大层级：分组 → 子分组 → 菜单项
-MAX_MENU_DEPTH = 3
+# 左侧导航的最大层级。默认 8 层，可用环境变量 ERP_MAX_MENU_DEPTH 覆盖。
+# 2026-10-16：从写死的 3 改成可配置 —— 菜单树重构要支持向下多层建，
+# 但保留一条上限（理由见文件头注释）。
+MAX_MENU_DEPTH = int(os.environ.get("ERP_MAX_MENU_DEPTH", "8"))
 
 # 显示名长度上限（与 String(50) 对齐，接口层给出更友好的报错）
 MAX_MENU_LABEL = 20

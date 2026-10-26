@@ -413,7 +413,11 @@ def test_entry_category_dictionaries_seeded():
     assert len(lookups["expense_category"]) >= 5
     assert any(item["value"] == "办公费" for item in lookups["expense_category"])
 
-    source = (Path(__file__).resolve().parent.parent / "frontend" / "src" / "App.jsx").read_text(encoding="utf-8")
+    frontend = Path(__file__).resolve().parent.parent / "frontend" / "src"
+    source = (frontend / "App.jsx").read_text(encoding="utf-8")
+    # 录入表单在 2026-10-14 拆页时搬到了 pages/IncomeExpensePage.jsx，
+    # 而 datalist 声明留在 App.jsx 底部（全局共用）。两边都要读。
+    entry_page = (frontend / "pages" / "IncomeExpensePage.jsx").read_text(encoding="utf-8")
     for dict_type in ("income_category", "expense_category"):
         # 光有 list="lookup-xxx" 的引用不算数 —— 必须真的声明了 datalist，
         # 否则输入框点开是空的（这个坑真踩过一次：引用写了、datalist 忘了加，
@@ -421,7 +425,10 @@ def test_entry_category_dictionaries_seeded():
         assert re.search(rf'<datalist id="lookup-{dict_type}">', source), f"{dict_type} 没有声明 datalist"
         assert re.search(rf"lookupValues\('{dict_type}'\)", source), f"{dict_type} 的 datalist 没有取字典值"
     # 登记表单要按类型切换指向哪一个候选表
-    assert re.search(r"list=\{entryForm\.transaction_type === 'income' \? 'lookup-income_category'", source)
+    assert re.search(
+        r"list=\{entryForm\.transaction_type === 'income' \? 'lookup-income_category'",
+        entry_page,
+    ), "登记表单没按收支类型切候选表 —— 支出会拿收入类别去提示"
 
 
 def test_frontend_pages_and_menu_are_wired():

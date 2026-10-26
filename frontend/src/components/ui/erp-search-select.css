@@ -1,0 +1,228 @@
+/**
+ * SearchSelect 专用样式 —— 只认 `.ssel-` 前缀，不改任何全局类。
+ *
+ * 尺寸对齐 `.erp-form` 里的输入框（36~38px 高、8px 圆角），
+ * 这样放进明细行 / 商品弹窗时不会显得高矮不齐。
+ */
+
+.ssel {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+/* ── 收起态：长得像输入框 ── */
+.ssel-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  width: 100%;
+  min-height: 38px;
+  padding: 0 var(--space-3, 12px);
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-lg, 8px);
+  background: var(--surface, #fff);
+  color: var(--fg-strong, #0f172a);
+  font-size: var(--fs-base, 14px);
+  cursor: pointer;
+  transition: border-color var(--dur-fast, 120ms) var(--ease, ease),
+              box-shadow var(--dur-fast, 120ms) var(--ease, ease);
+}
+
+.ssel-trigger:hover {
+  border-color: var(--gray-400, #94a3b8);
+}
+
+.ssel-trigger:focus-visible {
+  outline: none;
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: var(--ring, 0 0 0 3px rgba(37, 99, 235, 0.18));
+}
+
+.ssel-trigger.is-placeholder .ssel-value {
+  color: var(--fg-subtle, #94a3b8);
+}
+
+.ssel[data-disabled='true'] .ssel-trigger {
+  background: var(--bg-soft, #f8fafc);
+  color: var(--fg-subtle, #94a3b8);
+  cursor: not-allowed;
+}
+
+.ssel-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.ssel-caret {
+  flex: 0 0 auto;
+  color: var(--fg-subtle, #94a3b8);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ssel-clear {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--fg-subtle, #94a3b8);
+  font-size: 14px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.ssel-clear:hover {
+  background: var(--bg-soft, #f1f5f9);
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+/* ── 展开态：同一个框换成输入框 ── */
+.ssel-input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 var(--space-3, 12px);
+  border: 1px solid var(--color-primary, #2563eb);
+  border-radius: var(--radius-lg, 8px);
+  background: var(--surface, #fff);
+  color: var(--fg-strong, #0f172a);
+  font-size: var(--fs-base, 14px);
+  outline: none;
+  box-shadow: var(--ring, 0 0 0 3px rgba(37, 99, 235, 0.18));
+}
+
+/* ── 下拉面板 ──
+   ⚠️ 面板由组件 Portal 到 body 并内联 position:fixed / left / width / maxHeight
+   （见 ErpSearchSelect.jsx ⑥）。这里只保留外观；position/left/top 不再写在这里，
+   免得和内联样式打架。
+   · overflow-x 必须是 hidden：长商品名只出省略号，绝不出横向滚动条
+   · z-index 要压过弹窗（--z-modal: 1000）—— 商品弹窗、多单位弹窗里也用它，
+     但仍低于 toast（1100） */
+.ssel-panel {
+  z-index: calc(var(--z-modal, 1000) + 15);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-lg, 8px);
+  background: var(--surface, #fff);
+  box-shadow: var(--shadow-modal, 0 12px 28px rgba(15, 23, 42, 0.16));
+}
+
+.ssel-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 4px);
+  color: var(--fg, #1f2937);
+  font-size: var(--fs-base, 14px);
+  cursor: pointer;
+}
+
+.ssel-option.is-active {
+  background: var(--color-primary-soft, #e8f1ff);
+}
+
+.ssel-option.is-selected .ssel-option-label {
+  color: var(--color-primary, #2563eb);
+  font-weight: var(--fw-semibold, 600);
+}
+
+.ssel-option-label {
+  /* flex-basis 用 0：让名称先吃满剩余空间，编码只占它自己那点宽度。
+     之前是 `1 1 auto`，名称按内容长短争宽度，长名字就被编码挤成 "陕西省…" */
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ssel-option-meta {
+  flex: 0 1 auto;
+  color: var(--fg-subtle, #94a3b8);
+  font-size: var(--fs-xs, 12px);
+  font-variant-numeric: tabular-nums;
+  /* 编码是辅助信息：最多占 32%，字号再小一档，别跟客户名抢位置 */
+  max-width: 32%;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「使用「xxx」」——库里没有的自由文本。视觉上要跟真实档案区分开：
+   上方一条虚线、文字用主色，避免用户误以为这是一条已有档案。 */
+.ssel-option.is-free {
+  margin-top: 4px;
+  border-top: 1px dashed var(--border, #e2e8f0);
+  border-radius: 0 0 var(--radius-sm, 4px) var(--radius-sm, 4px);
+  padding-top: 8px;
+}
+
+.ssel-option.is-free .ssel-option-label {
+  color: var(--color-primary, #2563eb);
+}
+
+.ssel-empty {
+  padding: 10px 8px;
+  color: var(--fg-subtle, #94a3b8);
+  font-size: var(--fs-sm, 13px);
+  text-align: center;
+}
+
+/* 明细行里：商品列本身是 2fr，宽度够；这里只保证不撑破网格 */
+[data-doc-form] .form-row .ssel {
+  min-width: 0;
+}
+
+/* ── 表格内嵌（明细行）专项 ─────────────────────────────────────────
+   触发器必须吃满整格：td 里的 flex/grid 子项默认不拉伸，
+   显式 width:100% + min-width:0 才不会被内容撑破或缩成一条。 */
+.erp-table .ssel,
+.erp-table td .ssel {
+  width: 100%;
+  min-width: 0;
+}
+
+.erp-table .ssel-trigger,
+.erp-table .ssel-input {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   触发器内联输入（2026-10-21 对齐 v96）
+   触发器外壳继续用 .ssel-trigger 的边框/圆角，输入框本身去掉边框铺满，
+   这样"未展开"与"展开"是同一条边框，不会出现双框。
+   ═══════════════════════════════════════════════════════════════════════ */
+.ssel-trigger .ssel-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 22px;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.4;
+}
+.ssel-trigger .ssel-field::placeholder {
+  color: var(--fg-subtle, #94a3b8);
+}
+.ssel-trigger.is-open {
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: var(--ring, 0 0 0 3px rgba(37, 99, 235, 0.18));
+}
+.ssel-trigger .ssel-clear {
+  flex: 0 0 auto;
+}

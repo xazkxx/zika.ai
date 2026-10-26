@@ -10,6 +10,7 @@ from app.db.session import get_db
 from app.models.bank import BANK_ACCOUNT_TYPES, BankAccount, BankTransfer, account_delta
 from app.models.customer import Customer
 from app.models.finance import DOC_TYPES, FinancialTransaction
+from app.models.invoice import Invoice
 from app.models.purchase_order import PurchaseOrder
 from app.models.sales_order import SalesOrder
 from app.models.supplier import Supplier
@@ -320,6 +321,46 @@ def _register_payment(
     prepaid = round(amount - applied, 2)
     note = base_note if prepaid <= 0 else f"{base_note}（其中 {prepaid:.2f} 为预收/预付）"
 
+    # ── 业财一体化（2026-10-22）：付款挂进项发票 ──────────────────────────
+    # 三件事在这里一次做完：
+    #   ① 校验票的方向与归属（错票挂上去会骗过完结闸，必须拦在入口）；
+    #   ② 把票挂到单据上（`related_order_id`），这样"未开票金额"当场就减少，
+    #      不需要用户再跑一趟发票管理；
+    #   ③ 在备注里留"暂估 / 无票"痕迹 —— 这是先款后票场景在账上唯一的证据。
+    #
+    # ⚠️ 这里**只记事实、不做拦截**：钱已经付了，系统再拦一次也变不出票来。
+    #    真正的"强提醒"在前端（付款弹窗），后端负责把这笔钱的票属性记清楚。
+    invoice_id = payload.get("invoice_id") or payload.get("input_invoice_id")
+    estimate = bool(payload.get("estimate"))
+    no_invoice = bool(payload.get("no_invoice"))
+    linked_invoice = None
+    if invoice_id not in (None, ""):
+        linked_invoice = db.get(Invoice, int(invoice_id))
+        if linked_invoice is None:
+            raise HTTPException(status_code=404, detail="指定的进项发票不存在")
+        if (linked_invoice.direction or "") != "input":
+            raise HTTPException(status_code=400, detail="只有进项发票才能挂到付款流水上")
+        if order_id and linked_invoice.related_order_id not in (None, int(order_id)):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"发票 {linked_invoice.invoice_no} 已挂在另一张单据上，"
+                    "请先在该发票上解挂，再登记这笔付款"
+                ),
+            )
+        # 票没挂单、这次又明确了是哪张采购单 → 顺手把票挂上去（付款即认票）
+        if order_id and linked_invoice.related_order_id is None:
+            linked_invoice.related_order_id = int(order_id)
+
+    tags: list[str] = []
+    if party_type == "supplier" and linked_invoice is None:
+        if estimate:
+            tags.append("【暂估】")
+        elif no_invoice:
+            tags.append("【无票付款】")
+    if tags:
+        note = "".join(tags) + note
+
     record = _write_finance(
         db,
         transaction_type=transaction_type,
@@ -332,8 +373,14 @@ def _register_payment(
         supplier_id=party_id if party_type == "supplier" else None,
         occurred_at=occurred_at,
         note=note,
+        invoice_id=linked_invoice.id if linked_invoice is not None else None,
     )
     db.flush()
+
+    # 记下这笔钱**实际冲抵到单据**的金额（预收/预付那部分不进单据）。
+    # 红冲必须按它回退 received_amount / paid_amount —— 按 amount 回退会把单据冲成负数：
+    # 单欠 1000、收了 1500，回退 1500 → received_amount = -500。
+    record.applied_amount = round(applied, 2)
 
     if target is not None:
         setattr(target, amount_field, round(float(getattr(target, amount_field) or 0.0) + applied, 2))
@@ -351,8 +398,208 @@ def _register_payment(
         "prepaid_amount": prepaid,
         "occurred_at": occurred_at,
         "order_id": int(order_id) if order_id else None,
+        # 业财一体化：这笔钱挂的票、以及"到底有没有票"，前端成功面板直接显示
+        "invoice_id": record.invoice_id,
+        "invoice_no": linked_invoice.invoice_no if linked_invoice is not None else None,
+        "has_invoice": linked_invoice is not None,
+        "estimate": bool(estimate and linked_invoice is None),
+        "no_invoice": bool(no_invoice and linked_invoice is None),
     }
 
+
+
+# ============================================================================
+# 红冲（Reverse）—— 2026-10-19
+#
+# 为什么要有它：收款/付款是**真实资金记录**，登记错了不能删（删了这笔钱在账上就
+# 凭空消失，也没有任何痕迹）。行业做法是"红字冲销"：再记一笔等额负数，两笔都留着，
+# 合计归零，谁在什么时候冲的、为什么冲，全都查得到。
+#
+# 四条硬规矩：
+#   1. 只红冲 receipt / payment（人工登记的真实资金）。
+#      应收/应付（receivable/payable）是单据审核时自动生成的，要冲就红冲单据本身，
+#      在这里单独冲会造出"单据还在、应收没了"的错账。
+#   2. **一笔只能冲一次**：靠 reversal_of_id 反查 + 行锁（FOR UPDATE）双保险，
+#      否则连点两下会冲两次，账变成 -1000。
+#   3. 红冲生成的是**负数流水**（不是删原行、不是改金额），
+#      所以 `sum(amount)` 天然归零，报表一行都不用改。
+#   4. 挂单据的收款要**同步回退单据的 received_amount / paid_amount**，
+#      并重算欠款链（prev_debt / current_debt / total_debt），否则单据还显示"已结清"。
+# ============================================================================
+
+REVERSIBLE_TYPES: dict[str, tuple[str, str]] = {
+    # transaction_type -> (单据模型, 单据上的"已收/已付"字段)
+    "receipt": ("SalesOrder", "received_amount"),
+    "payment": ("PurchaseOrder", "paid_amount"),
+}
+
+
+def _reverse_flow(
+    db: Session, flow_id: int, payload: dict[str, object], *, expect_type: str
+) -> dict[str, object]:
+    """红冲一笔收/付款，返回 {original, reversal, applied_amount, order}。"""
+    # 行锁：两个人同时点红冲时，第二个请求会等第一个提交后再读到"已被冲销"
+    original = (
+        db.query(FinancialTransaction)
+        .filter(FinancialTransaction.id == flow_id)
+        .with_for_update()
+        .first()
+    )
+    if original is None:
+        raise HTTPException(status_code=404, detail="流水不存在")
+
+    label = "收款" if expect_type == "receipt" else "付款"
+    if original.transaction_type != expect_type:
+        raise HTTPException(
+            status_code=409,
+            detail=f"流水 #{flow_id} 不是{label}，不能在这里红冲",
+        )
+    if original.reversal_of_id is not None:
+        # 红字行本身不许再冲：冲红冲 = 又把原单加回去，账面看着对、业务已经乱了
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "reversal_of_reversal",
+                "message": f"流水 #{flow_id} 本身是一笔红冲（冲的是 #{original.reversal_of_id}），不能再红冲。",
+                "hint": "要撤销这次红冲，请重新登记一笔正常的收付款，而不是再冲一次。",
+            },
+        )
+
+    existing = (
+        db.query(FinancialTransaction)
+        .filter(FinancialTransaction.reversal_of_id == original.id)
+        .first()
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "already_reversed",
+                "message": f"流水 #{flow_id} 已于此前被红冲（红冲流水 #{existing.id}），不能重复红冲。",
+                "hint": "一笔收付款只能冲一次。如果金额还需要调整，请重新登记一笔新的收付款。",
+                "reversal_id": existing.id,
+            },
+        )
+
+    amount = round(float(original.amount or 0.0), 2)
+    if amount <= 0:
+        # 走不到这里（红字行已在上面挡掉），留着防御脏数据
+        raise HTTPException(status_code=409, detail=f"流水 #{flow_id} 金额不为正，无法红冲")
+
+    reason = str(payload.get("reason") or "").strip()
+    occurred_at = str(payload.get("occurred_at") or "")[:10] or datetime.now().strftime("%Y-%m-%d")
+
+    # ---- 先把"要回退多少"算清楚（必须用 applied_amount，不能用总额）----
+    model = None
+    amount_field = ""
+    order = None
+    applied = 0.0
+    party_id = original.customer_id or original.supplier_id
+    if original.related_order_id:
+        model_name, amount_field = REVERSIBLE_TYPES[expect_type]
+        model = SalesOrder if model_name == "SalesOrder" else PurchaseOrder
+        order = db.get(model, int(original.related_order_id))
+        if order is not None:
+            current = float(getattr(order, amount_field) or 0.0)
+            if original.applied_amount is None:
+                # 存量数据：老版本没记 applied_amount → 只能按"总额与当前已收的较小者"估，
+                # 再夹一次 >= 0，宁可少退也不能把单据冲成负数。
+                applied = round(min(amount, max(current, 0.0)), 2)
+            else:
+                applied = round(min(float(original.applied_amount), amount), 2)
+            applied = round(min(applied, max(current, 0.0)), 2)
+
+    note = f"红冲 #{original.id}（{label} ¥{amount:.2f}）"
+    if reason:
+        note = f"{note}：{reason}"
+
+    reversal = FinancialTransaction(
+        transaction_type=original.transaction_type,
+        related_type=original.related_type,
+        related_order_id=original.related_order_id,
+        doc_no=original.doc_no,
+        direction=original.direction,
+        customer_id=original.customer_id,
+        supplier_id=original.supplier_id,
+        bank_account_id=original.bank_account_id,  # 同一账户，余额才会自己抵消
+        product_id=original.product_id,
+        warehouse_id=original.warehouse_id,
+        project_id=original.project_id,
+        category=original.category,
+        handler=original.handler,
+        amount=-amount,  # 负数：`sum(amount)` 自动归零，不用改任何报表口径
+        currency=original.currency or "CNY",
+        occurred_at=occurred_at,
+        period=_normalize_period(occurred_at),
+        note=note[:255],
+        reversal_of_id=original.id,
+        applied_amount=None,  # 红字行不再"冲抵单据"，回退发生在原行那一侧
+    )
+    db.add(reversal)
+    db.flush()
+
+    # 凭证：方向对调（见 services/ledger.py 的 post_reversal_entry 说明）
+    from app.services.ledger import post_reversal_entry
+
+    post_reversal_entry(db, reversal, original)
+
+    # ---- 回退单据的已收/已付，并重算欠款链 ----
+    if order is not None and applied > 0:
+        current = float(getattr(order, amount_field) or 0.0)
+        setattr(order, amount_field, round(max(0.0, current - applied), 2))
+        fk_field = model.customer_id if model is SalesOrder else model.supplier_id
+        if getattr(order, fk_field.key) is not None:
+            _recalc_debt_chain(db, model, fk_field, getattr(order, fk_field.key), amount_field)
+
+    db.commit()
+    db.refresh(reversal)
+
+    return {
+        "original": {
+            "id": original.id,
+            "amount": amount,
+            "transaction_type": original.transaction_type,
+            "is_reversed": True,
+            "reversed_flow_id": reversal.id,
+        },
+        "reversal": {
+            "id": reversal.id,
+            "amount": float(reversal.amount),
+            "transaction_type": reversal.transaction_type,
+            "occurred_at": reversal.occurred_at,
+            "period": reversal.period,
+            "note": reversal.note,
+            "reversal_of_id": reversal.reversal_of_id,
+        },
+        "applied_amount": applied,
+        "order": (
+            None
+            if order is None
+            else {
+                "id": order.id,
+                "amount_field": amount_field,
+                "amount": float(getattr(order, amount_field) or 0.0),
+                "current_debt": float(getattr(order, "current_debt", 0.0) or 0.0),
+            }
+        ),
+        "party_id": party_id,
+    }
+
+
+@router.post("/finance/receipt/{flow_id}/reverse", status_code=status.HTTP_201_CREATED)
+def reverse_receipt(
+    flow_id: int, payload: dict[str, object] | None = None, db: Session = Depends(get_db)
+) -> dict[str, object]:
+    """红冲一笔收款（生成负数收款流水，并回退销售单的已收金额）。"""
+    return _reverse_flow(db, flow_id, payload or {}, expect_type="receipt")
+
+
+@router.post("/finance/payment/{flow_id}/reverse", status_code=status.HTTP_201_CREATED)
+def reverse_payment(
+    flow_id: int, payload: dict[str, object] | None = None, db: Session = Depends(get_db)
+) -> dict[str, object]:
+    """红冲一笔付款（生成负数付款流水，并回退采购单的已付金额）。"""
+    return _reverse_flow(db, flow_id, payload or {}, expect_type="payment")
 
 
 def _recalc_debt_chain(db: Session, model, fk_field, fk_value: int, amount_field: str) -> None:
@@ -435,6 +682,16 @@ def finance_alerts(db: Session = Depends(get_db)) -> list[dict[str, object]]:
 @router.get("/finance")
 def list_finance(db: Session = Depends(get_db), skip: int = 0, limit: int | None = None) -> list[FinancialTransactionRead]:
     items = _paginate(db.query(FinancialTransaction).order_by(FinancialTransaction.id.desc()), skip, limit).all()
+    # 红冲状态：一次聚合查询拿到 {被冲的流水 id: 红字行 id}，再挂到 ORM 实例上。
+    # 逐行 `exists` 会变成 N+1（500 条流水 = 500 次查询），这里必须批量。
+    flipped = dict(
+        db.query(FinancialTransaction.reversal_of_id, FinancialTransaction.id)
+        .filter(FinancialTransaction.reversal_of_id.isnot(None))
+        .all()
+    )
+    for item in items:
+        item.is_reversed = item.id in flipped
+        item.reversed_flow_id = flipped.get(item.id)
     return items
 
 
@@ -530,12 +787,14 @@ def finance_analysis(
         for row in revenue_rows
         if row.customer_id is not None
     ]
-    total_revenue = sum(item["total"] for item in by_customer)
+    # ⚠️ 金额列迁到 numeric(14,2) 之后，SUM() 回来的是 Decimal；
+    # 这里统一转成 float 再相加，否则 float - Decimal 会直接 TypeError（2026-10-21 修）。
+    total_revenue = sum((float(item["total"] or 0) for item in by_customer), 0.0)
 
     return {
         "total_revenue": float(total_revenue),
         "total_expense": float(expense_rows),
-        "net_profit": float(total_revenue - expense_rows),
+        "net_profit": float(total_revenue) - float(expense_rows or 0),
         "by_customer": by_customer,
         "monthly_trend": [
             {

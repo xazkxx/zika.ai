@@ -1,0 +1,1 @@
+start "" "E:\AI\ERPÈí¼þ\.venv\Scripts\pythonw.exe" "E:\AI\ERPÈí¼þ\desktop_app.py"

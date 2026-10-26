@@ -1,11 +1,82 @@
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# ============================================================
+# ERP 仓库忽略规则（2026-10-26 基线抢救）
+# 原则：只让「源码 / 测试 / 文档 / 打包配置」进仓库，
+#       依赖、产物、快照、数据库、密钥一律留在本地。
+# 注意：本文件对**已被跟踪**的文件不生效，
+#       新规则落地时必须配合 `git rm -r --cached <路径>`。
+# ============================================================
+
+# ---- 1. 依赖与虚拟环境 ----
 .venv/
+venv/
+env/
+node_modules/
+**/node_modules/
+
+# ---- 2. 构建产物（Vite dist / PyInstaller build & dist / 历史打包目录）----
+dist/
+dist_*/
+dist-*/
+dist_next/
+dist-debug/
+build/
+build_*/
+build_next/
+artifacts/
+*.egg-info/
+frontend/dist/
+frontend/dist-debug/
+
+# ---- 3. 历史备份快照（业务数据与旧版源码，体量大、无版本价值）----
+# 注意：backup/ 里的 backup.ps1 硬编码了 Postgres 密码（已泄露到远端历史），
+#       因此整目录不进版本库；脚本本身仍留在磁盘原位，计划任务照常运行。
+backup/
+_history_bak/
+
+# ---- 4. 各类 *.bak 历史副本（含 .bak-时间戳 / .bak_时间戳）----
+*.bak
+*.bak-*
+*.bak_*
+*.bak.*
+*.orig
+*.rej
+
+# ---- 5. 数据库与运行期数据 ----
+erp.db
+erp.db.*
+*.dump
+*.dump.gz
+data/
+test_invoices/*.tmp
+
+# ---- 6. 压缩包 / 分发包（2.4GB 源码 zip 这类绝不入库）----
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+
+# ---- 7. 本地配置与密钥（数据库密码在这里，绝不能进仓库）----
 .env
-.venv/
+.env.*
+!.env.example
+
+# ---- 8. Python / 测试缓存 ----
+__pycache__/
+*.py[cod]
 .pytest_cache/
 .mypy_cache/
 .coverage
+htmlcov/
+coverage.xml
+
+# ---- 9. 日志与临时文件 ----
 *.log
+*.tmp
+~$*
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

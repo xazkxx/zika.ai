@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, func
+from sqlalchemy import DateTime, Float, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -49,11 +49,21 @@ class Quotation(Base):
 
     # —— 金额 ——
     total_quantity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # 商品数量合计
-    total_amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # ⚠️ 金额用 Numeric(12,2)：对账单要拿报价金额做减法，float 会漂
+    total_amount: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
     amount_chinese: Mapped[str | None] = mapped_column(String(255), nullable=True)  # 金额大写（冗余，便于打印）
 
     # draft 草稿 / quoted 已报价 / accepted 已接受 / rejected 已拒绝 / void 已作废
     status: Mapped[str] = mapped_column(String(30), default="draft", nullable=False)
+
+    # —— 第 13 批：可选关联合同（报价单可能是某份框架合同下的分次报价）——
+    # ⚠️ **故意不加外键**（与 `contract_items` / `quotation_items` 同一条决策）：
+    #    `quotations` 是存量表，三个账套里早就存在。模型上写 ForeignKey 只对**新建库**生效
+    #    （create_all 不会给已存在的表补约束）→ 结果就是"开发机新库有约束、生产老库没有"，
+    #    同一份代码在两边行为不同，是最难查的一类问题。
+    #    关联的完整性由应用层保证：删除合同前先 `UPDATE quotations SET contract_id=NULL`
+    #    （第二阶段的路由里做），历史凭证靠 `contract_no` 快照兜底。
+    contract_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     # —— 转单后回填 ——
     order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -68,6 +78,8 @@ class QuotationItem(Base):
 
     与单据 / 合同明细一样存**商品快照**：报价单发出去后就是历史凭证，
     商品改名改价后重印必须还是当年报出去的那份价格。
+
+    ⚠️ 与 `contract_items` 同一决策：存量明细表**不补外键**（见 DESIGN-PHASE1.md）。
     """
 
     __tablename__ = "quotation_items"
@@ -79,8 +91,9 @@ class QuotationItem(Base):
     standards: Mapped[str | None] = mapped_column(String(100), nullable=True)  # 规格型号
     unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
     quantity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    unit_price: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # 单价是"费率"不是"钱"→ (14,4)，理由同 `contract_items.unit_price`
+    unit_price: Mapped[float] = mapped_column(Numeric(14, 4), default=0, nullable=False)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

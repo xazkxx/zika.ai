@@ -1,0 +1,415 @@
+/**
+ * 单据页（采购入库 / 销售出库 / 采购订单 / 销售订单）共用样式
+ * 命名空间：`.doc-form` / `.doc-lines*` / `.doc-total-row` / `.doc-line-*`
+ *
+ * 这一层只补 ErpCard / ErpTable / ErpForm 没覆盖的三块：
+ *   ① 明细区与表头表单之间的呼吸（`.doc-lines`）
+ *   ② 明细表的小标题条（标题 + 提示 + 添加按钮）
+ *   ③ 合计行（tfoot 里的那行）与「点中行」的高亮
+ *
+ * ⚠️ 不碰 styles.css 里 `[data-doc-form] …` 那一整节 —— 它同时服务着
+ *    另外三个还没重构的单据表单，删任何一条都会连带打坏它们。
+ *    这里只用新类名，靠 `.doc-` 前缀与既有规则零交叉。
+ */
+
+.doc-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5, 20px);
+}
+
+/* 单据页左栏默认 660px（而不是通用布局的 40%）：
+   明细表 6 列的自然最小宽度是 600px（商品列被 SearchSelect 的输入框撑着），
+   左栏 600 时卡片内边距再吃 48px 就要横滚 50px —— 删行按钮被裁成一条红线
+   （真机截图抓出来的）。660 - 48 = 612 ≥ 600，正好放平；拖过之后以 localStorage 为准。
+   ⚠️ 三类选择器 0,3,0 > `.management-grid.mgrid--split` 的 0,2,0，
+   不依赖打包顺序（组件 CSS 被提到 styles.css 之前的那个坑）。
+
+   ⚠️ 断点从 1081 抬到 1440（2026-10-18 用户截图报的 UI 崩坏）：
+      左右分栏要放得下 660(左) + 16(手柄) + 400(右栏下限) = 1076，
+      而主内容区还要减掉侧边栏约 364px —— 视口 < 1440 时 660 的左栏会把右栏
+      挤成 200 多 px、整页还得横滚。这类屏宽直接**单列堆叠**，
+      明细表拿到整幅内容宽度，比硬塞两栏好用得多。 */
+@media (min-width: 1440px) {
+  .doc-page.management-grid.mgrid--split {
+    grid-template-columns: var(--mgrid-left, 660px) 16px minmax(0, 1fr);
+    gap: 0;
+  }
+}
+
+/* 窄屏（含常见的 1366 笔记本）：单列。
+   ⚠️ 必须写 0,3,0（`.management-grid.mgrid--split.doc-page`）——
+   resizableLayout.css 里那条基础规则也是 0,2,0，而**媒体查询不增加特异性**，
+   同分就只能拼打包顺序，那是 2026-10-17 已经踩过的坑。 */
+@media (max-width: 1439px) {
+  .doc-page.management-grid.mgrid--split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4, 16px);
+  }
+
+  /* 单列时手柄没有意义 —— 留着它会把右栏顶到第二行第一格 */
+  .doc-page .mgrid-handle {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------- 明细区 */
+.doc-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+
+.doc-lines__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding-bottom: var(--space-2, 8px);
+  border-bottom: 1px solid var(--divider, var(--border-soft));
+}
+
+.doc-lines__head h3 {
+  margin: 0;
+  font-size: var(--fs-base, 14px);
+  font-weight: var(--fw-semibold, 600);
+  color: var(--fg-strong);
+}
+
+/* 提示（"点一行可选中，按 Delete 删行" / "已选中第 N 行"）：
+   吃掉中间的空隙，让「+ 添加一行」永远贴右边 */
+.doc-lines__hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 表格外壳：min-width:0 让它能在卡片里收缩并自己横滚（flex/grid 子项默认 auto） */
+.doc-lines__table {
+  min-width: 0;
+}
+
+/* 明细行里的商品格：SearchSelect 上面、库存提示 + 半填红字下面，纵向排 */
+.doc-line-product {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 库存提示在明细行里要压小：正常它跟在 label 下面，字重字号是给表头表单用的 */
+.doc-line-product .stock-hint {
+  font-size: var(--text-xs, 12px);
+  line-height: 1.3;
+}
+
+/* `line-invalid` 在表格单元格里不再是 grid 子项：
+   styles.css 那条 `grid-column: 1 / -1` 在 td 里无效（不影响），
+   这里只把它压成一行小字，空内容仍由 `:empty` 隐藏。 */
+.doc-line-product .line-invalid {
+  margin: 0;
+  font-size: var(--text-xs, 12px);
+  line-height: 1.3;
+  color: var(--color-danger-strong);
+}
+
+.doc-line-product .line-invalid:empty {
+  display: none;
+}
+
+/* 点中的明细行：左侧 3px 主色边 + 淡底，跟"正在录这一行"的语义一致。
+   ⚠️ 只改背景与内阴影，不改 padding/宽度 —— 否则选中时行高会跳。 */
+.erp-table__row.doc-line--selected {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.08));
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.erp-table__row.doc-line--selected:hover {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.12));
+}
+
+/* ---------------------------------------------------------------- 合计行 */
+/* 从原来的「浅灰条」升级成「结果条」：左蓝边 + 等宽数字 + 加重，
+   与 styles.css 里 `.order-items-summary` 的视觉语言保持一致。 */
+.doc-total-row > td {
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.doc-total-row__label {
+  color: var(--text-muted);
+  font-size: var(--text-sm, 13px);
+  font-weight: var(--fw-medium, 500);
+  text-align: right;
+}
+
+.doc-total-row__value {
+  color: var(--fg-strong);
+  font-size: var(--fs-md, 16px);
+  font-weight: var(--fw-semibold, 600);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* 明细表里删行按钮别撑高行：dense 模式下按钮 28px 就够 */
+.doc-lines__table .row-remove-btn {
+  white-space: nowrap;
+}
+
+/* ⚠️ 明细行的数字列都很窄（56~84px），而默认是「双重内边距」：
+   单元格 dense padding 左右各 12px + input 自身 padding 左右各 12px，
+   一共吃掉 48px —— 数量列 56px 时文字区只剩 6px，数字全被裁掉，
+   用户看起来就是「框锁死了、输了没反应」（真机截图抓出来的）。
+   这里把明细表内的横向内边距统一压到 6px。
+   ⚠️ 特异性要写 (0,3,2)：styles.css 里 `[data-doc-form] input:not(..):not(..)`
+   是 (0,3,1) 且打包在组件 CSS 之后，同分它会反压 —— 多写一个 td 才稳赢。 */
+.doc-lines__table td.erp-table__cell {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.doc-lines__table td.erp-table__cell input[type='number'],
+.doc-lines__table td.erp-table__cell select {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.doc-lines__table .row-remove-btn {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+/* ------------------------------------------------------ 行内换算小字（销售出库） */
+/* 销售出库比采购入库多一层多单位换算。选「箱」时把三件事摊在行上：
+     数量  → `= 36 公斤`    （数量 × 换算率，直出实际出库的基本单位数量）
+     单位  → `×12`          （这一档的换算率）
+     单价  → `≈ 45.83/公斤` （单价 ÷ 换算率，最小单位成本）
+   全部是 display 层的推导，不写 state、不进请求体（换算率永远由服务端按 unit 重解析）。
+   控件本身仍是 `.erp-table__cell input/select`（32px、width:100%），这里只包一层纵向 flex
+   让控件与角标对齐 —— 不重新定义控件外观，避免和 erp-table.css 抢同一批属性。 */
+.doc-line-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.doc-line-cell--end {
+  align-items: flex-end;
+}
+
+.doc-line-cell--end > input {
+  text-align: right;
+}
+
+.doc-line-sub {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-line-cell--end .doc-line-sub {
+  text-align: right;
+}
+
+/* ------------------------------------------------------------ 单据详情弹窗 */
+/* 详情里多了一张明细表，440px 太挤；`.modal-card` 是 0,1,0，
+   组件 CSS 又被 Vite 提到 styles.css 之前 —— 必须用双类才稳赢。 */
+.modal-card.doc-detail {
+  max-width: 760px;
+}
+
+.doc-detail .modal-body {
+  gap: var(--space-3, 12px);
+}
+
+.doc-detail__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  line-height: 1.5;
+}
+
+.doc-detail__hint code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.08));
+  font-size: 11px;
+}
+
+/* -------------------------------------------------- 订单页「转单」状态标记 */
+/* 订单转成出入库单之后，原来那一排按钮（转入库单 / 删除）会整体消失。
+   改造前是"凭空不见"，看起来像 bug；现在换成这枚灰标，明确说出为什么点不了。
+   刻意不做成可点击的按钮：它不是操作，是状态。 */
+.doc-converted-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--space-2, 8px);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-sunken, rgba(148, 163, 184, 0.14));
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  font-weight: var(--fw-medium, 500);
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* 转单按钮：它是这张表里唯一"会动库存和账款"的操作，给它一点分量 ——
+   主色描边（不是实心填充：避免和"保存"抢注意力，也避免误点）。 */
+.doc-convert-btn:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.doc-convert-btn:not(:disabled):hover {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.08));
+}
+
+.doc-convert-btn:disabled {
+  opacity: 0.6;
+  /* 改造后 disabled 有两个原因：请求飞行中（转单中…）与"还没审核"。
+     统一用 not-allowed —— 后者是常态，progress 会让人以为一直在转。 */
+  cursor: not-allowed;
+}
+
+/* -------------------------------------------------- 订单状态徽标（单步审核） */
+/* 口径与后端 app/core/doc_status.py 一致：待审核 / 已审核 / 已转单 / 已取消。
+   ⚠️ 这四组只作用于订单页（`.order-status` 是 OrderBoard 独占的类名），
+   别把颜色规则挂到全局 `.status-badge` 上 —— 那个类被十几个页面共用。 */
+.order-status--pending {
+  background: var(--color-warning-soft, rgba(217, 119, 6, 0.14));
+  color: var(--color-warning, #b45309);
+}
+
+.order-status--approved {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.1));
+  color: var(--color-primary, #1d4ed8);
+}
+
+.order-status--completed {
+  background: var(--surface-sunken, rgba(148, 163, 184, 0.16));
+  color: var(--text-muted);
+}
+
+.order-status--cancelled {
+  background: transparent;
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+/* 审核按钮：制单后的下一步动作，用主色实心 —— 它比「转开单」更该被先看到 */
+.order-audit-btn {
+  white-space: nowrap;
+}
+
+/* 已结清：不是操作，是状态（同 .doc-converted-tag 的理由） */
+.order-paid-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--space-2, 8px);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-success-soft, rgba(22, 163, 74, 0.12));
+  color: var(--color-success, #15803d);
+  font-size: var(--text-xs, 12px);
+  font-weight: var(--fw-medium, 500);
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* 操作列现在最多 5 个元素（打印/审核/转单/收款/删除），保证不换行、间距统一 */
+.order-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1, 4px);
+  flex-wrap: nowrap;
+}
+
+/* --------------------------------------------------- 物流 / 签收（四流合一） */
+
+/* 详情弹窗里的那块：上方一条分隔线把它和"单号/客户/金额"分开，
+   内部 2×2 网格——4 个字段正好两行，窄屏再降成单列。 */
+.doc-logistics {
+  margin: var(--space-3, 12px) 0;
+  padding: var(--space-3, 12px);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-soft, #f8fafc);
+}
+
+.doc-logistics__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin-bottom: var(--space-2, 8px);
+}
+
+.doc-logistics__head h4 {
+  margin: 0;
+  font-size: var(--fs-sm, 13px);
+  font-weight: var(--fw-medium, 500);
+  color: var(--fg-strong, #0f172a);
+}
+
+.doc-logistics__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2, 8px) var(--space-3, 12px);
+}
+
+.doc-logistics__grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.doc-logistics__grid label > span {
+  font-size: var(--fs-xs, 12px);
+  color: var(--fg-muted, #64748b);
+}
+
+.doc-logistics__grid input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface, #fff);
+  font-size: var(--fs-sm, 13px);
+}
+
+.doc-logistics__error {
+  margin: var(--space-2, 8px) 0 0;
+  font-size: var(--fs-xs, 12px);
+  color: var(--danger, #dc2626);
+}
+
+.doc-logistics__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.doc-logistics__hint {
+  font-size: var(--fs-xs, 12px);
+  color: var(--fg-muted, #64748b);
+}
+
+@media (max-width: 720px) {
+  .doc-logistics__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

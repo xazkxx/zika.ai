@@ -1,7 +1,8 @@
 from datetime import datetime
+from decimal import Decimal
 import json
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -26,11 +27,14 @@ class Invoice(Base):
     issue_date: Mapped[str | None] = mapped_column(String(20), nullable=True)
     counterparty_name: Mapped[str | None] = mapped_column(String(150), nullable=True)  # 对方单位名称
     invoice_code: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 发票代码
-    total_amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # 价税合计
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)  # 价税合计
     tax_rate: Mapped[float | None] = mapped_column(Float, nullable=True)  # 税率 %
-    tax_amount: Mapped[float | None] = mapped_column(Float, nullable=True)  # 税额
-    excl_tax_amount: Mapped[float | None] = mapped_column(Float, nullable=True)  # 不含税额
+    tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)  # 税额
+    excl_tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)  # 不含税额
     deducted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # 专票是否已抵扣
+    # 认证抵扣时间（2026-10-24）：由 update_invoice 在 deducted False→True 时自动落
+    # 服务器时间，取消抵扣时清空。审计口径："这张专票是什么时候抵的"必须能回答。
+    deducted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     category: Mapped[str | None] = mapped_column(String(30), nullable=True)
     status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     buyer_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
@@ -48,6 +52,26 @@ class Invoice(Base):
     # manual=手工开票 / api=对接开票（税局数电平台）。⚠️ 只做状态留存，本批不做真对接
     issue_mode: Mapped[str] = mapped_column(String(10), default="manual", nullable=False)
     handler: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # —— 关联档案（第 14 批，2026-10-18）：靠名字匹配发票是灾难 ——
+    # 发票只有 `counterparty_name` 文本，而客户档案里同一家公司常有多个签约主体
+    # （"XX公司""XX第一分公司""XX-某项目部"），字符串永远对不上。
+    # 对账单曾经因此**一张发票都匹配不到**（见 REPORT-DIAG-TASK12.md）。
+    # 现在落成 id：销项发票挂客户，进项发票暂无对应字段（将来可加 supplier_id）。
+    # 两列都可空 —— 历史发票允许先不挂，由回填脚本按名字/税号尽力匹配。
+    customer_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    contract_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
+    # —— 四流合一（2026-10-19）：发票挂到**具体单据** ——
+    # 这是把"发票孤岛"接回业务流的唯一锚点。方向决定它指向哪张表：
+    #   direction='output'（销项）→ sales_orders.id
+    #   direction='input' （进项）→ purchase_orders.id
+    #
+    # ⚠️ 刻意不建外键、也**不自动匹配**：发票与单据的对应关系存在"一票多单（合并开票）"
+    #    和"一单多票（分批开票）"两种真实情况，靠金额/名称去猜必然出错。
+    #    这一列先只承载"1 张发票 → 1 张主单"，需要分摊时由对账聚合层按金额拆，
+    #    不让主数据承担它表达不了的关系。
+    related_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     # —— 第 11 批：原始文件（相对 storage_root 的路径，存绝对路径换盘就失效）——
     source_path: Mapped[str | None] = mapped_column(String(255), nullable=True)

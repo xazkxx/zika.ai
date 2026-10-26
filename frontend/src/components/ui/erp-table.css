@@ -1,0 +1,400 @@
+/**
+ * ErpTable 样式 —— 命名空间 `.erp-table`
+ *
+ * 三条来自真实页面的约束：
+ *  ① 列多时必须横滚，而且**操作列要吸附在右边**，否则用户滚到最右找按钮、
+ *     再滚回来才知道自己点的是哪一行；
+ *  ② 单元格里的输入框（单据明细）不能套 40px 高度规则，否则一行行高被撑爆；
+ *  ③ 数字列要 tabular-nums，否则金额位数一变就左右跳。
+ */
+
+/* ---------------------------------------------------------------- 外壳 */
+/* 横滚只发生在这一层：表格超出就滚，页面本身绝不出现横向滚动条 */
+.erp-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  /* 触屏横滚到尽头时不要带着页面继续滚 */
+  overscroll-behavior-x: contain;
+  /* 吸附列投下的一点点阴影会被 overflow:hidden 裁掉，这里保持 visible */
+  position: relative;
+}
+
+.erp-table-wrap--scroll-y {
+  overflow-y: auto;
+}
+
+/* ---------------------------------------------------------------- 表格 */
+.erp-table {
+  width: 100%;
+  border-collapse: separate;   /* separate 才能让 cell 上做 border/radius */
+  border-spacing: 0;
+  font-size: var(--fs-sm);     /* 13px：表格比正文小一档，信息密度更高 */
+  color: var(--fg);
+}
+
+.erp-table__caption {
+  caption-side: top;
+  text-align: left;
+  padding: 0 0 var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+/* ---------------------------------------------------------------- 表头 */
+.erp-table__cell--head {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  font-size: var(--fs-xs);      /* 12px */
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+  background: var(--gray-50);
+  border-bottom: 1px solid var(--divider-strong);
+  white-space: nowrap;
+  /* 表头吸顶：长表格滚到下面时仍然知道每列是什么。
+     （同一元素可以同时 sticky top 与 sticky right，吸附列的表头两个都要） */
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+/* ---------------------------------------------------------------- 单元格 */
+.erp-table__cell {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+  text-align: left;
+}
+
+.erp-table__row:last-child .erp-table__cell {
+  border-bottom: 0;
+}
+
+/* 紧凑模式：弹窗、选择列表用 */
+.erp-table-wrap--dense .erp-table__cell {
+  padding: var(--space-2) var(--space-3);
+}
+
+.erp-table-wrap--dense .erp-table__cell--head {
+  padding: var(--space-2) var(--space-3);
+}
+
+/* --------------------------------------------------------------- 对齐类 */
+.erp-table__cell--right,
+.erp-table__cell--head.erp-table__cell--right {
+  text-align: right;
+}
+
+.erp-table__cell--center,
+.erp-table__cell--head.erp-table__cell--center {
+  text-align: center;
+}
+
+/* 数字：等宽 + 右对齐（金额、数量、单价） */
+.erp-table__cell--num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* 编号 / 条码 / 助记码：等宽更容易对齐比对 */
+.erp-table__cell--mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: -0.01em;
+  color: var(--fg-muted);
+}
+
+.erp-table__cell--nowrap {
+  white-space: nowrap;
+}
+
+/* 省略：必须落在 td **内部**的块级元素上 —— td 自身的 max-width 在
+   table-layout:auto 下被浏览器忽略（CSS 规范未定义），这是经典坑。
+   上限给 280px：再宽的列就该用 ellipsis 之外的方式处理了。 */
+.erp-table__ellipsis {
+  display: block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ 行状态 */
+.erp-table__row {
+  transition: background-color var(--dur-fast) var(--ease-in-out);
+}
+
+.erp-table--striped .erp-table__row:nth-child(even) {
+  background: var(--gray-50);
+}
+
+.erp-table--hover .erp-table__row:hover {
+  background: var(--color-primary-soft);
+}
+
+.erp-table__row--clickable {
+  cursor: pointer;
+}
+
+.erp-table__row--clickable:focus-visible {
+  outline: none;
+  box-shadow: var(--ring) inset;
+}
+
+/* -------------------------------------------------------- 吸附列（右） */
+/* 操作列横滚时钉在最右侧。必须显式给背景，否则下面的内容会透出来。 */
+.erp-table__cell--sticky-right {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--surface);
+  box-shadow: -10px 0 12px -12px rgba(15, 23, 42, 0.22);
+}
+
+.erp-table__cell--head.erp-table__cell--sticky-right {
+  background: var(--gray-50);
+  z-index: 3;   /* 高于普通表头，横滚时不被盖住 */
+}
+
+.erp-table--striped .erp-table__row:nth-child(even) .erp-table__cell--sticky-right {
+  background: var(--gray-50);
+}
+
+.erp-table--hover .erp-table__row:hover .erp-table__cell--sticky-right {
+  background: var(--color-primary-soft);
+}
+
+/* ---------------------------------------------------- 加载 / 空态占位行 */
+.erp-table__state-cell {
+  padding: var(--space-6) var(--space-4) !important;
+  border-bottom: 0 !important;
+  background: var(--surface);
+}
+
+.erp-table__state-row:hover {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------- 合计行 */
+.erp-table__foot .erp-table__cell,
+.erp-table__foot td {
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-soft);
+  border-top: 1px solid var(--divider-strong);
+  font-weight: var(--fw-semibold);
+  color: var(--fg-strong);
+}
+
+/* ---------------------------------------------------- 单据明细里的控件 */
+/* 单元格内的输入框不能套 40px 的高度规则，否则一行行高被撑到 60px+。
+   这里把它们压到 32px，并且去掉外层 border，融进单元格。 */
+.erp-table__cell input:not([type='checkbox']):not([type='radio']),
+.erp-table__cell select {
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--fg-strong);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  transition: var(--transition-colors);
+}
+
+.erp-table__cell input:not([type='checkbox']):not([type='radio']):focus,
+.erp-table__cell select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--ring);
+}
+
+.erp-table__cell .link-btn,
+.erp-table__cell button {
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- 响应式 */
+/* 列可以在声明里写 hideBelow: 'md' | 'sm'，窄屏按级隐藏，优先保住关键列。
+   ⚠️ 用 data-hide 而不是给每列生成类名：列是运行时数据，CSS 没法预生成。 */
+@media (max-width: 1200px) {
+  .erp-table [data-hide='md'] {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .erp-table [data-hide='sm'] {
+    display: none;
+  }
+
+  .erp-table__ellipsis {
+    max-width: 150px;
+  }
+}
+
+/* ------------------------------------------------------------- 多选 */
+/* ⚠️ 这一整块**必须留在文件末尾**。原因不是洁癖：
+   `.erp-table--striped .erp-table__row:nth-child(even)` 是 0,3,0，而选中态
+   `.erp-table--striped .erp-table__row--selected:nth-child(even)` 也是 0,3,0 ——
+   同特异性下**只有靠源码顺序**才压得住。挪到前面去，隔行底色（even 行）会把
+   选中底色盖掉，表现就是"勾了单数行有底色、双数行没有"，很难一眼归因。
+   同理 sticky 吸附列的背景是硬编码的（见上面的 --sticky-right 段），
+   选中态必须再单独覆盖一遍，否则最右那格一直白着。 */
+
+/* 选择列永远在最左、固定窄宽、居中；它**不参与 sticky**（sticky 只给右侧操作列）。 */
+.erp-table__cell--select {
+  width: 44px;
+  padding-left: var(--space-4);
+  padding-right: 0;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.erp-table__cell--head.erp-table__cell--select {
+  padding-right: 0;
+}
+
+.erp-table__check {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+.erp-table .erp-table__row--selected,
+.erp-table--striped .erp-table__row--selected:nth-child(even) {
+  background: var(--color-primary-soft);
+}
+
+.erp-table .erp-table__row--selected .erp-table__cell--sticky-right,
+.erp-table--striped .erp-table__row--selected:nth-child(even) .erp-table__cell--sticky-right {
+  background: var(--color-primary-soft);
+}
+
+/* 批量操作条：有选中才出现，压在表格上方。
+   刻意**不放进** .erp-table-wrap —— 那里面的 thead 是 sticky top:0，
+   再塞一个 sticky 的条会跟表头抢同一个位置，两者互相盖。 */
+.erp-table-bulkbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  background: var(--color-primary-soft);
+  color: var(--fg-strong);
+  font-size: var(--fs-sm);
+}
+
+.erp-table-bulkbar__count b {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-semibold);
+}
+
+.erp-table-bulkbar__hint {
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+
+.erp-table-bulkbar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+
+/* ── 列宽可拖（2026-10-21）───────────────────────────────────────────────
+   只有客户/供应商/商品这几张大表开（ErpTable `columnResize`），其余表不受影响。
+   fixed 布局是硬要求：auto 下 `width` 只是建议，长中文会把列撑回原样，
+   用户拖完会说"拖了没反应"。 */
+.erp-table--resizable {
+  table-layout: fixed;
+}
+
+/* fixed 布局里省略号要按单元格宽度算，不能再被 280px 上限卡住 */
+.erp-table--resizable .erp-table__ellipsis {
+  max-width: 100%;
+}
+
+/* 表头右缘的抓手。
+   ⚠️ 必须**完全落在 th 盒内**（right:0 + width:7px）：早先写成 `right:-4px; width:9px`
+   往外探 4px，结果那 4px 被后一个 th 盖住 —— 每个 th 都是 `position:sticky` 且带
+   z-index，各自成层叠上下文，后出现的兄弟永远在上面。真鼠标点下去命中的是隔壁表头，
+   拖动毫无反应（合成事件直接 dispatch 到 span 上反而"正常"，极容易误判）。 */
+.erp-table__resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 9px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  z-index: 4;
+}
+
+/* 平时就画一条淡灰分隔线：用户看到表头之间有"缝"，才知道这里能拖。
+   只在悬停时变色的话，等于把功能藏起来了（用户实测反馈"没发现变化"）。 */
+.erp-table__resizer::after {
+  content: '';
+  position: absolute;
+  top: 18%;
+  bottom: 18%;
+  left: 50%;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--border, #e2e8f0);
+  border-radius: 1px;
+  transition: background 120ms ease, width 120ms ease;
+}
+
+/* 悬停/拖动：变蓝加粗，明确"抓住这里" */
+.erp-table__resizer:hover::after,
+.erp-table__resizer:active::after {
+  width: 2px;
+  margin-left: -1px;
+  background: var(--color-primary, #2563eb);
+}
+
+/* 拖动中把**所有**分隔线都淡淡点亮：等于告诉用户这些边界都能拖，
+   但只用 35% 透明度 —— 全亮会像给每列描了个蓝框，太吵。 */
+.is-col-resizing .erp-table__resizer::after {
+  background: rgba(37, 99, 235, 0.35);
+}
+
+/* 表头单元格必须是定位容器，否则抓手会去贴最近的定位祖先 */
+.erp-table__cell--head {
+  position: sticky;
+  top: 0;
+}
+
+.erp-table__cell--head:has(.erp-table__resizer) {
+  position: sticky;   /* 保持吸附，同时允许 absolute 抓手 */
+}
+
+/* 拖动期间全页保持 col-resize，并禁掉选中（否则会顺手选一大片文字） */
+.is-col-resizing,
+.is-col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+/* 2026-10-22：`wrap` 列 —— 允许折行，行高交给内容。
+   ⚠️ 不要给 td 设 height / max-height：table-cell 上的 max-height 规范未定义，
+   浏览器直接忽略，反而会退回"一行一个字竖排"。只控制 white-space 与断词即可。 */
+.erp-table__cell--wrap {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+/* 折行时垂直方向靠上一点，多行看起来与图标/按钮垂直居中更自然 */
+.erp-table__cell--wrap,
+.erp-table__cell--wrap .erp-table__ellipsis {
+  text-overflow: clip;
+}

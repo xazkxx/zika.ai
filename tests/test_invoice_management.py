@@ -372,13 +372,35 @@ def test_direction_labels_are_complete():
 # ============================================================
 # 防退化：前端挂载
 # ============================================================
+def _frontend_all_source() -> str:
+    """前端源码合集：App.jsx + pages/*.jsx + components/**/*.jsx。
+
+    2026-10-14 把 App.jsx 拆成 45 个 pages/*.jsx 之后，原来"在 App.jsx 里找字符串"
+    的断言会集体失效（字符串搬走了，功能没坏）。这里一次性读合集，
+    断言仍然钉在"界面上有没有这个控件"，而不是"它写在哪个文件里"。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "frontend" / "src"
+    files = [root / "App.jsx"]
+    files += sorted((root / "pages").glob("*.jsx"))
+    files += sorted((root / "components").rglob("*.jsx"))
+    parts = []
+    for f in files:
+        if f.name.endswith('.bak') or '.bak-' in f.name:
+            continue
+        try:
+            parts.append(f.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return "\n".join(parts)
+
+
 def test_frontend_wires_the_invoice_page():
     """前端必须：走 import 落盘、有进销项 Tab、有下载与导出原件入口。"""
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parent.parent / "frontend" / "src" / "App.jsx"
-    ).read_text(encoding="utf-8")
+    source = _frontend_all_source()
 
     # ⚠️ 上传必须走 import：走 parse 不会留下原件（这就是历史上一张原件都没有的原因）
     assert "${API_BASE}/invoices/import" in source, "上传没有走落盘接口"
@@ -570,9 +592,7 @@ def test_invoice_page_has_the_required_controls():
     """
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parent.parent / "frontend" / "src" / "App.jsx"
-    ).read_text(encoding="utf-8")
+    source = _frontend_all_source()
 
     # 逐条对应用户的原话
     for token, why in [
@@ -644,9 +664,7 @@ def test_frontend_page_flags_are_declared_after_their_state():
     """
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parent.parent / "frontend" / "src" / "App.jsx"
-    ).read_text(encoding="utf-8")
+    source = _frontend_all_source()
     state_at = source.index("const [selectedInvoiceIds, setSelectedInvoiceIds]")
     for flag in ("invoicePageAllSelected", "invoicePageSomeSelected"):
         flag_at = source.index(f"const {flag} =")
@@ -787,9 +805,7 @@ def test_finance_list_exposes_the_source_and_hides_the_delete_button():
     """
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parent.parent / "frontend" / "src" / "App.jsx"
-    ).read_text(encoding="utf-8")
+    source = _frontend_all_source()
     assert "row.related_type ?" in source, "界面上没有按来源区分删除入口"
     assert "请到单据上删" in source, "自动流水要给出「去哪儿删」的提示，而不是一个报废的按钮"
 
@@ -799,3 +815,88 @@ def test_finance_list_exposes_the_source_and_hides_the_delete_button():
     item = resp.json()["items"][0]
     for key in ("related_type", "related_type_label"):
         assert key in item, f"/finance/entries 没有下发 {key}"
+
+
+# ============================================================
+# 状态流转 + 认证抵扣（2026-10-24）
+# ============================================================
+def test_deducted_at_set_by_server_and_cleared_on_untoggle(imported):
+    """标记抵扣 → deducted_at 由**服务器**落时间；取消抵扣 → 清空。
+
+    抵扣时间是财务事实，不允许前端随意填写：接口只接受 deducted 布尔，
+    时间戳在跃迁时自动落，"已抵扣但没有时间"的脏状态不可能出现。
+    """
+    headers = imported["headers"]
+    invoice_id = imported["invoice"]["id"]
+
+    resp = client.patch(
+        f"/api/v1/invoices/{invoice_id}",
+        json={"deducted": True},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deducted"] is True
+    assert body["deducted_at"], "标记抵扣后没有落 deducted_at"
+
+    # 列表也要下发 deducted_at（界面悬停显示抵扣时间）
+    listed = client.get("/api/v1/invoices", headers=headers)
+    row = next(r for r in listed.json()["items"] if r["id"] == invoice_id)
+    assert row["deducted"] is True and row["deducted_at"] == body["deducted_at"]
+
+    resp = client.patch(
+        f"/api/v1/invoices/{invoice_id}",
+        json={"deducted": False},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deducted"] is False
+    assert body["deducted_at"] is None, "取消抵扣后 deducted_at 必须清空"
+
+    # 保持未抵扣收场，不污染 summary 统计
+    assert client.get("/api/v1/invoices/summary", headers=headers).status_code == 200
+
+
+def test_direction_unknown_to_input_then_auto_match(imported):
+    """待判定 → 判定进项：PATCH direction 生效，auto-match 接口能跑（返回候选结构）。
+
+    前端「判定进项/判定销项」按钮就是这两步连招：先 PATCH 方向，再触发匹配引擎。
+    匹配引擎只在唯一强证据时写库，这里只验证接口契约不炸、字段齐全。
+    """
+    headers = imported["headers"]
+    invoice_id = imported["invoice"]["id"]
+
+    # 先打成 unknown，模拟用户截图里"待判定"的两张票
+    resp = client.patch(
+        f"/api/v1/invoices/{invoice_id}",
+        json={"direction": "unknown"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["direction"] == "unknown"
+    assert resp.json()["direction_label"] == "待判定"
+
+    # 非法取值必须被拦（枚举校验没退化）
+    bad = client.patch(
+        f"/api/v1/invoices/{invoice_id}",
+        json={"direction": "sideways"},
+        headers=headers,
+    )
+    assert bad.status_code == 400, bad.text
+
+    # 判定为进项
+    resp = client.patch(
+        f"/api/v1/invoices/{invoice_id}",
+        json={"direction": "input"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["direction"] == "input"
+
+    # 自动匹配引擎：只算/落库都不该炸，且返回结构里有前端要展示的字段
+    match = client.post(f"/api/v1/invoices/{invoice_id}/auto-match", headers=headers)
+    assert match.status_code == 200, match.text
+    outcome = match.json()
+    for key in ("status", "applied", "order_no", "candidates"):
+        assert key in outcome, f"auto-match 返回缺 {key}"

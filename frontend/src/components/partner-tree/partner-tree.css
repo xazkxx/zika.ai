@@ -1,0 +1,1177 @@
+/**
+ * PartnerTree 样式 —— 命名空间 `.ptree`，与 `.erp-tree` / `.cat-*` 零交叉
+ *
+ * 为什么不复用 `.erp-tree`：
+ *   那是一棵"分组视图树"（两级、只读），行高与缩进都按 2 级调过。
+ *   这棵树是 6 层以上、可拖拽、可搜索的，需要的落点指示线 / 深层 caret /
+ *   命中高亮 / 深度角标它一个都没有。混在一起改，两个场景会互相牵制。
+ *
+ * ⚠️ 组件 CSS 会被 Vite 打包到 `styles.css` **之前**，所以凡是需要盖掉
+ *    全局 `.search-input` / `.link-btn` 的地方，选择器一律带上 `.ptree` 前缀
+ *    （0,2,0 起），不靠加载顺序取胜。
+ */
+
+.ptree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  min-width: 0;
+  font-size: var(--text-sm, 13px);
+  color: var(--text);
+}
+
+/* ─────────────────────────────────────────────────────────── 搜索框 */
+.ptree__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.ptree__search-icon {
+  position: absolute;
+  left: 9px;
+  display: inline-flex;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.ptree__search .ptree__search-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 26px 0 28px;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.4));
+  border-radius: var(--radius-md);
+  background: var(--surface, #fff);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm, 13px);
+  outline: none;
+  transition: var(--transition-colors);
+}
+
+.ptree__search .ptree__search-input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft, rgba(37, 99, 235, 0.15));
+}
+
+/* 原生 search 的清除按钮长得各家不一样，统一关掉，用我们自己的 × */
+.ptree__search .ptree__search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.ptree__search-clear {
+  position: absolute;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ptree__search-clear:hover {
+  background: var(--surface-muted, rgba(148, 163, 184, 0.18));
+  color: var(--text);
+}
+
+/* ─────────────────────────────────────────────────────────── 命中统计 */
+.ptree__hits {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+  padding: 0 2px;
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+}
+
+.ptree__hits strong {
+  color: var(--color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ptree__hits-none {
+  color: var(--text-muted);
+}
+
+.ptree__hits-nav {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.ptree__hits-nav button {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.4));
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface, #fff);
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.ptree__hits-nav button:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* ─────────────────────────────────────────────────────────── 工具行 */
+.ptree__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: 0 2px;
+  font-size: var(--text-xs, 12px);
+}
+
+.ptree__tools-meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 提示条（真错误：401/5xx/网络） */
+.ptree__banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  background: var(--warning-soft, rgba(245, 158, 11, 0.12));
+  color: var(--warning-fg, #92400e);
+  font-size: var(--text-xs, 12px);
+}
+
+/* 降级提示（404 = 后端没有这条路由，功能未上线）。
+   ⚠️ 刻意做成**灰色、无图标、不抢眼**：这时候树本身是正常的（全部 / 未分类都在），
+      数据也没坏，弹红色报错只会让人以为分类数据出了问题。 */
+.ptree__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+  padding: 5px 8px;
+  border-radius: var(--radius-md);
+  background: var(--surface-muted, rgba(148, 163, 184, 0.12));
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  line-height: 1.5;
+}
+
+.ptree__notice-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─────────────────────────────────────────────────────────── 树体 */
+.ptree__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  /* 深树的横向安全阀：缩进封顶 + 标签省略号之后正常不会出现横向滚动，
+     但分类名里若塞了超长英文串（无空格），这行是最后一道防线。 */
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+/* 一行 */
+.ptree__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding-right: 4px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  user-select: none;
+  /* 行本身不做横向 scroll 容器，indent 用 paddingLeft 内联 */
+  min-width: 0;
+  transition: background 120ms ease;
+}
+
+.ptree__row:hover {
+  background: var(--surface-muted, rgba(148, 163, 184, 0.1));
+}
+
+.ptree__row:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.ptree__row.is-active {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.12));
+}
+
+.ptree__row.is-active .ptree__label {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.ptree__row.is-active .ptree__count {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+/* 搜索命中行：底色偏琥珀，和"当前选中"的蓝色区分开 ——
+   一个人搜完可能会点一下，两种状态会同时存在，必须一眼分得清 */
+.ptree__row.is-hit {
+  background: var(--warning-soft, rgba(245, 158, 11, 0.14));
+}
+
+.ptree__row.is-hit.is-active {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.14));
+  box-shadow: inset 0 0 0 1px var(--color-primary);
+}
+
+/* 跳转闪烁：搜完按回车，目标行闪一下，眼睛才跟得上 */
+/* 归档落点闪一下（2026-10-21 第二轮）：原来 900ms、只有一道内描边，
+   在已经展开/已经选中的节点上几乎看不出来 —— 用户反馈"没发现变化"。
+   现在 1.6 秒、蓝环 + 淡蓝底一起，且三次呼吸，扫一眼就能确认"东西进了这里"。 */
+.ptree__row.is-flash {
+  animation: ptree-flash 1600ms ease-out;
+}
+
+@keyframes ptree-flash {
+  0% {
+    box-shadow: inset 0 0 0 2px var(--color-primary, #2563eb);
+    background: rgba(37, 99, 235, 0.22);
+  }
+  45% {
+    box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.45);
+    background: rgba(37, 99, 235, 0.10);
+  }
+  75% {
+    box-shadow: inset 0 0 0 2px var(--color-primary, #2563eb);
+    background: rgba(37, 99, 235, 0.18);
+  }
+  100% {
+    box-shadow: inset 0 0 0 2px transparent;
+    background: transparent;
+  }
+}
+
+/* 「全部」与「未分类」：视觉上是"出口"，不是分类节点 */
+.ptree__row--all {
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--divider, rgba(148, 163, 184, 0.25));
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  padding-bottom: 4px;
+  font-weight: 600;
+}
+
+.ptree__row--uncat {
+  margin-top: 4px;
+  border-top: 1px dashed var(--divider, rgba(148, 163, 184, 0.3));
+  padding-top: 4px;
+  color: var(--text-muted);
+}
+
+.ptree__row--uncat.is-active {
+  color: var(--color-primary);
+}
+
+/* ─────────────────────────────────────────────────────────── caret */
+.ptree__caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm, 4px);
+  transition: color 120ms ease, background 120ms ease, transform 160ms ease;
+}
+
+.ptree__caret:hover {
+  color: var(--color-primary);
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.ptree__caret svg {
+  transition: transform 160ms ease;
+}
+
+.ptree__caret.is-collapsed svg {
+  transform: rotate(-90deg);
+}
+
+/* ⭐ 第 5 层起（depth ≥ 4）：折叠图标必须**一眼可见** ——
+   深树里缩进已经把 caret 推到离标签很远的地方，默认那个 8px 小三角根本找不到。
+   放大到 18×18 + 描边 + 常驻底色，点起来也不容易点偏。 */
+.ptree__caret--deep {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.45));
+  background: var(--surface, #fff);
+  color: var(--text, #334155);
+}
+
+.ptree__caret--deep:hover {
+  border-color: var(--color-primary);
+}
+
+.ptree__caret--leaf {
+  cursor: default;
+  background: transparent;
+  border-color: transparent;
+}
+
+.ptree__caret--leaf:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+/* ─────────────────────────────────────────────────────────── 文本 */
+.ptree__label {
+  /* ⚠️ flex 子项 min-width 默认 auto（不小于内容宽度），不写 0 省略号全失效，
+     一个 30 字的项目名就能把左栏顶宽、逼出横向滚动条。
+     但也**不能真的压到 0**：4 层以后的缩进 + 深度角标 + 计数角标会把标签挤成 0 宽，
+     界面只剩一个 "L5" —— 用户以为"客户名字没渲染"（2026-10-22 实拍）。
+     这里给一个保底宽度：名字至少能看见 2~3 个字 + 省略号。 */
+  min-width: 3.2em;
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+.ptree__mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: var(--warning, #fbbf24);
+  color: #1f2937;
+  font-weight: 600;
+}
+
+/* 深度角标 L5/L6…：缩进封顶后靠它读"我在第几层"。
+   ⚠️ 但它是 `flex:0 0 auto`，常驻会跟名字抢宽度 —— 树栏只有 200px 上下，
+   4 层以后名字直接被挤成 0 宽。改成**悬停/选中行才显形**，平时把宽度让给名字。 */
+.ptree__depth {
+  flex: 0 0 auto;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--surface-muted, rgba(148, 163, 184, 0.16));
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+  transition: opacity 120ms ease;
+}
+
+.ptree__row:hover .ptree__depth,
+.ptree__row.is-active .ptree__depth,
+.ptree__row:focus-visible .ptree__depth {
+  opacity: 1;
+  width: auto;
+}
+
+/* ─────────────────────────────────────────────────────────── 计数 / 抓手 */
+.ptree__count {
+  flex: 0 0 auto;
+  min-width: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-muted, rgba(148, 163, 184, 0.16));
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  transition: var(--transition-colors);
+}
+
+/* 抓手（.ptree__grip）的完整规则见下方「指针拖拽」一节 —— 那里要同时说明
+   touch-action 的取舍，拆成两处会让人以为改一处就够。 */
+
+/* ─────────────────────────────────────────────────────────── 拖拽态 */
+.ptree__body.is-dragging .ptree__row {
+  /* 拖动时不要 hover 高亮到处乱跳，只看落点 */
+  cursor: grabbing;
+}
+
+.ptree__row.is-dragging-source {
+  opacity: 0.45;
+}
+
+/* 插到这一行**上面**：一条 2px 实线贴着行顶 */
+.ptree__row.is-drop-before::before,
+.ptree__row.is-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--color-primary);
+  pointer-events: none;
+}
+
+.ptree__row.is-drop-before::before {
+  top: -1px;
+}
+
+.ptree__row.is-drop-after::after {
+  bottom: -1px;
+}
+
+/* 变成这一行的子级：整行描边 + 浅底，跟"插到之间"一眼区分 */
+.ptree__row.is-drop-inside {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.14));
+  box-shadow: inset 0 0 0 2px var(--color-primary);
+}
+
+/* 非法落点（拖进自己的后代）：红色 + 禁止光标 */
+.ptree__row.is-drop-forbidden {
+  background: var(--danger-soft, rgba(220, 38, 38, 0.1));
+  box-shadow: inset 0 0 0 1px var(--danger, #dc2626);
+  cursor: not-allowed;
+}
+
+/* 移到顶级的落点：只在拖动时出现 */
+.ptree__rootdrop {
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px dashed var(--border, rgba(148, 163, 184, 0.5));
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  text-align: center;
+}
+
+.ptree__rootdrop.is-over {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.12));
+  color: var(--color-primary);
+}
+
+.ptree__dragtip {
+  position: sticky;
+  bottom: 0;
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface-overlay, rgba(15, 23, 42, 0.86));
+  color: #f8fafc;
+  font-size: var(--text-xs, 12px);
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+/* ─────────────────────────────────────────────────────────── 建类（内联输入，不用弹窗）
+   ⚠️ 为什么不做 modal：这棵树的层级经常有 5~6 层，弹窗会把"我到底建在谁下面"
+      这条最关键的上下文整个遮住。输入框直接长在树上，位置本身就是答案。 */
+.ptree__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.5));
+  border-radius: var(--radius-md, 6px);
+  background: var(--surface, #fff);
+  color: var(--text);
+  font-size: var(--text-xs, 12px);
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+
+.ptree__add:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.1));
+  color: var(--color-primary);
+}
+
+.ptree__add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 行内三按钮（+ / 改名 / 删除）：默认隐形，hover 或键盘进入才出现 */
+/* 行内操作按钮组（+ / 改名 / 删除 / ⋯）。
+   ⚠️ 原来用 `opacity: 0` 隐藏 —— 视觉上没了，**宽度还在**，一直占着 60~70px。
+   树栏只有 300px 上下，4 层以后名字被这截占位挤成"王宪..."。
+   改成绝对定位浮在右侧：平时完全不吃宽度，悬停才盖在计数角标上。 */
+.ptree__acts {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding-left: 4px;
+  border-radius: 4px;
+  background: var(--surface, #fff);
+  box-shadow: -8px 0 8px -8px rgba(15, 23, 42, 0.35);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.ptree__row:hover .ptree__acts,
+.ptree__row:focus-within .ptree__acts {
+  opacity: 1;
+}
+
+/* 悬停时让计数角标给按钮让位（数字在 title 里仍然可查） */
+.ptree__row:hover .ptree__count,
+.ptree__row:focus-within .ptree__count {
+  visibility: hidden;
+}
+
+/* 触屏没有 hover —— 不放开就是"根本没有按钮" */
+@media (hover: none) {
+  .ptree__acts {
+    opacity: 1;
+  }
+}
+
+.ptree__act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+
+.ptree__act:hover:not(:disabled) {
+  background: var(--surface-muted, rgba(148, 163, 184, 0.2));
+  color: var(--color-primary);
+}
+
+.ptree__act--danger:hover:not(:disabled) {
+  background: var(--danger-soft, rgba(220, 38, 38, 0.12));
+  color: var(--danger, #dc2626);
+}
+
+.ptree__act:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 新建输入行 / 改名行 / 删除确认行 */
+.ptree__row--edit,
+.ptree__row.is-editing {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.1));
+  box-shadow: inset 0 0 0 1px var(--color-primary);
+  cursor: default;
+}
+
+.ptree__row.is-confirming {
+  background: var(--danger-soft, rgba(220, 38, 38, 0.1));
+  box-shadow: inset 0 0 0 1px var(--danger, #dc2626);
+}
+
+.ptree__edit-input {
+  flex: 1 1 auto;
+  /* 同 .ptree__label：不写 0 省略号/收缩全失效，长名字会顶宽左栏 */
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--color-primary);
+  border-radius: 4px;
+  background: var(--surface, #fff);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm, 13px);
+}
+
+.ptree__edit-input:focus {
+  outline: 2px solid var(--color-primary-soft, rgba(37, 99, 235, 0.35));
+  outline-offset: 0;
+}
+
+.ptree__edit-acts {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ptree__edit-ok,
+.ptree__edit-cancel {
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: var(--text-xs, 12px);
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ptree__edit-ok {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.ptree__edit-ok--danger {
+  background: var(--danger, #dc2626);
+}
+
+.ptree__edit-ok:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ptree__edit-cancel {
+  background: transparent;
+  border-color: var(--border, rgba(148, 163, 184, 0.5));
+  color: var(--text-muted);
+}
+
+.ptree__edit-cancel:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.ptree__label--danger {
+  color: var(--danger, #dc2626);
+}
+
+/* ─────────────────────────────────────────────────────────── 多选（批量改分类）
+   多选态只在"用户主动进入"后出现（桌面 Ctrl/Shift、触屏长按菜单），
+   平时树保持"导航工具"的样子：不加常驻 checkbox，不吃缩进。 */
+.ptree__multi {
+  /* 树可能很长，操作条必须一直看得见"选了几个、下一步点什么" */
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  border-radius: var(--radius-md);
+  background: var(--color-primary-soft, #eff6ff);
+  border: 1px solid var(--color-primary-border, #bfdbfe);
+  color: var(--color-primary, #2563eb);
+  font-size: var(--text-xs, 12px);
+  /* 滚上来的行从它下面过，给一条清晰的边界 */
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+
+.ptree__multi-count {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ptree__multi-note {
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
+.ptree__multi-acts {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+/* 2E：「移动…」在零勾选时禁用 —— 禁用态必须看得出来，不然像坏了 */
+.ptree__multi-acts .link-btn:disabled {
+  color: var(--text-muted, #94a3b8);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 16px 方框 + 行内 6px gap = CHECK_SLOT（22px），"全部 / 未分类"两行靠它对齐 */
+.ptree__check {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.ptree__checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--color-primary, #2563eb);
+  cursor: pointer;
+}
+
+.ptree__row.is-selected {
+  background: var(--color-primary-soft, #eff6ff);
+}
+
+/* 被选区里的祖先包住：它其实不需要单独移动 —— 勾选框淡化 + 标签变浅，
+   再配上操作条的「其中 N 项随父级移动」，不会让人以为漏选了 */
+.ptree__row.is-covered {
+  background: transparent;
+}
+
+.ptree__row.is-covered .ptree__checkbox {
+  opacity: 0.45;
+}
+
+.ptree__row.is-covered .ptree__label {
+  opacity: 0.6;
+}
+
+/* ─────────────────────────────────────────────────────────── 指针拖拽（鼠标 / 触屏同一套）
+   ⚠️ `.ptree__grip` 是触屏唯一能起手拖的地方：必须 `touch-action:none`，
+      否则浏览器会把手势判成滚屏并直接发 pointercancel，拖到一半就断。
+      行体反过来不能设 none —— 那会让整棵树在手机上滚不动。 */
+.ptree__grip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 22px;
+  color: var(--text-muted);
+  opacity: 0;
+  cursor: grab;
+  touch-action: none;
+  transition: opacity 120ms ease;
+}
+
+.ptree__row:hover .ptree__grip {
+  opacity: 0.55;
+}
+
+.ptree__row:active .ptree__grip {
+  cursor: grabbing;
+}
+
+/* 拖动期间：全局禁选中，光标统一抓手（否则会拖出一片蓝色文本选区） */
+body.ptree-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+
+body.ptree-dragging .ptree__row {
+  cursor: grabbing;
+}
+
+/* 跟手的浮标 */
+.ptree__ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 220px;
+  padding: 5px 9px;
+  border-radius: var(--radius-md, 6px);
+  background: var(--surface-overlay, rgba(15, 23, 42, 0.9));
+  color: #f8fafc;
+  font-size: var(--text-xs, 12px);
+  line-height: 1.3;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.28);
+  will-change: transform;
+}
+
+.ptree__ghost-name {
+  font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ptree__ghost-hint {
+  opacity: 0.72;
+  font-size: 11px;
+}
+
+/* ─────────────────────────────────────────────────────────── 操作菜单（行尾 ⋯ / 长按） */
+.ptree__menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 58;
+}
+
+.ptree__menu {
+  position: fixed;
+  z-index: 59;
+  min-width: 152px;
+  padding: 4px;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.4));
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface, #fff);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.18);
+}
+
+.ptree__menu-title {
+  padding: 4px 8px 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ptree__menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm, 13px);
+  text-align: left;
+  cursor: pointer;
+  /* 触屏上手指出一点偏也能点中 */
+  min-height: 34px;
+}
+
+.ptree__menu button:hover {
+  background: var(--surface-muted, rgba(148, 163, 184, 0.16));
+  color: var(--color-primary);
+}
+
+.ptree__menu-cancel {
+  margin-top: 2px;
+  border-top: 1px solid var(--border, rgba(148, 163, 184, 0.25)) !important;
+  border-radius: 0 0 5px 5px !important;
+  color: var(--text-muted) !important;
+}
+
+/* ─────────────────────────────────────────────────────────── 点选新父级 */
+.ptree__pickbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+  padding: 6px 8px;
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.12));
+  color: var(--color-primary);
+  font-size: var(--text-xs, 12px);
+}
+
+.ptree__pickbar-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ptree__row.is-pick-source {
+  background: var(--warning-soft, rgba(245, 158, 11, 0.14));
+  box-shadow: inset 0 0 0 1px var(--warning, #f59e0b);
+}
+
+.ptree__row.is-pick-target:hover {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.16));
+  box-shadow: inset 0 0 0 1px var(--color-primary);
+}
+
+.ptree__row.is-pick-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ─────────────────────────────────────────────────────────── 触屏（pointer: coarse）
+   桌面规则一个字不动：只在"手指操作"的设备上放大命中区。
+   行高 56px 是 60/20/20 落点能点准的前提（上下各 11px）。 */
+@media (pointer: coarse) {
+  .ptree__row {
+    min-height: 56px;
+  }
+
+  /* 触屏没有 hover —— 按钮和手柄必须常显，否则用户根本不知道能拖 */
+  .ptree__acts,
+  .ptree__grip {
+    opacity: 1;
+  }
+
+  .ptree__grip {
+    width: 28px;
+    height: 40px;
+    color: var(--text-muted);
+  }
+
+  .ptree__act {
+    width: 30px;
+    height: 30px;
+  }
+
+  .ptree__menu button {
+    min-height: 44px;
+    font-size: 15px;
+  }
+
+  /* 多选：勾选框视觉只放大一点（16 → 20），命中区撑满整行高 44 —— 
+     手指不用瞄准那个小方块，点行的任意位置都能勾 */
+  .ptree__check {
+    height: 44px;
+  }
+
+  .ptree__checkbox {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* 触屏多选态：行尾按钮**整个**藏掉（连 ⋯ 也是）—— 56px 行高里塞不下
+     勾选框 + 抓手 + 4 个 30px 按钮，而且批量操作走顶部操作条更稳 */
+  .ptree__body.is-multi .ptree__acts {
+    display: none;
+  }
+
+  /* 操作条按钮在手指下也要够大（44 是苹果最小点击区） */
+  .ptree__multi .link-btn {
+    min-height: 44px;
+    padding: 0 6px;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────── 空态 / 骨架 */
+.ptree__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px;
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  line-height: 1.6;
+  text-align: center;
+}
+
+.ptree__empty-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px dashed var(--border, rgba(148, 163, 184, 0.6));
+  border-radius: var(--radius-md, 6px);
+  background: transparent;
+  color: var(--color-primary);
+  font-size: var(--text-xs, 12px);
+  cursor: pointer;
+}
+
+.ptree__empty-add:hover {
+  border-style: solid;
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.1));
+}
+
+.ptree__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 2px;
+}
+
+.ptree__skeleton span {
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.16), rgba(148, 163, 184, 0.32), rgba(148, 163, 184, 0.16));
+  background-size: 200% 100%;
+  animation: ptree-shimmer 1.2s ease-in-out infinite;
+}
+
+.ptree__skeleton span:nth-child(1) { width: 78%; }
+.ptree__skeleton span:nth-child(2) { width: 62%; }
+.ptree__skeleton span:nth-child(3) { width: 70%; }
+.ptree__skeleton span:nth-child(4) { width: 48%; }
+
+@keyframes ptree-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* 窄屏：深树的横向压力更大，标签字号略降，行高略紧。
+   ⚠️ 必须限定 `pointer: fine` —— 手机也是窄屏，但触屏行高要 56px（见上面 pointer: coarse 块）。
+   `@media` 不增加特异性，这条又写在触屏块**之后**，不加限定就会把 56 压回 28（真机实测 40px）。 */
+@media (max-width: 1080px) and (pointer: fine) {
+  .ptree__row {
+    min-height: 28px;
+  }
+}
+
+
+/* ── 拖拽归档（2026-10-21，客户档案试点） ─────────────────────────────────
+   右侧表格的行拖到左侧分类节点上松手 = 归档。
+   视觉三件事，缺一件用户就不敢松手：
+     ① 抓起来时是"抓住"的手型（行 + 整页两个层级都要给）；
+     ② 经过节点时节点变蓝（.is-partner-drop），能看出"会放到这里"；
+     ③ 松手后提示移了几个、进了哪个分类（走全站 notice，不在 CSS 里）。
+*/
+.erp-table__row.is-draggable-row {
+  cursor: grab;
+}
+
+.erp-table__row.is-draggable-row:active {
+  cursor: grabbing;
+}
+
+/* 拖动期间光标必须**全程**保持抓手：只在行上写 cursor 不够，
+   鼠标一离开那一行就变回箭头，看起来像"拖断了"。 */
+body[data-partner-dragging] {
+  cursor: grabbing;
+}
+
+body[data-partner-dragging] * {
+  cursor: grabbing !important;
+}
+
+/* 放置目标高亮：蓝底 + 蓝描边 + 左侧色条（色条是为了深色主题下也看得见） */
+.ptree__row.is-partner-drop {
+  background: rgba(37, 99, 235, 0.14);
+  box-shadow: inset 3px 0 0 var(--color-primary, #2563eb);
+  outline: 1px dashed var(--color-primary, #2563eb);
+  outline-offset: -1px;
+  color: var(--color-primary, #2563eb);
+}
+
+.ptree__row.is-partner-drop .ptree__count {
+  background: rgba(37, 99, 235, 0.22);
+  color: var(--color-primary, #2563eb);
+}
+
+/* 「未分类」的展开箭头：它是个真按钮（可点、可聚焦），
+   所以要把浏览器默认的 button 外观清掉，尺寸与 .ptree__caret 对齐。 */
+.ptree__caret--toggle {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ptree__caret--toggle.is-open svg {
+  transform: rotate(90deg);
+}
+
+.ptree__caret--toggle:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* 「未分类」展开后的叶子行（可拖走） */
+.ptree__leaf {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 2px 8px 2px 0;
+  font-size: 0.86rem;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm, 4px);
+  cursor: grab;
+  overflow: hidden;
+}
+
+.ptree__leaf:hover {
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text);
+}
+
+/* 搜索命中的**档案行**（2026-10-23）：黄底 + 左侧竖条。
+   为什么不能只靠名字里的 <mark>：按联系人搜（"周广平"）时名字本身不含关键词，
+   不加行级高亮，用户根本不知道命中的是哪一只。 */
+.ptree__leaf.is-hit {
+  background: #fef9c3;
+  color: #713f12;
+  box-shadow: inset 2px 0 0 #eab308;
+}
+
+.ptree__leaf.is-hit .ptree__leaf-name {
+  font-weight: 600;
+}
+
+.ptree__leaf-meta {
+  margin-left: auto;
+  padding-left: 6px;
+  font-size: 11px;
+  color: #a16207;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+
+/* 命中条里的"含 N 个分类下有客户命中" —— 让用户知道命中的不全是分类 */
+.ptree__hits-leaf {
+  margin-left: 4px;
+  font-style: normal;
+  font-size: 11px;
+  color: #a16207;
+}
+
+.ptree__leaf:active {
+  cursor: grabbing;
+}
+
+.ptree__leaf-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ptree__leaf-code {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--text-faint, #94a3b8);
+  flex: 0 0 auto;
+}
+
+.ptree__leaf--empty {
+  cursor: default;
+  font-style: italic;
+}
+
+.ptree__leaf--empty:hover {
+  background: transparent;
+}
+
+
+/* ── 分类下的客户叶子（2026-10-21）────────────────────────────────────────
+   和「未分类」展开列表共用 .ptree__leaf，这里只补两个小件：
+   一个"文件"圆点 + 超出上限时的折叠提示。 */
+.ptree__leaf-dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--border-strong, #cbd5e1);
+}
+
+.ptree__leaf:hover .ptree__leaf-dot {
+  background: var(--color-primary, #2563eb);
+}
+
+.ptree__leaf--more {
+  cursor: default;
+  font-size: 0.78rem;
+  color: var(--text-faint, #94a3b8);
+}
+
+.ptree__leaf--more:hover {
+  background: transparent;
+}

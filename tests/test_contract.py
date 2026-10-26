@@ -106,7 +106,15 @@ def test_contract_meta(contracts_meta=None):
     meta = client.get("/api/v1/contracts/meta").json()
     assert any(t["code"] == "A2" for t in meta["templates"])
     assert {t["code"] for t in meta["types"]} == {"sales", "purchase"}
-    assert {s["code"] for s in meta["statuses"]} == {"draft", "signed", "executing", "finished", "void"}
+    # 状态集 = 当前口径（draft/pending/active/finished/void）。
+    # `signed` / `executing` 是**历史值**，仍保留在 CONTRACT_STATUS 里做兼容显示，
+    # 但不应再出现在新建合同的状态下拉中 —— 所以这里只断言"新状态都有"，
+    # 不把兼容值写死成必选（否则以后彻底清理历史值时又要改测试）。
+    from app.models.contract import CONTRACT_STATUS
+
+    meta_codes = {s["code"] for s in meta["statuses"]}
+    for code in ("draft", "pending", "active", "finished", "void"):
+        assert code in meta_codes, f"合同状态下拉缺少 {code}（{CONTRACT_STATUS.get(code)}）"
     assert "quality_standard" in meta["defaults"]
     assert meta["inspection_days"] == 7
     assert meta["penalty_rate"] == pytest.approx(0.0005)

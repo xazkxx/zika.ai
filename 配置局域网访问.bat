@@ -1,22 +1,47 @@
 @echo off
 rem ============================================================
-rem  ERP LAN access setup (ASCII only, avoid GBK/UTF-8 encoding issue)
-rem  ERPNext: local 80  -> LAN 8000
-rem  ERP:     local 8010 -> LAN 8010 (already 0.0.0.0:8010)
+rem  ERP LAN access setup (ASCII only, avoid encoding issue)
+rem  What it does:
+rem    1) auto-elevate to administrator
+rem    2) open Windows firewall for TCP 8010 (ERP web backend)
+rem    3) keep ERPNext portproxy (8000 -> 80)
+rem    4) print phone access URL (dynamic LAN IP)
 rem ============================================================
 
-rem 1. remove old stale proxy rules (8000 pointed to empty 127.0.0.1:8000, 9000 leftover)
-netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=8000
-netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=9000
+rem --- auto-elevate to admin ---
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo Requesting administrator rights...
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    exit /b
+)
 
-rem 2. re-add 8000 -> 127.0.0.1:80  (ERPNext actually runs on port 80)
+rem --- firewall: allow TCP 8010 inbound (idempotent) ---
+netsh advfirewall firewall delete rule name="ERP-8010" >nul 2>&1
+netsh advfirewall firewall add rule name="ERP-8010" dir=in action=allow protocol=TCP localport=8010
+
+rem --- ERPNext portproxy (keep existing behavior) ---
+netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=8000 >nul 2>&1
+netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=9000 >nul 2>&1
 netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=8000 connectaddress=127.0.0.1 connectport=80
 
+rem --- detect LAN IP (first IPv4) ---
+set "LAN_IP="
+for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4"') do (
+    if not defined LAN_IP set "LAN_IP=%%a"
+)
+set "LAN_IP=%LAN_IP: =%"
+
 echo.
-echo ===== Current portproxy rules =====
-netsh interface portproxy show all
+echo ============================================
+echo  ERP phone access is ready.
+echo  Phone must be on the SAME WiFi/router.
 echo.
-echo ERPNext (phone): http://192.168.3.7:8000
-echo ERP     (phone): http://192.168.3.7:8010
+echo  ERP URL:  http://%LAN_IP%:8010
+echo  Login:    admin / Admin123
+echo ============================================
+echo.
+echo  If the IP above looks wrong, run "ipconfig" and
+echo  use the IPv4 address of your WLAN/Wi-Fi adapter.
 echo.
 pause

@@ -428,9 +428,28 @@ def test_tax_rate_is_served_with_labels():
     )
 
 
+def _frontend_jsx_source() -> str:
+    """把 frontend/src 下所有 .jsx 拼成一份可搜索的文本。
+
+    2026-10-16：`ProductEditModal` 从 App.jsx 抽成独立组件之后，
+    「在 App.jsx 里数字符串出现次数」这种断言会**跑空** —— 组件搬到了
+    `components/` 下，App.jsx 里自然一次都搜不到，断言于是变成永远失败的
+    假警报（或者被人为调低阈值后变成永远通过的假绿灯）。
+    改成扫整棵源码树：以后搬迁/新增页面都不会再让这条断言悄悄失效。
+    """
+    files = sorted((ROOT / "frontend" / "src").rglob("*.jsx"))
+    assert files, "frontend/src 下一个 .jsx 都没扫到 —— 目录结构变了？"
+    return "\n".join(path.read_text(encoding="utf-8") for path in files)
+
+
 def test_tax_rate_is_wired_into_the_forms():
-    """前端必须真的用上这份候选：商品档案要能设默认税率，发票编辑要能选。"""
-    source = (ROOT / "frontend" / "src" / "App.jsx").read_text(encoding="utf-8")
+    """前端必须真的用上这份候选：商品档案要能设默认税率，发票编辑要能选。
+
+    ⚠️ 扫描范围是**整棵 frontend/src**，不是只看 App.jsx：
+    两个挂载点现在分别在 `components/product-edit/ProductEditModal.jsx`（商品档案）
+    与 `pages/InvoicesPage.jsx`（发票编辑），datalist 本体仍定义在 App.jsx。
+    """
+    source = _frontend_jsx_source()
     assert "'tax_rate'" in source, "前端没有请求 tax_rate 字典"
     assert 'id="lookup-tax-rate"' in source, "缺少税率候选的 datalist"
     assert "lookupItems('tax_rate')" in source, (

@@ -56,6 +56,8 @@ from app.schemas import (
     DepartmentUpdate,
     MenuCreate,
     MenuRead,
+    MenuReorderItem,
+    MenuReorderRequest,
     MenuUpdate,
     DictionaryCreate,
     DictionaryItemCreate,
@@ -1707,6 +1709,146 @@ def create_menu(
     db.commit()
     db.refresh(row)
     return _menu_node(db, row, depth=_node_depth(db, row.parent_id))
+
+
+# 每个父级下重新编号的步长。和播种时一致（10/20/30…），
+# 留出空档方便将来手工在中间插一项而不用全表重排。
+_MENU_ORDER_STEP = 10
+
+
+def _validate_menu_moves(db: Session, moves: dict[int, int | None]) -> None:
+    """在**最终状态**上校验一批移动，任何一条不过就抛异常（调用方负责回滚）。
+
+    关键点：校验的对象是"所有移动都生效之后"的父子关系，而不是逐个中间状态。
+    逐个校验会误判 —— 例如 A→B 和 B→C 两条同时提交时，中间态里 C 是 A 的后代，
+    但最终态并没有环。
+    """
+    rows = db.query(Menu.id, Menu.parent_id, Menu.label, Menu.page_key).all()
+    final_parent: dict[int, int | None] = {int(r.id): r.parent_id for r in rows}
+    labels: dict[int, str] = {int(r.id): r.label for r in rows}
+    page_keys: dict[int, str | None] = {int(r.id): r.page_key for r in rows}
+
+    for node_id, parent_id in moves.items():
+        if node_id not in final_parent:
+            raise HTTPException(status_code=404, detail=f"菜单节点 {node_id} 不存在")
+        if parent_id is not None and parent_id not in final_parent:
+            raise HTTPException(status_code=400, detail=f"上级菜单 {parent_id} 不存在")
+        if parent_id == node_id:
+            raise HTTPException(status_code=400, detail=f"「{labels[node_id]}」的上级不能是它自己")
+        final_parent[node_id] = parent_id
+
+    # 1) 环检测：沿 parent 往上走，走回自己就是环。用步数上限兜底，避免脏数据把接口挂死
+    for node_id in final_parent:
+        seen = {node_id}
+        cursor = final_parent[node_id]
+        steps = 0
+        while cursor is not None and steps <= len(final_parent):
+            if cursor in seen:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{labels[node_id]}」不能挂到它自己的下级里（会形成环）",
+                )
+            seen.add(cursor)
+            cursor = final_parent.get(cursor)
+            steps += 1
+
+    # 2) 菜单项（挂了页面的叶子）不能有下级 —— 否则"点它是跳页还是展开"含糊
+    for node_id, parent_id in final_parent.items():
+        if parent_id is not None and page_keys.get(parent_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"「{labels[parent_id]}」是菜单项（已挂在页面上），不能往里放下级。",
+            )
+
+    # 3) 深度：算出每个节点在最终状态下的层级，超过上限就拒
+    depth_cache: dict[int | None, int] = {None: 0}
+
+    def depth_of(node_id: int) -> int:
+        cached = depth_cache.get(node_id)
+        if cached is not None:
+            return cached
+        parent = final_parent.get(node_id)
+        value = 1 + (depth_of(parent) if parent is not None else 0)
+        depth_cache[node_id] = value
+        return value
+
+    for node_id in final_parent:
+        if depth_of(node_id) > MAX_MENU_DEPTH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"菜单最多 {MAX_MENU_DEPTH} 层，「{labels[node_id]}」放下去会到第 "
+                f"{depth_of(node_id)} 层",
+            )
+
+    # 4) 同一层不重名：侧边栏出现两个同名项，用户分不清点哪个
+    seen_names: dict[tuple[int | None, str], int] = {}
+    for node_id, parent_id in final_parent.items():
+        if node_id in moves:  # 只校验本次动过的节点，避免翻出历史脏数据
+            key = (parent_id, labels[node_id].strip())
+            other = seen_names.get(key)
+            if other is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"同一层已经有叫「{labels[node_id]}」的菜单了",
+                )
+            seen_names[key] = node_id
+
+
+@router.post("/menus/reorder")
+def reorder_menus(
+    payload: MenuReorderRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+) -> dict:
+    """批量移动 / 重排菜单节点（拖拽 drop 的落库入口）。
+
+    一次请求 = 一个事务。校验全部在"最终状态"上做，任何一条不过就整体不生效，
+    绝不会留下半新半旧的顺序。返回结构与 GET /menus 相同，前端拿返回值直接更新状态。
+
+    ⚠️ 路由必须注册在 `PATCH /menus/{menu_id}` **之前**吗？不必须 ——
+    路径 `/menus/reorder` 与 `/menus/{menu_id}` 的差异在于后者带类型转换（int），
+    "reorder" 转不成 int 会落到本路由上。这里放在前面只是为了让同族的写操作挨着读起来顺。
+    """
+    if not payload.items:
+        return list_menus(db=db, _=_)
+
+    moves: dict[int, int | None] = {}
+    desired: dict[int, int] = {}
+    for item in payload.items:
+        if item.id in moves:
+            raise HTTPException(status_code=400, detail=f"节点 {item.id} 在 items 里出现了两次")
+        moves[item.id] = item.parent_id
+        desired[item.id] = int(item.sort_order or 0)
+
+    _validate_menu_moves(db, moves)
+
+    rows = db.query(Menu).all()
+    by_id = {int(r.id): r for r in rows}
+
+    # 变更前先把「受影响的父级」收集齐：新旧父级都要重排
+    affected_parents: set[int | None] = set()
+    for node_id, parent_id in moves.items():
+        affected_parents.add(parent_id)
+        affected_parents.add(by_id[node_id].parent_id)
+
+    for node_id, parent_id in moves.items():
+        row = by_id[node_id]
+        row.parent_id = parent_id
+        row.sort_order = desired[node_id]
+
+    # 受影响父级下按 (sort_order, id) 重排成 10/20/30…：干掉重号与空洞
+    for parent_id in affected_parents:
+        siblings = [
+            r
+            for r in rows
+            if (r.parent_id is None and parent_id is None) or (r.parent_id == parent_id)
+        ]
+        siblings.sort(key=lambda r: (int(r.sort_order or 0), int(r.id)))
+        for index, row in enumerate(siblings, start=1):
+            row.sort_order = index * _MENU_ORDER_STEP
+
+    db.commit()
+    return list_menus(db=db, _=_)
 
 
 @router.patch("/menus/{menu_id}")

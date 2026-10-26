@@ -176,8 +176,17 @@ def test_menu_can_nest_three_levels(admin, temp_nodes):
 
 
 def test_menu_cannot_build_beyond_max_depth(admin, temp_nodes):
-    """第 4 层要被拒 —— 左侧导航再深就该换设计了。"""
-    basic = _find("基础资料")
+    """超过 MAX_MENU_DEPTH 层要被拒 —— 左侧导航是纵向空间，再深就点不中了。
+
+    ⚠️ 2026-10-16 菜单树重构：上限从写死的 3 改成**可配置**（默认 8，环境变量
+    `ERP_MAX_MENU_DEPTH` 覆盖）。所以这个用例不再断言"第 4 层被拒"，
+    而是**按当前上限动态造一条链**再越界 —— 上限以后调了，用例照样有效。
+
+    保留原有的"菜单项不能再挂下级"检查（那是另一条规则，报错文案不同）。
+    """
+    basic = _find("基础资料")  # 第 1 层
+
+    # 1) 原有检查：挂在"菜单项"下面被挡，报错里要能看出是哪一条规则
     sub = client.post(BASE, json={"label": "临时深组", "parent_id": basic["id"]}, headers=admin).json()
     temp_nodes.append(sub["id"])
     leaf = client.post(
@@ -192,11 +201,34 @@ def test_menu_cannot_build_beyond_max_depth(admin, temp_nodes):
         json={"label": "临时第四层", "parent_id": leaf["id"], "page_key": "customers"},
         headers=admin,
     )
-    # 挂在"菜单项"下面本来就被上一条规则挡掉，报错里要能看出是哪一条
     assert too_deep.status_code == 409
     assert "菜单项" in too_deep.json()["detail"]
 
-    assert MAX_MENU_DEPTH == 3
+    # 2) 真正测深度上限：从第 2 层一直造到第 MAX_MENU_DEPTH 层（都建成分组才挂得下去）
+    parent_id = basic["id"]
+    for depth in range(2, MAX_MENU_DEPTH + 1):
+        node = client.post(
+            BASE, json={"label": f"临时深组{depth}", "parent_id": parent_id}, headers=admin
+        )
+        assert node.status_code == 201, f"第 {depth} 层本应在上限内，却被拒：{node.json()}"
+        temp_nodes.append(node.json()["id"])
+        parent_id = node.json()["id"]
+
+    # 上限之外再加一层 → 400，且文案要说清上限是多少
+    overflow = client.post(BASE, json={"label": "临时超深组", "parent_id": parent_id}, headers=admin)
+    assert overflow.status_code == 400
+    assert f"最多 {MAX_MENU_DEPTH} 层" in overflow.json()["detail"]
+
+    # 3) 上限要"够用且可配置"：
+    #    · ≥3 才能表达 分组 → 子分组 → 菜单项
+    #    · 可配置性用源码级检查（不 reload 模块 —— 重新定义 SQLAlchemy 模型会让
+    #      同一张表在 Base 上重复注册，直接搞崩整个测试会话）
+    assert MAX_MENU_DEPTH >= 3
+    import inspect
+    import sys as _sys
+
+    src = inspect.getsource(_sys.modules["app.models.menu"])
+    assert "ERP_MAX_MENU_DEPTH" in src, "深度上限必须能由环境变量 ERP_MAX_MENU_DEPTH 覆盖"
 
 
 def test_leaf_cannot_have_children(admin, temp_nodes):
@@ -386,6 +418,9 @@ def test_permission_refresh_does_not_hijack_the_current_page():
     表现是"在菜单管理里点保存，页面像没反应一样跳走了"。
 
     修法：跳落地页改成显式开关 `applyLanding`，只有登录那一次传 true。
+    后来端到端又抓出第二个时序坑：权限接口是**异步**的，用户完全可能在它返回之前
+    就点了菜单 —— 于是刚点开的页面照样被落地页顶走（表现为"点库存预警闪回运营概览"）。
+    补上的第二道闸是 `userNavigatedRef`：用户点过菜单之后，落地页一律作废。
     """
     from pathlib import Path
 
@@ -395,7 +430,26 @@ def test_permission_refresh_does_not_hijack_the_current_page():
 
     # 默认必须是"不跳"
     assert "async function loadMyPermissions(token, applyLanding = false) {" in source
-    assert "if (applyLanding && landing) setSelectedTab(landing);" in source
 
-    # 全项目只有登录那一处传 true
-    assert source.count("loadMyPermissions(authToken, true)") == 1
+    # 落地页要过两道闸：applyLanding（只有登录那次）+ userNavigatedRef（用户没自己点过）
+    assert (
+        "if (applyLanding && landing && !userNavigatedRef.current) setSelectedTab(landing);"
+        in source
+    )
+
+    # 闸门本体：点菜单时置位；否则这个条件恒为真，上面那行等于没加
+    assert "const userNavigatedRef = useRef(false);" in source
+    assert "userNavigatedRef.current = true;" in source
+
+    # 全项目只有一个调用点可能跳落地页：启动/登录时的 `!canRestoreTab`。
+    # 2026-10-21 起，登录与"带 token 刷新"共用同一处调用（loadCurrentUser），
+    # 落地页是否生效由"有没有上次页面"决定 —— 所以合法形式是 `!canRestoreTab`，
+    # 而不是写死的 `true`。其余调用一律不传第二参（applyLanding 默认 false）。
+    assert (
+        source.count("loadMyPermissions(authToken, !canRestoreTab)") == 1
+    ), "启动/登录处应恰有一处按「能否恢复上次页面」决定落地页"
+    # 其余调用点都必须是不带 applyLanding 的形式，否则"顺手刷权限"又会把人弹回首页。
+    # 判据看"逗号"：带了第二参的调用全项目只允许上面那一处。
+    assert (
+        source.count("loadMyPermissions(authToken,") == 1
+    ), "除启动处外不应再给 loadMyPermissions 传 applyLanding"

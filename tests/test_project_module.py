@@ -116,7 +116,9 @@ def test_project_status_matches_the_frontend_options():
 
     from app.models.project import PROJECT_STATUS
 
-    source = (Path(__file__).resolve().parent.parent / "frontend" / "src" / "App.jsx").read_text(encoding="utf-8")
+    # 拆分后状态字典在 lib/appLib.js：两个文件拼起来找，别让"搬家"变成"缺状态"
+    src = Path(__file__).resolve().parent.parent / "frontend" / "src"
+    source = (src / "App.jsx").read_text(encoding="utf-8") + "\n" + (src / "lib" / "appLib.js").read_text(encoding="utf-8")
     for key in PROJECT_STATUS:
         assert f"{key}:" in source, f"前端缺少状态 {key} 的显示名（会显示成英文 key）"
     for key in ("planned", "in_progress", "delayed", "completed"):
@@ -150,6 +152,8 @@ def test_project_cost_aggregates_from_documents(fx):
     assert order.status_code == 201, order.text
     assert order.json()["project_id"] == prj["id"], "销售订单没把项目存下来"
 
+    # v96 起「转开单」前置条件是订单已审核通过（approved），先过审核再转
+    client.patch(f"/api/v1/sales-orders/{order.json()['id']}/status", json={"status": "approved"}, headers=h)
     outbound = client.post(f"/api/v1/sales-orders/{order.json()['id']}/to-outbound", headers=h)
     assert outbound.status_code == 200, outbound.text
     assert outbound.json()["project_id"] == prj["id"], (

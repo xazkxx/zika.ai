@@ -1,7 +1,16 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# ⚠️ 对账单的金额推导**只能有一份实现**：模型层 `app/models/statement.py` 里那两个
+#    纯函数就是唯一口径。schema 这里若自己再写一遍 round(float(...))，
+#    两份公式迟早分叉 —— 表现是"接口校验算出来的未开票"和"对账单落库里的"差一分钱。
+from app.models.statement import derive_item_amounts, infer_invoice_status
+
+# 合同类型字典的唯一来源在模型层；schema 校验非法 contract_type 时要用它，
+# 不能在这里重写一份 —— 两份字典迟早分叉。
+from app.models.contract import CONTRACT_TYPES
 
 
 class UserCreate(BaseModel):
@@ -44,7 +53,9 @@ class Token(BaseModel):
 
 
 class CustomerCreate(BaseModel):
-    code: str
+    # 编码**留空即自动生成**（CUS + 日期 + 3 位流水，路由层 `_next_doc_no`）；
+    # 仍允许手填（导入老数据时保留原编码）。编辑态锁定：CustomerUpdate 传不同值 → 400。
+    code: Optional[str] = None
     name: str
     phone: Optional[str] = None
     email: Optional[str] = None
@@ -56,6 +67,8 @@ class CustomerCreate(BaseModel):
     tax_no: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
+    # 开票电话（2026-10-23）：开票信息用的号码，与业务联系电话分开存
+    invoice_phone: Optional[str] = None
     level: Optional[str] = None
     discount: Optional[float] = None
     credit_limit: Optional[float] = None
@@ -66,6 +79,9 @@ class CustomerCreate(BaseModel):
     main_products: Optional[str] = None
     potential_amount: Optional[float] = None
     note: Optional[str] = None
+    # 所属分类（`customer_categories.id`）。NULL = 未分类 —— 存量 25 位客户全在这一档，
+    # 不强制必填，否则光是迁移就得先给每一条编一个分类。
+    category_id: Optional[int] = None
 
 
 class CustomerRead(CustomerCreate):
@@ -74,9 +90,53 @@ class CustomerRead(CustomerCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CustomerUpdate(BaseModel):
+    """客户档案的**部分更新**（PATCH）。
+
+    ⚠️ 这里故意**保留** `code` 字段，但路由层只要发现"传了且与库里不同"就直接 400。
+    为什么不用 `extra="ignore"` 静默丢掉：调用方以为改成功了、界面上编码却还是旧的，
+    这种"静默不生效"比报错难查一个数量级。编码是档案的业务主键 —— 单据、对账、
+    打印模板都存着它，改了会让历史单据指向另一个人。
+
+    其余字段全部 `None` 默认 + 路由层 `exclude_unset=True`：
+    **没传 ≠ 置空**。前端只发改过的字段也不会把别的列清掉。
+    """
+
+    code: Optional[str] = None  # 允许传（便于给出明确报错），但值必须与库里一致
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    businesser: Optional[str] = None
+    contact: Optional[str] = None
+    contact_phone: Optional[str] = None
+    tax_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account: Optional[str] = None
+    # 开票电话（2026-10-23）：开票信息用的号码，与业务联系电话分开存
+    invoice_phone: Optional[str] = None
+    level: Optional[str] = None
+    discount: Optional[float] = None
+    credit_limit: Optional[float] = None
+    init_receivable: Optional[float] = None
+    init_invoice_debt: Optional[float] = None
+    relation_date: Optional[str] = None
+    business_type: Optional[str] = None
+    main_products: Optional[str] = None
+    potential_amount: Optional[float] = None
+    note: Optional[str] = None
+    # 显式传 null = 移到「未分类」；不传 = 分类不动（`exclude_unset` 口径）。
+    # 想让"清空分类"和"没改分类"变成两件事，就必须留着这个字段而不是靠 `or None`。
+    category_id: Optional[int] = None
+
+
 class SupplierCreate(BaseModel):
-    code: str
+    # 编码留空自动生成（SUP + 日期 + 流水），口径同 CustomerCreate.code。
+    code: Optional[str] = None
     name: str
+    # 纳税人识别号（2026-10-22）：进项发票"税号优先、名称兜底"的匹配依据。
+    # 可空 —— 老供应商没登记过，填了才参与税号匹配。
+    tax_no: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
@@ -88,9 +148,12 @@ class SupplierCreate(BaseModel):
     postcode: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account: Optional[str] = None
+    # 开票电话（2026-10-23）
+    invoice_phone: Optional[str] = None
     init_payable: Optional[float] = None
     init_invoice_debt: Optional[float] = None
     note: Optional[str] = None
+    category_id: Optional[int] = None  # 所属分类（`supplier_categories.id`），NULL = 未分类
 
 
 class SupplierRead(SupplierCreate):
@@ -99,13 +162,84 @@ class SupplierRead(SupplierCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
-class ProductCreate(BaseModel):
+class SupplierUpdate(BaseModel):
+    """供应商档案的部分更新（PATCH）。编码锁定规则同 `CustomerUpdate`。"""
+
+    code: Optional[str] = None  # 同上：可传，但必须与库里一致
+    name: Optional[str] = None
+    tax_no: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    short_name: Optional[str] = None
+    contact: Optional[str] = None
+    main_contact: Optional[str] = None
+    mobile: Optional[str] = None
+    postcode: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account: Optional[str] = None
+    invoice_phone: Optional[str] = None
+    init_payable: Optional[float] = None
+    init_invoice_debt: Optional[float] = None
+    note: Optional[str] = None
+    # 显式传 null = 移到「未分类」；不传 = 分类不动（同 `CustomerUpdate`）。
+    category_id: Optional[int] = None
+
+
+class ProductUnitInput(BaseModel):
+    """辅助单位的**写入**形态（新增商品时随商品一起提交，一个事务）。
+
+    `factor` 的下界这里先挡一道（`ge=2`），数据库再挡一道（`CHECK factor >= 2`）。
+    两层都留着不是重复：pydantic 只管 API 入口，将来若有人直接写 SQL 或批量导入
+    脚本，就只剩那条 CHECK 了。
+
+    `factor` ＝ 「1 个本行单位 = factor 个基本单位」。
+
+    ⚠️ **不提供 `sort_order` 字段**：顺序就是提交顺序（后端写下标）。
+    让前端传一个"排序号"没有意义 —— 界面上看见的顺序就是它。
+    """
+
+    unit_name: str = Field(..., min_length=1, max_length=50)
+    factor: int = Field(..., ge=2, le=999999)
+    price: Optional[float] = None
+    sale_price: Optional[float] = None
+    bar_code: Optional[str] = Field(None, max_length=80)
+    is_default: bool = False
+    is_enabled: bool = True
+    note: Optional[str] = Field(None, max_length=255)
+
+
+class ProductUnitRead(ProductUnitInput):
+    id: int
+    product_id: int
+    sort_order: int
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class _ProductFields(BaseModel):
+    """商品的字段本体（新增 / 读取共用的那一份）。
+
+    为什么不直接把 `units` 加在原来的 `ProductCreate` 上：
+
+    原来写的是 `class ProductRead(ProductCreate)`。一旦给 `ProductCreate` 加
+    `units`，`ProductRead` 会**跟着继承**一个 `units` 字段 —— 而商品列表接口
+    `GET /products` 返回的是 `Product` ORM 对象，它根本没有 `units` 属性，
+    于是 261 行商品会**每行都报一个 `units: []`**。那不是"空"，是 API 撒谎：
+    商品明明配了辅助单位，列表却说没有，而且改成真值就得 N+1 查询。
+
+    拆出这层基类之后两边各自干净：`ProductCreate` 有 `units`，`ProductRead` 没有。
+    """
+
     sku: str
     name: str
     category: Optional[str] = None
     unit: Optional[str] = None
-    purchase_price: float = 0.0
-    sale_price: float = 0.0
+    # 2026-10-22：允许 null（前端"不填价格"就该是 0，而不是 422）。
+    # 起因是 E2E 全流程自测：新建商品不填价格 → 422 `Input should be a valid number`
+    # → 界面还渲染成 "[object Object]"。商品价格本来就是可选项。
+    purchase_price: Optional[float] = 0.0
+    sale_price: Optional[float] = 0.0
     # 默认税率（%）。留空是**刻意**的：货物 13 / 农产品 9 / 服务 6 各档不同，
     # 给个默认值用户不改就会开错票。
     tax_rate: Optional[float] = None
@@ -116,7 +250,10 @@ class ProductCreate(BaseModel):
     bar_code: Optional[str] = None
     color: Optional[str] = None
     size: Optional[str] = None
+    # 生产厂家：name 是**快照**（供应商改名/删除后历史单据与列表仍显示原名字），
+    # manufacturer_id 才是真关联。故意不加外键（本库只有 3 个 FK，靠应用层保证）。
     manufacturer: Optional[str] = None
+    manufacturer_id: Optional[int] = None
     serial_no: Optional[str] = None
     unit_weight: Optional[float] = None
     stock_upper: Optional[int] = None
@@ -128,7 +265,16 @@ class ProductCreate(BaseModel):
     note: Optional[str] = None
 
 
-class ProductRead(ProductCreate):
+class ProductCreate(_ProductFields):
+    """新增商品。`units` 与商品本体在**同一个事务**里落库（用户 2026-10-16 拍板）。
+
+    默认 `[]`：不带辅助单位的商品，行为与加这个字段之前**逐字节相同**。
+    """
+
+    units: list[ProductUnitInput] = Field(default_factory=list)
+
+
+class ProductRead(_ProductFields):
     id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
@@ -153,7 +299,10 @@ class ProductUpdate(BaseModel):
     bar_code: Optional[str] = None
     color: Optional[str] = None
     size: Optional[str] = None
+    # 生产厂家：name 是**快照**（供应商改名/删除后历史单据与列表仍显示原名字），
+    # manufacturer_id 才是真关联。故意不加外键（本库只有 3 个 FK，靠应用层保证）。
     manufacturer: Optional[str] = None
+    manufacturer_id: Optional[int] = None
     serial_no: Optional[str] = None
     unit_weight: Optional[float] = None
     stock_upper: Optional[int] = None
@@ -163,6 +312,14 @@ class ProductUpdate(BaseModel):
     warn_days: Optional[int] = None
     image_url: Optional[str] = None
     note: Optional[str] = None
+    # 辅助单位（2026-10-16 第三阶段）：与商品字段**同一个事务**提交。
+    #
+    # 三种情况必须分清（靠 `model_dump(exclude_unset=True)` 区分）：
+    #   · 请求体里**没有** `units` 这个键 → 一个字段都不碰（老客户端 / 列表页批量改价）
+    #   · `units: []`                      → 清空该商品的全部辅助单位
+    #   · `units: null`                    → 按"不碰"处理（显式的 null 不当作清空，
+    #                                        避免任何"手滑传 null 就清库"的可能）
+    units: Optional[list[ProductUnitInput]] = None
 
 
 class ProductCategoryCreate(BaseModel):
@@ -193,6 +350,105 @@ class ProductCategoryNode(ProductCategoryRead):
     children: list["ProductCategoryNode"] = []
 
 
+# ============================================================================
+# 客户 / 供应商分类（真实物理表 · 无限极 · 每个账套各一棵）
+#
+# 与 `product_categories` 的关系：形状一致（前端同一套树组件能吃），但档案挂的是
+# `category_id` 而不是节点名 —— 所以**改分类名不会产生孤儿**，也不受"跨分支重名"困扰。
+# 详见 `app/models/partner_category.py` 的模块注释。
+# ============================================================================
+
+
+class PartnerCategoryCreate(BaseModel):
+    """分类节点（新建）。`name` 在同一父级下唯一：路由层给中文 400，库里有部分唯一索引兜底。"""
+
+    name: str
+    parent_id: Optional[int] = None
+    sort_order: int = 0
+    note: Optional[str] = None
+
+
+class PartnerCategoryUpdate(BaseModel):
+    """分类节点（PATCH）。
+
+    ⚠️ `parent_id` 的语义要靠 `exclude_unset` 区分，前端必须搞清楚这两件事：
+      · **不传** `parent_id` → 层级不动；
+      · **显式传 `null`**   → 移到顶级（拖到根节点就用这个）。
+    少一个字段都不行 —— 所以这里不能写 `if parent_id is None: 当没传`。
+    """
+
+    name: Optional[str] = None
+    parent_id: Optional[int] = None
+    sort_order: Optional[int] = None
+    note: Optional[str] = None
+
+
+class PartnerCategoryMove(BaseModel):
+    """拖拽落点（`POST /xxx-categories/{id}/move`）。
+
+    前端只发"放到哪个父级下、排在谁前面"，`sort_order` 由服务端整段重排成 10/20/30…
+    让前端自己算序号，一定会和别人的拖拽打架（两边都写 15，顺序就随机了）。
+
+    `before_id = null` 表示"排到该父级下最后"。若 `before_id` 不属于 `parent_id`，
+    服务端按"追加到末尾"处理而不是报错 —— 拖拽时前后端对落点理解有偏差是常态，
+    这种情况下用户看到的是"没排到我以为的位置"，比弹一个错误框好得多。
+    """
+
+    parent_id: Optional[int] = None
+    before_id: Optional[int] = None
+
+
+class CustomerCategoryCreate(PartnerCategoryCreate):
+    """客户分类新建。字段与供应商侧完全一致，单独命名只为 OpenAPI 文档可读。"""
+
+
+class CustomerCategoryUpdate(PartnerCategoryUpdate):
+    """客户分类更新。"""
+
+
+class CustomerCategoryRead(PartnerCategoryCreate):
+    id: int
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CustomerCategoryNode(CustomerCategoryRead):
+    """客户分类树节点。
+
+    · `count` = **直接**挂在本节点下的客户数
+    · `total` = 含所有子孙的合计
+
+    两个都要给：左侧导航显示的是 `total`（父节点显示 0 会让人以为没数据），
+    点中某个节点后列表上方的「x / y 位」要的是 `count` 与全局总数。
+    """
+
+    count: int = 0
+    total: int = 0
+    children: list["CustomerCategoryNode"] = []
+
+
+class SupplierCategoryCreate(PartnerCategoryCreate):
+    """供应商分类新建。"""
+
+
+class SupplierCategoryUpdate(PartnerCategoryUpdate):
+    """供应商分类更新。"""
+
+
+class SupplierCategoryRead(PartnerCategoryCreate):
+    id: int
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierCategoryNode(SupplierCategoryRead):
+    """供应商分类树节点（`count` / `total` 口径同 `CustomerCategoryNode`）。"""
+
+    count: int = 0
+    total: int = 0
+    children: list["SupplierCategoryNode"] = []
+
+
 class WarehouseCreate(BaseModel):
     code: str
     name: str
@@ -215,7 +471,9 @@ class PurchaseOrderItemCreate(BaseModel):
     unit_price: float
     product_name: Optional[str] = None  # 明细快照，打印单据用
     standards: Optional[str] = None
-    unit: Optional[str] = None
+    # 录入单位（3b）。可空 —— 不传就是基本单位，老前端原样能用。
+    # ⚠️ max_length 对齐列宽 VARCHAR(50)：不写则由 PG 报错，会冒成 500
+    unit: Optional[str] = Field(None, max_length=50)
     note: Optional[str] = None
 
 
@@ -247,6 +505,10 @@ class PurchaseOrderItemRead(PurchaseOrderItemCreate):
     id: int
     purchase_order_id: int
     amount: float
+    # 换算率快照（3b）：「1 个录入单位 = 几个基本单位」。
+    # ⚠️ **只加在 Read、不加在 Create** —— Create 的字段会进请求体，
+    #    加进去就等于"承诺接受客户端传 factor"，那是防篡改底线，不能破。
+    unit_factor: int = 1
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -293,6 +555,11 @@ class SalesOrderCreate(BaseModel):
     contact_phone: Optional[str] = None
     address: Optional[str] = None
     note: Optional[str] = None
+    # 物流 / 签收（四流合一的物流流；开单时可一并录，也可之后用 PATCH /logistics 补）
+    logistics_company: Optional[str] = None
+    logistics_no: Optional[str] = None
+    signed_by: Optional[str] = None
+    signed_at: Optional[datetime] = None
     # 结算链
     discount_amount: float = 0.0
     received_amount: Optional[float] = None
@@ -302,6 +569,11 @@ class SalesOrderCreate(BaseModel):
 class SalesOrderItemRead(SalesOrderItemCreate):
     id: int
     sales_order_id: int
+    # —— 多单位换算快照（3c）：1 个录入单位 = 几个最小单位 ——
+    # ⚠️ 只出现在 **Read**，`SalesOrderItemCreate` 里**没有**这个字段 ——
+    #    客户端的换算率一律由服务端从 `unit` 现场解析
+    #    （见 `erp_common._resolve_unit_factor`），绝不能由客户端注入。
+    unit_factor: int = 1
     amount: float
     model_config = ConfigDict(from_attributes=True)
 
@@ -318,6 +590,14 @@ class SalesOrderRead(SalesOrderCreate):
     total_debt: float = 0.0
     created_at: datetime
     items: list[SalesOrderItemRead] = []
+    # —— 完结闸四字段（2026-10-22 恢复）——
+    # 前端「标记为已完结」与新加的「一键开票」按钮都读它们；缺了这几个字段，
+    # 按钮会**永远灰着**（undefined → false），而页面上没有任何报错 —— 典型的静默断链。
+    # 口径唯一权威在 `erp_sales._apply_settlement_fields`，前端一律不算。
+    invoiced_amount: float = 0.0
+    outstanding_amount: float = 0.0
+    uninvoiced_amount: float = 0.0
+    settled: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -366,6 +646,14 @@ class FinancialTransactionCreate(BaseModel):
 class FinancialTransactionRead(FinancialTransactionCreate):
     id: int
     created_at: datetime
+    # ---- 红冲（2026-10-19）----
+    # reversal_of_id / applied_amount 是**表列**，由 ORM 直接带出；
+    # is_reversed / reversed_flow_id 不是表列，由 `/finance` 列表接口一次聚合查询现算，
+    # 再挂到 ORM 实例上（逐行查一次会变成 N+1）。
+    reversal_of_id: Optional[int] = None
+    applied_amount: Optional[float] = None
+    is_reversed: bool = False
+    reversed_flow_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -398,6 +686,12 @@ class InvoiceCreate(BaseModel):
     source_name: Optional[str] = None
     source_size: Optional[int] = None
     source_mime: Optional[str] = None
+    # 第 14 批：挂档案 id（不传时，销项发票由后端按购买方名称/税号自动匹配客户）
+    customer_id: Optional[int] = None
+    contract_id: Optional[int] = None
+    # 四流合一：发票挂到具体单据（销项→sales_orders / 进项→purchase_orders）。
+    # 少了这个字段，完结闸永远算不到"已开票金额"，四流台账的发票流也是空的。
+    related_order_id: Optional[int] = None
 
 
 class InvoiceUpdate(BaseModel):
@@ -410,6 +704,23 @@ class InvoiceUpdate(BaseModel):
     invoice_flag: Optional[str] = None
     issue_mode: Optional[str] = None
     handler: Optional[str] = None
+    # 第 14 批：允许把发票手工挂到客户 / 合同上（对账单按 id 取数）
+    customer_id: Optional[int] = None
+    contract_id: Optional[int] = None
+    related_order_id: Optional[int] = None
+    # 2026-10-22（业财一体化）：发票弹窗里本来就有这些输入框，前端也一直在提交，
+    # 但 schema 里没有这几个字段 —— Pydantic 默认忽略未声明字段，于是「改了税号/票号，
+    # 保存后原样不变」，而且**一声不响**。补进来才谈得上"进项按税号匹配"。
+    #   · invoice_no 唯一性在 update_invoice 里查（撞号 → 409，不静默顶掉别人的票）
+    #   · buyer_tax_no / seller_tax_no 是税号匹配的原料
+    invoice_no: Optional[str] = None
+    invoice_code: Optional[str] = None
+    issue_date: Optional[str] = None
+    counterparty_name: Optional[str] = None
+    buyer_name: Optional[str] = None
+    buyer_tax_no: Optional[str] = None
+    seller_name: Optional[str] = None
+    seller_tax_no: Optional[str] = None
 
 
 class InvoiceRead(InvoiceCreate):
@@ -511,7 +822,13 @@ class ContractItemRead(ContractItemCreate):
 
 class ContractCreate(BaseModel):
     contract_type: str = "sales"  # sales 销售合同 / purchase 采购合同
+    # —— 第 13 批：双向合同 ——
+    # in 采购 / out 销售。**不传就按 contract_type 推**，两者由 model_validator 对齐，
+    # 永远不可能出现 direction=out 而 contract_type=purchase 的矛盾组合。
+    direction: Optional[str] = None
     template: str = "A2"
+    # 模板库（上传的 PDF/Word/图片）里选中的那一份；NULL = 用系统内置范本
+    template_id: Optional[int] = None
     title: Optional[str] = None
     contract_no: Optional[str] = None  # 不传则按 HT+日期+序号 自动生成
     status: Optional[str] = None
@@ -571,17 +888,91 @@ class ContractCreate(BaseModel):
     warehouse_id: Optional[int] = None
     note: Optional[str] = None
 
+    # —— 第 13 批：合同原件与 OCR（由上传/识别接口回填，创建时可留空）——
+    # 新建流程「智能优先」：前端在弹窗里先传原件到 tmp/（拿到 temp_token）、
+    # 先识别、再保存。保存时把这个 token 带上来，由后端把文件搬进正式目录 ——
+    # 客户端**不能**直接写 source_file_path（服务器相对路径，等于路径注入后门）。
+    source_temp_token: Optional[str] = None
+    source_file_path: Optional[str] = None
+    source_file_name: Optional[str] = None
+    source_file_size: Optional[int] = None
+    source_file_mime: Optional[str] = None
+    ocr_json: Optional[str] = None
+    ocr_status: Optional[str] = None
+
+    @field_validator("direction")
+    @classmethod
+    def _check_direction(cls, value):
+        if value in (None, ""):
+            return None
+        text = str(value).strip().lower()
+        if text not in ("in", "out"):
+            raise ValueError("direction 只能是 in（采购）或 out（销售）")
+        return text
+
+    @field_validator("ocr_status")
+    @classmethod
+    def _check_ocr_status(cls, value):
+        if value in (None, ""):
+            return None
+        text = str(value).strip().lower()
+        if text not in ("none", "pending", "parsed", "reviewed", "failed"):
+            raise ValueError("ocr_status 只能是 none/pending/parsed/reviewed/failed")
+        return text
+
+    @model_validator(mode="after")
+    def _sync_direction(self):
+        """direction 与 contract_type 双向对齐。
+
+        规则：**direction 优先**（新字段），缺失时从 contract_type 推；
+        然后把 contract_type 回写成与新方向一致的值。
+        这样旧前端（只发 contract_type）和新前端（只发 direction）都能用，
+        而且落库后两个字段永远一致 —— 对账单按方向取数时不会被自相矛盾的行骗到。
+        """
+        raw_type = str(self.contract_type or "").strip().lower()
+        raw_dir = str(self.direction or "").strip().lower()
+        # ⚠️ 非法类型**原样放行**，交给路由返回中文 400。
+        #    早先这里无条件回写成 sales/purchase，于是传 contract_type="lease"（租借合同）
+        #    被悄悄改成 sales 直接入库 —— 路由里那句 `not in CONTRACT_TYPES` 永远不成立，
+        #    界面看不出任何异常。（v72 修复，2026-10-21 从会话日志恢复）
+        if raw_type and raw_type not in ("sales", "purchase"):
+            return self
+        if raw_dir in ("in", "out"):
+            direction = raw_dir
+        else:
+            direction = {"purchase": "in", "sales": "out"}.get(raw_type, "out")
+        object.__setattr__(self, "direction", direction)
+        object.__setattr__(self, "contract_type", {"in": "purchase", "out": "sales"}[direction])
+        return self
+
 
 class ContractRead(ContractCreate):
     id: int
     contract_no: str
     status: str
+    direction: str = "out"
+    ocr_status: str = "none"
     total_amount: float
     amount_chinese: Optional[str] = None
     order_id: Optional[int] = None
     order_no: Optional[str] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
     items: list[ContractItemRead] = []
+
+    # —— 付款计划汇总（2026-10-23）——
+    # ⚠️ 必须在这里显式声明：`response_model=ContractRead` 会把不在 Schema 里的键
+    #    **全部过滤掉**（路由里明明拼了进度字段，前端却拿到 null —— 就是这个原因）。
+    payment_plan_count: int = 0
+    payment_planned_amount: float = 0
+    payment_paid_amount: float = 0
+    # 进度条用（0~100，超付也按 100 显示）
+    payment_progress: Optional[float] = None
+    # 真实百分比（可能 >100），导出/核对时用
+    payment_progress_raw: Optional[float] = None
+    # 未付缺口：正数=还差，负数=超付
+    payment_shortfall: float = 0
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -590,7 +981,11 @@ class PurchaseReturnItemCreate(BaseModel):
     product_id: Optional[int] = None
     product_name: Optional[str] = None
     standards: Optional[str] = None
-    unit: Optional[str] = None
+    # 录入单位（3b）。max_length 对齐列宽 VARCHAR(50)，理由同采购明细。
+    unit: Optional[str] = Field(None, max_length=50)
+    # ⚠️ 刻意保持 float 而**不是** int：改成 int 会让 "3.5" 在 Pydantic 层变成
+    #    英文 422（"Input should be a valid integer"），不符合本项目"中文、指到第几行"
+    #    的报错风格。非整数由 `erp_purchase._purchase_return_quantity` 显式拦成 400。
     quantity: float = 0.0
     unit_price: float = 0.0
     note: Optional[str] = None
@@ -600,6 +995,8 @@ class PurchaseReturnItemRead(PurchaseReturnItemCreate):
     id: int
     purchase_return_id: int
     amount: float
+    # 换算率快照（3b）。同样**只在 Read**，理由见 PurchaseOrderItemRead。
+    unit_factor: int = 1
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -650,6 +1047,8 @@ class SalesReturnItemCreate(BaseModel):
 class SalesReturnItemRead(SalesReturnItemCreate):
     id: int
     sales_return_id: int
+    # —— 多单位换算快照（3c）—— 只出现在 Read，Create 里没有（同上）
+    unit_factor: int = 1
     amount: float
     model_config = ConfigDict(from_attributes=True)
 
@@ -722,6 +1121,8 @@ class QuotationCreate(BaseModel):
     delivery_place: Optional[str] = None
     status: Optional[str] = None
     note: Optional[str] = None
+    # 第 13 批：可选关联合同（框架合同下的分次报价）
+    contract_id: Optional[int] = None
     items: list[QuotationItemCreate] = []
 
 
@@ -1500,6 +1901,57 @@ class MenuUpdate(BaseModel):
     note: Optional[str] = None
 
 
+class MenuReorderItem(BaseModel):
+    """树上一个节点的目标位置（拖拽落库用）。
+
+    ⚠️ `parent_id` **必填且没有默认值**（2026-10-16）：
+    早先写成 `Optional[int] = None`，于是调用方漏传这个字段时会被**静默解释成
+    「移到顶层」** —— 实测真发生过：一次还原请求漏了 parent_id，7 个子菜单当场被顶到
+    顶层（顶层从 11 个变成 18 个），而接口返回的却是 200。
+    静默错误比报错可怕得多，所以现在漏传直接 422。
+
+    语义：顶层节点写 `parent_id: null`，子节点写父级 id。**显式 null 是合法的**，
+    只有"整个键不存在"才会被拒 —— 前端 `collectPayload` 一直是显式传值
+    （`parent_id: pid`，顶层时 pid 就是 null），所以不受这个收紧影响。
+    """
+
+    id: int
+    parent_id: Optional[int]  # 无默认值 = 必填
+    sort_order: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _parent_id_must_be_explicit(cls, data: object) -> object:
+        """漏传 parent_id 时给一句人能看懂的报错，而不是 Pydantic 默认的 "Field required"。
+
+        用 before 校验器：字段缺失时普通字段校验只会抛一条干巴巴的
+        `loc=['body','items',0,'parent_id'] msg='Field required'`，
+        调用方未必能立刻明白"少写一个字段会把菜单搬到顶层"。
+        """
+        if isinstance(data, dict) and "parent_id" not in data:
+            raise ValueError(
+                "items 里的每一项都必须显式给出 parent_id："
+                "顶层节点写 null，子节点写父级 id。"
+                "（这个字段漏传会被误当成「移到顶层」，所以接口直接拒收）"
+            )
+        return data
+
+
+class MenuReorderRequest(BaseModel):
+    """批量移动 / 重排菜单节点。
+
+    一次拖拽 drop 会同时改「被拖动节点」和它新旧两个兄弟组，逐条 PATCH 的话
+    中途失败会留下半新半旧的顺序，所以做成一个事务内的批量接口
+    —— 见 routes/system.py 的 `reorder_menus`。
+
+    `items` 只需包含受影响的节点；服务端会把每个受影响父级下的**全部**子节点
+    按 (sort_order, id) 重新编号成 10/20/30…，所以永远不会有重号或空洞。
+    传空 items 是合法的（无操作，直接返回当前树）。
+    """
+
+    items: list[MenuReorderItem] = Field(default_factory=list)
+
+
 class MenuRead(BaseModel):
     id: int
     parent_id: Optional[int] = None
@@ -1520,3 +1972,304 @@ class MenuRead(BaseModel):
 
 
 MenuRead.model_rebuild()
+
+
+# ===========================================================================
+# 第 13 批：合同双向管理 · 客户文件归档 · 报价单关联 · 增强对账单
+#
+# 本节的三个约定（全节一致，别各写各的）：
+#   ① 金额一律 `float` **只在 API 边界上**：数据库是 Numeric(12,2)，
+#      出参用 float 是为了 JSON 里仍是数字（pydantic 的 Decimal 会序列化成字符串，
+#      前端 `Number(x)` 之外的地方会拿到 "12.30" 这种值，反而更坑）。
+#      真正的精度保证在 DB 列类型 + 计算时用 Decimal（见 app/models/statement.py）。
+#   ② 计算字段（未开票 / 剩余未收 / 发票状态）**以公式为准**：
+#      客户端传了也按公式覆盖，避免手填与金额对不上。
+#   ③ 所有"更新"用独立的 `XxxUpdate`，字段全 Optional —— 与仓库里既有写法一致。
+# ===========================================================================
+
+# —————————————————————— 客户文件归档 ——————————————————————
+class CustomerFileCreate(BaseModel):
+    """登记一个归档文件。
+
+    第二阶段的上传接口走 multipart，`stored_name` / `file_path` / `file_size` /
+    `mime_type` / `checksum` 由服务端填写；这里把它们设成可选，
+    是为了兼容"文件已经在磁盘上、只补一条记录"的补录场景。
+    """
+
+    customer_id: int
+    original_name: str = Field(..., min_length=1, max_length=255)
+    stored_name: Optional[str] = None
+    file_path: Optional[str] = None
+    file_size: Optional[int] = Field(None, ge=0)
+    mime_type: Optional[str] = None
+    checksum: Optional[str] = Field(None, max_length=64)
+    # contract 合同 / qualification 资质 / invoice 发票 / statement 对账单 / other 其他
+    category: str = "other"
+    note: Optional[str] = None
+    uploaded_by: Optional[str] = None
+
+    @field_validator("category")
+    @classmethod
+    def _check_category(cls, value):
+        text = str(value or "other").strip().lower()
+        allowed = {"contract", "qualification", "invoice", "statement", "other"}
+        if text not in allowed:
+            raise ValueError("category 只能是 contract/qualification/invoice/statement/other")
+        return text
+
+
+class CustomerFileUpdate(BaseModel):
+    original_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    category: Optional[str] = None
+    note: Optional[str] = None
+
+    @field_validator("category")
+    @classmethod
+    def _check_category(cls, value):
+        if value in (None, ""):
+            return None
+        text = str(value).strip().lower()
+        allowed = {"contract", "qualification", "invoice", "statement", "other"}
+        if text not in allowed:
+            raise ValueError("category 只能是 contract/qualification/invoice/statement/other")
+        return text
+
+
+class CustomerFileRead(BaseModel):
+    id: int
+    customer_id: int
+    original_name: str
+    stored_name: str
+    file_path: Optional[str] = None
+    file_size: Optional[int] = None
+    mime_type: Optional[str] = None
+    checksum: Optional[str] = None
+    category: str = "other"
+    note: Optional[str] = None
+    uploaded_at: Optional[datetime] = None
+    uploaded_by: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# —————————————————————— 增强对账单：明细 ——————————————————————
+class StatementItemBase(BaseModel):
+    line_no: int = 1
+    business_date: Optional[str] = None
+
+    # contract 合同 / order 订单 / inbound 入库 / outbound 出库 / opening 期初
+    # （invoice/receipt/payment 预留给"收付款流水"明细，默认不单独成行，见模型注释）
+    source_type: Optional[str] = None
+    source_id: Optional[int] = None
+    source_no: Optional[str] = None
+    contract_id: Optional[int] = None
+    contract_no: Optional[str] = None
+    summary: Optional[str] = None
+
+    contract_amount: float = 0.0
+    invoiced_amount: float = 0.0
+    received_amount: float = 0.0
+    prepaid_received: float = 0.0
+    prepaid_applied: float = 0.0
+    # 这两个是计算结果；允许入参（前端会回显），但会被 validator 按公式覆盖
+    uninvoiced_amount: Optional[float] = None
+    outstanding_amount: Optional[float] = None
+
+    invoice_status: Optional[str] = None
+    invoice_count: int = 0
+    note: Optional[str] = None
+
+    @field_validator("source_type")
+    @classmethod
+    def _check_source_type(cls, value):
+        if value in (None, ""):
+            return None
+        text = str(value).strip().lower()
+        allowed = {"contract", "order", "inbound", "outbound", "invoice", "receipt", "payment", "opening"}
+        if text not in allowed:
+            raise ValueError("source_type 不合法")
+        return text
+
+    @model_validator(mode="after")
+    def _derive(self):
+        """未开票 / 剩余未收 / 发票状态 —— 一律按金额推导。
+
+        宁可覆盖客户端传来的值，也不要让"明细行金额加不出头部合计"这种事发生：
+        对账单一旦发出去，任何一处对不上都要人工翻账。
+
+        ⚠️ 公式本身**不在本文件**：调用 `app/models/statement.py` 的纯函数，
+           保证"接口算的"与"落库/重算算的"永远是同一份实现（Decimal，不走 float）。
+        """
+        derived = derive_item_amounts(self)
+        object.__setattr__(self, "uninvoiced_amount", float(derived["uninvoiced_amount"]))
+        object.__setattr__(self, "outstanding_amount", float(derived["outstanding_amount"]))
+        object.__setattr__(
+            self,
+            "invoice_status",
+            infer_invoice_status(self.contract_amount, self.invoiced_amount),
+        )
+        return self
+
+
+class StatementItemCreate(StatementItemBase):
+    pass
+
+
+class StatementItemUpdate(BaseModel):
+    """明细行更新：全部可选，只改传了的字段（计算字段仍然会被重算）。"""
+
+    line_no: Optional[int] = None
+    business_date: Optional[str] = None
+    source_type: Optional[str] = None
+    source_id: Optional[int] = None
+    source_no: Optional[str] = None
+    contract_id: Optional[int] = None
+    contract_no: Optional[str] = None
+    summary: Optional[str] = None
+    contract_amount: Optional[float] = None
+    invoiced_amount: Optional[float] = None
+    received_amount: Optional[float] = None
+    prepaid_received: Optional[float] = None
+    prepaid_applied: Optional[float] = None
+    invoice_count: Optional[int] = None
+    note: Optional[str] = None
+
+
+class StatementItemRead(StatementItemBase):
+    id: int
+    statement_id: int
+    uninvoiced_amount: float = 0.0
+    outstanding_amount: float = 0.0
+    invoice_status: str = "none"
+    created_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# —————————————————————— 增强对账单：头部 ——————————————————————
+class StatementCreate(BaseModel):
+    statement_no: Optional[str] = None  # 不传则按 DZ+日期+序号 自动生成（第二阶段实现）
+
+    # in 应付（采购） / out 应收（销售）
+    direction: str = "out"
+    party_type: str = "customer"  # customer / supplier
+    party_id: Optional[int] = None
+    party_name: Optional[str] = None
+    party_tax_no: Optional[str] = None
+
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    statement_date: Optional[str] = None
+    currency: str = "CNY"
+
+    # 期初由调用方给（取自 customers.init_receivable / suppliers.init_payable）；
+    # 其余合计一律由 items 汇总，**不接受客户端直接指定**（见文件头 ②）
+    opening_balance: float = 0.0
+
+    status: Optional[str] = None
+    note: Optional[str] = None
+    created_by: Optional[str] = None
+    items: list[StatementItemCreate] = []
+
+    @field_validator("direction")
+    @classmethod
+    def _check_direction(cls, value):
+        text = str(value or "out").strip().lower()
+        if text not in ("in", "out"):
+            raise ValueError("direction 只能是 in（应付/采购）或 out（应收/销售）")
+        return text
+
+    @field_validator("party_type")
+    @classmethod
+    def _check_party_type(cls, value):
+        text = str(value or "customer").strip().lower()
+        if text not in ("customer", "supplier"):
+            raise ValueError("party_type 只能是 customer 或 supplier")
+        return text
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, value):
+        if value in (None, ""):
+            return None
+        text = str(value).strip().lower()
+        if text not in ("draft", "confirmed", "sent", "void"):
+            raise ValueError("status 只能是 draft/confirmed/sent/void")
+        return text
+
+    @model_validator(mode="after")
+    def _check_party_direction(self):
+        """方向与往来单位类型必须自洽。
+
+        out（应收）只能对客户，in（应付）只能对供应商 —— 反过来是数据错误，
+        会直接导致对账单开给错的单位。这里**一次性拦掉**，而不是等打印时才发现。
+        """
+        if self.direction == "out" and self.party_type == "supplier":
+            raise ValueError("应收（out）对账单的往来单位必须是客户（customer）")
+        if self.direction == "in" and self.party_type == "customer":
+            raise ValueError("应付（in）对账单的往来单位必须是供应商（supplier）")
+        return self
+
+
+class StatementUpdate(BaseModel):
+    party_id: Optional[int] = None
+    party_name: Optional[str] = None
+    party_tax_no: Optional[str] = None
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    statement_date: Optional[str] = None
+    opening_balance: Optional[float] = None
+    status: Optional[str] = None
+    note: Optional[str] = None
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, value):
+        if value in (None, ""):
+            return None
+        text = str(value).strip().lower()
+        if text not in ("draft", "confirmed", "sent", "void"):
+            raise ValueError("status 只能是 draft/confirmed/sent/void")
+        return text
+
+
+class StatementRead(BaseModel):
+    id: int
+    statement_no: str
+    direction: str
+    party_type: str
+    party_id: Optional[int] = None
+    party_name: Optional[str] = None
+    party_tax_no: Optional[str] = None
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    statement_date: Optional[str] = None
+    currency: str = "CNY"
+
+    # 10 个金额（口径见 app/models/statement.py 文件头公式）
+    opening_balance: float = 0.0
+    contract_amount: float = 0.0
+    invoiced_amount: float = 0.0
+    uninvoiced_amount: float = 0.0
+    received_amount: float = 0.0
+    prepaid_received: float = 0.0
+    prepaid_applied: float = 0.0
+    prepaid_balance: float = 0.0
+    receivable_balance: float = 0.0
+    outstanding_amount: float = 0.0
+
+    item_count: int = 0
+    status: str = "draft"
+    confirmed_at: Optional[datetime] = None
+    note: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    items: list[StatementItemRead] = []
+    model_config = ConfigDict(from_attributes=True)
+
+
+class StatementRecalcResult(BaseModel):
+    """重算接口的返回（第二阶段 `POST /statements/{id}/recalc`）。"""
+
+    statement_id: int
+    item_count: int
+    totals: dict[str, float]

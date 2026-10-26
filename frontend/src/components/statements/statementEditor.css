@@ -1,0 +1,865 @@
+/* 增强版对账单编辑器 —— 只用 tokens.css 的变量。
+
+   布局分四段（从上到下）：
+     .stmt__cmd      命令区：方向 Tab / 往来单位 / 账期 / 期初 / 生成 + 右侧四动作
+     .stmt__meta     单头信息：单号、状态、单位、账期、勾选进度
+     .stmt__cards    6 张金额卡：期初 / 本期新增 / 已开票 / 已收 / 期末 / 剩余未收
+     .erp-card       明细表（ErpTable，带合计行）
+     .stmt__foot-area 备注 + 口径说明
+
+   ⚠️ 命令区必须 `flex-wrap: wrap`：1920 屏一行放得下，1280 屏放不下 ——
+      不换行就会把「导出 Excel」挤出可视区（右侧按钮又是最重要的收尾动作）。 */
+
+.stmt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------------ 命令区 */
+
+.stmt__cmd {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-xl, 12px);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 方向切换：两段式胶囊，而不是 <select> —— 只有两个值，点一下比展开再选快一倍 */
+.stmt__seg {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-soft, #f1f5f9);
+}
+
+.stmt__seg-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-sm, 13px);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.stmt__seg-btn.is-active {
+  background: var(--surface, #fff);
+  color: var(--fg-strong, #0f172a);
+  font-weight: var(--fw-medium, 500);
+  box-shadow: var(--shadow-sm);
+}
+
+.stmt__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.stmt__field-label {
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+  white-space: nowrap;
+}
+
+/* 往来单位下拉：给一个明确的下限，否则 flex 会把它压到只剩 placeholder 的宽度。
+   ⚠️ 父级是 flex 时子项的 `width` 不生效，必须写 `flex: 0 1 <basis>` + `min-width`。 */
+.stmt__field--party {
+  flex: 0 1 260px;
+  min-width: 200px;
+}
+
+.stmt__field--party > .ssel {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.stmt__field--opening {
+  flex: 0 0 auto;
+}
+
+.stmt__field--recent {
+  flex: 0 1 240px;
+  min-width: 190px;
+}
+
+.stmt__field--recent > .ssel {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.stmt__date {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-md, 6px);
+  background: var(--surface, #fff);
+  color: var(--fg-strong, #0f172a);
+  font-family: inherit;
+  font-size: var(--fs-sm, 13px);
+}
+
+.stmt__date:focus {
+  outline: none;
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: var(--ring);
+}
+
+.stmt__date--money {
+  width: 120px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.stmt__tilde {
+  color: var(--fg-subtle, #94a3b8);
+}
+
+.stmt__generate {
+  flex: 0 0 auto;
+}
+
+/* 右侧四个动作：`margin-left:auto` 把它顶到最右，窄屏换行后自然落到第二行最右 */
+.stmt__cmd-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------------ 提示条 */
+
+.stmt__alert {
+  padding: 8px 12px;
+  border-radius: var(--radius-md, 6px);
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.5;
+}
+
+.stmt__alert--error {
+  border: 1px solid var(--color-danger-border, #fecaca);
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.stmt__alert--ok {
+  border: 1px solid var(--color-success-border, #bbf7d0);
+  background: var(--color-success-soft, #f0fdf4);
+  color: var(--color-success-strong, #15803d);
+}
+
+/* ------------------------------------------------------------------ 单头 */
+
+.stmt__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px) var(--space-4, 16px);
+  padding: 0 var(--space-1, 4px);
+  font-size: var(--fs-sm, 13px);
+  color: var(--fg-muted, #64748b);
+}
+
+.stmt__no {
+  font-family: var(--font-mono);
+  font-size: var(--fs-base, 14px);
+  font-weight: var(--fw-semibold, 600);
+  color: var(--fg-strong, #0f172a);
+}
+
+.stmt__status {
+  padding: 1px 8px;
+  border-radius: var(--radius-pill, 999px);
+  font-size: var(--fs-xs, 12px);
+  background: var(--bg-soft, #f1f5f9);
+  color: var(--fg-muted, #64748b);
+}
+
+.stmt__status--draft {
+  background: var(--color-warning-soft, #fffbeb);
+  color: var(--color-warning-strong, #b45309);
+}
+
+.stmt__status--confirmed {
+  background: var(--color-primary-soft, #eff6ff);
+  color: var(--color-primary, #2563eb);
+}
+
+.stmt__status--sent {
+  background: var(--color-success-soft, #f0fdf4);
+  color: var(--color-success-strong, #15803d);
+}
+
+.stmt__status--void {
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.stmt__meta-item b {
+  color: var(--fg-strong, #0f172a);
+  font-weight: var(--fw-medium, 500);
+}
+
+/* 勾选进度：它是"本单口径"的唯一说明，给一点视觉重量 */
+.stmt__meta-item--check {
+  margin-left: auto;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--color-primary-soft, #eff6ff);
+  color: var(--color-primary, #2563eb);
+  font-size: var(--fs-xs, 12px);
+}
+
+.stmt__warn {
+  margin-left: 4px;
+  color: var(--color-warning-strong, #b45309);
+  font-style: normal;
+}
+
+/* ------------------------------------------------------------------ 金额卡 */
+
+.stmt__cards {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-3, 12px);
+}
+
+.stmt__card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0; /* 数字不换行时要能省略，而不是把网格撑破 */
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-lg, 8px);
+}
+
+/* 期末余额 = 这张对账单最要紧的一个数：给它主色描边，眼睛先落在这儿 */
+.stmt__card--strong {
+  border-color: var(--color-primary-border, #bfdbfe);
+  background: var(--color-primary-soft, #eff6ff);
+}
+
+.stmt__card-label {
+  font-size: var(--fs-xs, 12px);
+  color: var(--fg-muted, #64748b);
+}
+
+.stmt__card-value {
+  font-size: var(--fs-xl, 20px);
+  font-weight: var(--fw-semibold, 600);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-strong, #0f172a);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stmt__card-value--neg {
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.stmt__card-hint {
+  font-size: 11px;
+  color: var(--fg-subtle, #94a3b8);
+}
+
+/* ------------------------------------------------------------------ 明细表 */
+
+.stmt__card-extra {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+}
+
+.stmt__source {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-soft, #f1f5f9);
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+  line-height: 18px;
+}
+
+.stmt__summary {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.stmt__muted {
+  color: var(--fg-subtle, #94a3b8);
+}
+
+.stmt__num {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-strong, #0f172a);
+}
+
+.stmt__num--neg {
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+/* 行内输入框：底表已把单元格内 input 压到 32px，这里只补"数字右对齐 + 等宽" */
+.stmt__input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.stmt__input:disabled {
+  background: var(--bg-soft, #f8fafc);
+  color: var(--fg-muted, #64748b);
+  cursor: not-allowed;
+}
+
+/* 发票状态徽标 */
+.stmt__badge {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: var(--radius-pill, 999px);
+  font-size: var(--fs-xs, 12px);
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.stmt__badge--none {
+  background: var(--bg-soft, #f1f5f9);
+  color: var(--fg-muted, #64748b);
+}
+
+.stmt__badge--partial {
+  background: var(--color-warning-soft, #fffbeb);
+  color: var(--color-warning-strong, #b45309);
+}
+
+.stmt__badge--full {
+  background: var(--color-success-soft, #f0fdf4);
+  color: var(--color-success-strong, #15803d);
+}
+
+/* 合计行：底表 `.erp-table__foot td` 已经给了浅底与加粗，这里只调对齐 */
+.stmt__foot .stmt__foot-label {
+  text-align: left;
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+  font-weight: var(--fw-normal, 400);
+}
+
+.stmt__foot-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.stmt__foot-num--strong {
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+/* ------------------------------------------------------------------ 备注 */
+
+.stmt__foot-area {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-lg, 8px);
+}
+
+.stmt__note {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 520px;
+  min-width: 260px;
+  font-size: var(--fs-sm, 13px);
+  color: var(--fg-muted, #64748b);
+}
+
+.stmt__note input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-md, 6px);
+  background: var(--surface, #fff);
+  color: var(--fg-strong, #0f172a);
+  font-family: inherit;
+  font-size: var(--fs-sm, 13px);
+}
+
+.stmt__note input:focus {
+  outline: none;
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: var(--ring);
+}
+
+.stmt__note input:disabled {
+  background: var(--bg-soft, #f8fafc);
+  cursor: not-allowed;
+}
+
+.stmt__hint {
+  flex: 1 1 320px;
+  min-width: 240px;
+  margin: 0;
+  color: var(--fg-subtle, #94a3b8);
+  font-size: var(--fs-xs, 12px);
+  line-height: 1.7;
+}
+
+.stmt__hint b {
+  color: var(--fg-muted, #64748b);
+}
+
+/* ------------------------------------------------------------------ 自适应 */
+
+@media (max-width: 1400px) {
+  .stmt__cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .stmt__cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stmt__cmd-right {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .stmt__meta-item--check {
+    margin-left: 0;
+  }
+}
+
+/* ---------------------------------------------- 需求 3：三视角 / 台账 / 预览 */
+
+/* 命令区里「全部」模式的那句说明 —— 与两侧控件同高，避免整行被拉高 */
+.stmt__scope-hint {
+  flex: 1 1 320px;
+  min-width: 0;
+  align-self: center;
+  font-size: var(--fs-sm, 13px);
+  color: var(--fg-muted, #64748b);
+  line-height: 1.6;
+}
+
+.stmt__scope-hint b {
+  color: var(--fg-strong, #0f172a);
+}
+
+/* 单头里那句「应收对账单 / 应付对账单」—— 标题随入口变，这里再做一次强化 */
+.stmt__scope-title {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--bg-soft, #f1f5f9);
+  color: var(--fg-strong, #0f172a);
+  font-size: var(--fs-sm, 13px);
+  font-weight: var(--fw-medium, 500);
+  white-space: nowrap;
+}
+
+/* 台账里的方向角标 */
+.stmt__dir {
+  display: inline-block;
+  min-width: 40px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--fs-xs, 12px);
+  line-height: 18px;
+}
+
+.stmt__dir--out {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
+.stmt__dir--in {
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+}
+
+/* 预览六卡：期初 / 增加 / 减少 / 往来账期末 / 对账单期末 / 差额 */
+.stmt__preview-cards {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-2, 8px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+.stmt__preview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-soft, #f8fafc);
+  min-width: 0;
+}
+
+.stmt__preview-card > span {
+  font-size: var(--fs-xs, 12px);
+  color: var(--fg-muted, #64748b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stmt__preview-card > strong {
+  font-size: var(--fs-md, 15px);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-strong, #0f172a);
+  white-space: nowrap;
+}
+
+/* 往来账期末 = 主口径，与「对账单期末」并排看 */
+.stmt__preview-card.is-strong {
+  background: var(--surface, #fff);
+  border-color: var(--primary, #2563eb);
+}
+
+.stmt__preview-card.is-strong > strong {
+  color: var(--primary, #2563eb);
+}
+
+/* 差额：为 0 是绿（对上了），非 0 是橙（要人工核）—— 这里刻意不用涨红跌绿，
+   因为"差额"不是涨跌，红/绿会被误读成盈亏。 */
+.stmt__preview-card.is-ok {
+  background: rgba(22, 163, 74, 0.08);
+  border-color: rgba(22, 163, 74, 0.35);
+}
+
+.stmt__preview-card.is-diff {
+  background: rgba(234, 88, 12, 0.08);
+  border-color: rgba(234, 88, 12, 0.4);
+}
+
+.stmt__preview-note {
+  margin: 0;
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border-top: 1px solid var(--border, #e2e8f0);
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.7;
+  color: var(--fg-muted, #64748b);
+}
+
+.stmt__preview-empty {
+  margin: 0;
+  padding: var(--space-5, 24px) var(--space-4, 16px);
+  text-align: center;
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.8;
+  color: var(--fg-muted, #64748b);
+}
+
+@media (max-width: 1180px) {
+  .stmt__preview-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .stmt__preview-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   四流穿透明细超宽表（2026-10-21 大融合）
+   34 列横向滚动 + 表头 sticky + 前 3 列冻结 + 行类型着色。
+   ⚠️ 冻结列必须有**不透明**底色，否则滚动的列会从底下穿过去。
+   ═══════════════════════════════════════════════════════════════ */
+.stmt-fusion {
+  border-top: 1px solid var(--border);
+}
+
+.stmt-fusion__legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: var(--surface, #f8fafc);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+}
+
+.stmt-fusion__legend-item b {
+  color: var(--text-strong, #0f172a);
+}
+
+.stmt-fusion__legend-total {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--text-strong, #0f172a);
+}
+
+.stmt-fusion__scroll {
+  max-height: 560px;
+  overflow: auto;
+}
+
+.stmt-fusion__table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  /* 宽度由 JS 按 colgroup 逐列算好后内联给（fixed 布局下这是唯一权威），
+     这里不再写 max-content —— 两个来源打架就是错位的根源。 */
+  table-layout: fixed;
+}
+
+.stmt-fusion__table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #1f3a5f;
+  color: #fff;
+  font-weight: 600;
+  padding: 8px 10px;
+  white-space: nowrap;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* 冻结列的表头：左右两个方向都要钉住 */
+.stmt-fusion__table th.is-frozen,
+.stmt-fusion__table th.stmt-fusion__kind {
+  z-index: 3;
+}
+
+.stmt-fusion__table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+  background: #fff;
+}
+
+.stmt-fusion__table td.is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 冻结单元格：不透明底 + 右侧描边 */
+.stmt-fusion__table td.is-frozen,
+.stmt-fusion__table td.stmt-fusion__kind {
+  position: sticky;
+  z-index: 1;
+  border-right: 2px solid #cbd5e1;
+}
+
+.stmt-fusion__table th.stmt-fusion__kind,
+.stmt-fusion__table td.stmt-fusion__kind {
+  width: 42px;
+  min-width: 42px;
+  text-align: center;
+  color: var(--text-muted, #64748b);
+  font-size: 11px;
+}
+
+/* 行类型着色（含冻结单元格的同色底） */
+.stmt-fusion__row--invoice > td { background: #eef2ff; }
+.stmt-fusion__row--recv > td { background: #ecfdf5; }
+.stmt-fusion__row--pay > td { background: #fff7ed; }
+.stmt-fusion__row--summary > td {
+  background: #f1f5f9;
+  font-weight: 700;
+  color: var(--text-strong, #0f172a);
+  border-top: 2px solid #cbd5e1;
+}
+
+.stmt-fusion__row--summary > td.is-frozen,
+.stmt-fusion__row--summary > td.stmt-fusion__kind { background: #f1f5f9; }
+.stmt-fusion__row--invoice > td.is-frozen,
+.stmt-fusion__row--invoice > td.stmt-fusion__kind { background: #eef2ff; }
+.stmt-fusion__row--recv > td.is-frozen,
+.stmt-fusion__row--recv > td.stmt-fusion__kind { background: #ecfdf5; }
+.stmt-fusion__row--pay > td.is-frozen,
+.stmt-fusion__row--pay > td.stmt-fusion__kind { background: #fff7ed; }
+
+/* ===========================================================================
+   四流超宽表：列宽拖拽 + 等宽编码（2026-10-22）
+   ===========================================================================
+   抓手要**完全落在 th 盒内**（th 是 sticky + z-index，自己成层叠上下文）：
+   探出去 1px 就会被后一个 th 盖住 → 真鼠标点到隔壁列（ErpTable 踩过同一个坑）。
+   所以这里用 absolute + right:0 + 宽度 8px 的透明条，贴在 th 内侧右缘。
+   =========================================================================== */
+.stmt-fusion__table th {
+  position: sticky;
+  /* 抓手定位基准 */
+  box-sizing: border-box;
+}
+
+.stmt-fusion__thtext {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.stmt-fusion__grip {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 9px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none; /* 触摸屏拖动时不要连带滚动表格 */
+  background: transparent;
+}
+
+.stmt-fusion__grip:hover,
+.stmt-fusion__grip:active {
+  background: rgba(255, 255, 255, 0.35);
+  box-shadow: inset -2px 0 0 #93c5fd;
+}
+
+/* 编码类列（单号/票号/流水号）：等宽 + 字距略收紧，逐位核对时不容易串行 */
+.stmt-fusion__table td.is-mono,
+.stmt-fusion__table th.is-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  letter-spacing: -0.2px;
+}
+
+.stmt-fusion__legend-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+
+/* 冻结列叠放顺序：列宽变窄时也不能被后一列盖住 */
+.stmt-fusion__table th.is-frozen,
+.stmt-fusion__table td.is-frozen {
+  background-clip: padding-box;
+}
+
+/* 拖列宽时锁住文本选择：不锁的话横向拖拽会顺手把整行文字刷蓝 */
+body.is-col-resizing,
+body.is-col-resizing * {
+  user-select: none !important;
+  cursor: col-resize !important;
+}
+
+/* ===========================================================================
+   搜索预览（2026-10-22）：只读态 + 勾选 + 绿色「确认生成」
+   =========================================================================== */
+.stmt-pool__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+}
+
+.stmt-pool__bar b {
+  color: var(--text-strong, #0f172a);
+  font-variant-numeric: tabular-nums;
+}
+
+.stmt-pool__picked {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-weight: 600;
+}
+
+/* 绿色主按钮：与蓝色「搜索预览」区分开，避免两个蓝底按钮并列时误点 */
+.stmt-pool__confirm {
+  background: #16a34a !important;
+  border-color: #15803d !important;
+  color: #fff !important;
+}
+
+.stmt-pool__confirm:hover:not(:disabled) {
+  background: #15803d !important;
+}
+
+/* 取消勾选的单据整组压暗：一眼看出"这张不进对账单" */
+.stmt-fusion__row.is-unpicked > td {
+  opacity: 0.42;
+  text-decoration: line-through;
+  text-decoration-color: rgba(100, 116, 139, 0.45);
+}
+
+.stmt-fusion__row.is-unpicked > td.is-frozen {
+  opacity: 0.45;
+}
+
+/* 勾选框在窄窄的「行」列里居中，别把列撑宽 */
+.stmt-fusion__table td.stmt-fusion__kind input[type='checkbox'],
+.stmt-fusion__table th.stmt-fusion__kind input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+/* 浏览器打印 / 另存 PDF：横版 + 禁止把 34 列压进竖版纸宽导致表头换行 */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+
+  .stmt__cmd,
+  .stmt-pool__bar,
+  .stmt-fusion__legend-hint,
+  .stmt-fusion__grip {
+    display: none !important;
+  }
+
+  .stmt-fusion__scroll {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .stmt-fusion__table th,
+  .stmt-fusion__table td {
+    white-space: nowrap !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stmt-fusion__table td.is-num,
+  .stmt-fusion__table th.is-mono,
+  .stmt-fusion__table td.is-mono {
+    white-space: nowrap !important;
+  }
+
+  .stmt-fusion__table th.stmt-fusion__kind input,
+  .stmt-fusion__table td.stmt-fusion__kind input {
+    display: none;
+  }
+}

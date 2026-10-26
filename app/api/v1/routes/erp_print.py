@@ -12,7 +12,7 @@ import json
 from app.core.company_info import load_company
 from app.db.session import get_db
 from app.models.assembly import AssemblyOrder, AssemblyOrderItem
-from app.models.contract import CONTRACT_TEMPLATES, Contract
+from app.models.contract import CONTRACT_TEMPLATES, Contract, ContractItem
 from app.models.customer import Customer
 from app.models.finished_goods import FINISHED_GOODS_STATUS, FinishedGoodsReceipt
 from app.models.inventory_adjustment import ADJUSTMENT_STATUS, ADJUST_TYPES, InventoryAdjustment
@@ -25,11 +25,19 @@ from app.models.production_plan import PLAN_TYPES, PRODUCTION_PLAN_STATUS, Produ
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem
 from app.models.purchase_return import PurchaseReturn
 from app.models.quotation import Quotation
+from app.models.statement import (
+    STATEMENT_DIRECTIONS,
+    STATEMENT_INVOICE_STATUS,
+    STATEMENT_SOURCE_TYPES,
+    STATEMENT_STATUS,
+    Statement,
+)
 from app.models.sales_order import SalesOrder, SalesOrderItem
 from app.models.sales_return import SalesReturn
 from app.models.stocktaking import STOCKTAKING_STATUS, Stocktaking
 from app.models.supplier import Supplier
 from app.models.warehouse import Warehouse
+from app.services.contract_template import build_gongkuang_document, document_to_print_spec
 from app.services.pdf_render import render_document_pdf
 from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -58,6 +66,7 @@ from app.api.v1.routes.erp_common import (
     _transfer_items,
     _wants_json,
     amount_to_chinese,
+    resolve_contract_document_payload,
 )
 
 router = APIRouter(prefix="", tags=["erp"])
@@ -496,17 +505,27 @@ def _contract_print_spec(db: Session, contract_id: int) -> dict[str, object]:
         "title": _s(c.title) or "购销合同",
         "subtitle": f"（{CONTRACT_TEMPLATES.get(c.template, '标准版')}）",
         "period": f"合同编号：{c.contract_no}",
+        # 公文排版（2026-10-25）：与 contract_template.document_to_print_spec 同一套规范
+        "layout": {
+            "font_title": 16,
+            "font_header": 10,
+            "font_body": 10.5,
+            "margin_left": 48,
+            "margin_right": 48,
+        },
+        "paragraph_style": {"size": 10.5, "lineheight": 1.5, "indent": True, "justify": True},
         "header_left": party_block("甲方（需方）", buyer),
         "header_right": party_block("乙方（供方）", seller),
         "columns": [
-            {"label": "序号", "width": 32, "align": "c"},
-            {"label": "货物名称", "width": 150, "align": "l"},
-            {"label": "规格型号", "width": 110, "align": "l"},
-            {"label": "单位", "width": 42, "align": "c"},
-            {"label": "数量", "width": 52, "align": "r"},
-            {"label": "单价", "width": 62, "align": "r"},
-            {"label": "金额", "width": 72, "align": "r"},
-            {"label": "备注", "width": 48, "align": "l"},
+            {"label": "序号", "width": 32, "min_width": 30, "align": "c"},
+            # 货物名称/规格允许折行，绝不 _fit 成 "..."; 金额列给足 min_width。
+            {"label": "货物名称", "width": 170, "min_width": 150, "wrap": True, "align": "l"},
+            {"label": "规格型号", "width": 110, "min_width": 90, "wrap": True, "align": "l"},
+            {"label": "单位", "width": 42, "min_width": 38, "align": "c"},
+            {"label": "数量", "width": 52, "min_width": 48, "align": "r"},
+            {"label": "单价", "width": 62, "min_width": 58, "align": "r"},
+            {"label": "金额", "width": 82, "min_width": 78, "align": "r"},
+            {"label": "备注", "width": 48, "min_width": 40, "wrap": True, "align": "l"},
         ],
         "rows": [
             [
@@ -538,7 +557,16 @@ def _contract_print_spec(db: Session, contract_id: int) -> dict[str, object]:
             "本合同经双方签字盖章后生效，一式两份，双方各执一份留存。",
             "本模板为标准版条文框架，具体条款以双方协商一致后签署的正式文本为准。",
         ],
-        "signatures": ["甲方（盖章）", "乙方（盖章）"],
+        # 标准公文签章栏网格：开户行 / 账号 / 盖章处一应俱全
+        "sign_grid": [
+            ["甲方（需方·盖章）", "乙方（供方·盖章）"],
+            [f"单位名称：{buyer['name'] or '＿＿＿＿＿＿'}", f"单位名称：{seller['name'] or '＿＿＿＿＿＿'}"],
+            [f"法定代表人：{buyer['legal'] or '＿＿＿＿＿＿'}", f"法定代表人：{seller['legal'] or '＿＿＿＿＿＿'}"],
+            [f"开户银行：{buyer['bank'] or '＿＿＿＿＿＿'}", f"开户银行：{seller['bank'] or '＿＿＿＿＿＿'}"],
+            [f"银行账号：{buyer['account'] or '＿＿＿＿＿＿'}", f"银行账号：{seller['account'] or '＿＿＿＿＿＿'}"],
+            ["（盖章处）", "（盖章处）"],
+            [f"签订日期：{_s(c.sign_date) or '＿＿＿＿＿＿'}", f"签订日期：{_s(c.sign_date) or '＿＿＿＿＿＿'}"],
+        ],
     }
     return spec
 
@@ -555,6 +583,110 @@ def print_contract(contract_id: int, request: Request, db: Session = Depends(get
     filename = str(spec.get("period") or "contract").replace("合同编号：", "contract_")
     return _pdf_response(spec, filename, db, "contract", _wants_json(request))
 
+
+
+# ===========================================================================
+# 《工矿产品购销合同》正文：预览 + PDF（2026-10-22）
+# ===========================================================================
+# 与上面 A2 打印的区别：
+#   · A2 = 系统里"这张合同"的打印件，条款取的是库里存的字段；
+#   · 这里 = **按标准范本自动生成正文**，可以在**还没保存**的时候先看效果，
+#     所以入参是"一份 payload"，不要求合同已存在。
+# 两者共用同一个 PDF 出口（`_pdf_response`），纸张/页脚/字体完全一致。
+
+
+def _contract_payload_from_db(db: Session, contract_id: int) -> dict:
+    """把库里的合同摊成与前端表单同构的 payload，让生成器只认一种入参。"""
+    row = db.get(Contract, contract_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="合同不存在")
+    items = db.query(ContractItem).filter(ContractItem.contract_id == contract_id).order_by(
+        ContractItem.id
+    ).all()
+    payload = {
+        "contract_id": row.id,
+        "direction": row.direction,
+        "title": row.title,
+        "contract_no": row.contract_no,
+        "party_name": row.party_name,
+        "party_tax_no": row.party_tax_no,
+        "party_legal_person": row.party_legal_person,
+        "party_address": row.party_address,
+        "party_contact": row.party_contact,
+        "party_phone": row.party_phone,
+        "party_bank_name": row.party_bank_name,
+        "party_bank_account": row.party_bank_account,
+        "own_name": row.own_name,
+        "own_tax_no": row.own_tax_no,
+        "own_legal_person": row.own_legal_person,
+        "own_address": row.own_address,
+        "own_contact": row.own_contact,
+        "own_phone": row.own_phone,
+        "own_bank_name": row.own_bank_name,
+        "own_bank_account": row.own_bank_account,
+        "sign_date": row.sign_date,
+        "sign_place": row.sign_place,
+        "tax_rate": row.tax_rate,
+        "is_tax_included": row.is_tax_included,
+        "payment_terms": row.payment_terms,
+        "invoice_requirement": row.invoice_requirement,
+        "quality_standard": row.quality_standard,
+        "package_standard": row.package_standard,
+        "delivery_date": row.delivery_date,
+        "delivery_place": row.delivery_place,
+        "delivery_method": row.delivery_method,
+        "freight_bearer": row.freight_bearer,
+        "inspection_days": row.inspection_days,
+        "objection_days": row.objection_days,
+        "penalty_rate": row.penalty_rate,
+        "dispute_resolution": row.dispute_resolution,
+        "copies": row.copies,
+        "items": [
+            {
+                "product_name": item.product_name,
+                "standards": item.standards,
+                "unit": item.unit,
+                "quantity": float(item.quantity or 0),
+                "unit_price": float(item.unit_price or 0),
+                "amount": float(item.amount or 0),
+                "note": item.note,
+            }
+            for item in items
+        ],
+    }
+    return payload
+
+
+def _contract_document_payload(db: Session, payload: dict) -> dict:
+    """支持两种入参：`{contract_id: N}`（已存合同）或整份表单 payload（还没保存）。"""
+    contract_id = payload.get("contract_id")
+    if contract_id not in (None, ""):
+        try:
+            return _contract_payload_from_db(db, int(contract_id))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="contract_id 必须是整数") from exc
+    return payload
+
+
+@router.post("/print/contract-document/pdf", summary="按内置范本生成合同正文 PDF")
+def print_contract_document(payload: dict, request: Request, db: Session = Depends(get_db)):
+    """用标准范本把表单数据渲染成合同正文 PDF。
+
+    请求体就是合同表单（或 `{"contract_id": N}`），**不要求先保存合同** ——
+    用户要的就是"填完先看看正文长什么样"。
+    """
+    data = _contract_document_payload(db, payload)
+    data = resolve_contract_document_payload(db, data)
+    document = build_gongkuang_document(data, data.get("items") or [])
+    spec = document_to_print_spec(document)
+    raw_no = str(document.get("contract_no") or "").strip()
+    # 还没编号的草稿不要生成 "未编号 · 草稿.pdf" 这种文件名 —— 存到硬盘上谁也不知道这是哪单
+    if not raw_no or raw_no.startswith("（"):
+        raw_no = f"draft_{datetime.now().strftime('%Y%m%d%H%M')}"
+    filename = raw_no.replace("（", "").replace("）", "").replace(" ", "").replace("·", "")
+    # 文件名别再带 "gongkuang"：内置范本默认已经是《产品买卖合同（简易版）》，
+    # 存到硬盘上的名字要对得上用户看到的那份合同。
+    return _pdf_response(spec, f"contract_{filename}", db, "contract", _wants_json(request))
 
 
 # 合同打印登记进统一打印入口（放在末尾登记，规避函数定义顺序问题）
@@ -1223,10 +1355,134 @@ _PRINT_KINDS["assembly"] = ("组合拆卸单", _assembly_print_spec, {})
 
 
 
+def _money(v) -> str:
+    """金额显示：千分位 + 两位小数。空值一律显示 0.00 而不是空白 ——
+    对账单上空格会让人以为是"漏印"，印 0.00 才明确是"这一项没有"。"""
+    try:
+        return f"{float(v or 0):,.2f}"
+    except (TypeError, ValueError):
+        return "0.00"
+
+
+
+def _statement_record_print_spec(db: Session, statement_id: int) -> dict:
+    """增强版对账单（`statements` 表）PDF。
+
+    与上面的 `print_statement` 是**两条不同的路径**，别合并：
+
+    · `print_statement`（`/print/statement/{party_type}/{party_id}`）= **实时聚合**，
+      从合同/发票/收付款现算一遍流水账，适合"临时看看这个客户欠多少"。
+    · 本函数（`/print/statement-record/{id}`）= **打印一张已定稿的对账单**，
+      金额一律读头部快照字段，**绝不重算**。
+
+    第二条路径必有的原因：对账单一旦发给对方就是法律凭证。若打印时重算，
+    对方手里的 PDF 会随着我方事后改单悄悄变数，对账就永远扯不清。
+    """
+    row = db.get(Statement, statement_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="对账单不存在")
+
+    items = sorted(row.items, key=lambda x: (x.line_no or 0, x.id or 0))
+    direction_label = STATEMENT_DIRECTIONS.get(row.direction, row.direction)
+    party_caption = "客户名称" if row.party_type == "customer" else "供应商名称"
+
+    rows: list[list] = []
+    for idx, it in enumerate(items, start=1):
+        rows.append(
+            [
+                str(idx),
+                _s(it.business_date),
+                STATEMENT_SOURCE_TYPES.get(it.source_type or "", _s(it.source_type)),
+                _s(it.contract_no),
+                _s(it.summary) or _s(it.source_no),
+                _money(it.contract_amount),
+                _money(it.invoiced_amount),
+                _money(it.uninvoiced_amount),
+                _money(it.received_amount),
+                _money(it.outstanding_amount),
+            ]
+        )
+
+    return {
+        "title": "对账单",
+        "subtitle": direction_label,
+        "doc_no": _s(row.statement_no),
+        "period": f"账期：{_s(row.period_start) or '（起始）'} 至 {_s(row.period_end) or '（截止）'}",
+        # 横向打印（2026-10-25）：对账单是宽表单据，竖版挤成两页还没法看。
+        # 等价于网页打印的 `@page { size: A4 landscape; margin: 10mm; }`。
+        "orientation": "landscape",
+        # 深色表头 + 浅灰汇总块：严格复刻网页端「增强对账单」的观感
+        "table_head_fill": "#1F4E78",
+        "red_positive_columns": [9],  # 剩余未收/付 > 0 → 红字（欠款提醒）
+        # 行高加大（2026-10-25 用户反馈表格太挤）：26pt ≈ 默认的 1.4 倍
+        "row_height": 26,
+        "header_left": [
+            (party_caption, _s(row.party_name)),
+            ("对方税号", _s(row.party_tax_no)),
+            ("账期", f"{_s(row.period_start) or '（起始）'} ~ {_s(row.period_end) or '（截止）'}"),
+            ("制单日期", _s(row.statement_date) or _d(row.created_at)),
+        ],
+        "header_right": [
+            ("款项方向", direction_label),
+            ("单据状态", STATEMENT_STATUS.get(row.status, _s(row.status))),
+            ("明细行数", str(row.item_count or len(items))),
+            ("确认时间", _s(row.confirmed_at)[:16] if row.confirmed_at else ""),
+        ],
+        "columns": [
+            {"label": "序号", "width": 34, "min_width": 28, "align": "c"},
+            {"label": "业务日期", "width": 68, "min_width": 58, "align": "c"},
+            {"label": "来源", "width": 48, "min_width": 40, "align": "c"},
+            {"label": "合同编号", "width": 96, "min_width": 78, "align": "l"},
+            {"label": "摘要", "width": 132, "align": "l", "shrink": True},
+            {"label": "合同金额", "width": 72, "min_width": 62, "align": "r"},
+            {"label": "已开票", "width": 68, "min_width": 58, "align": "r"},
+            {"label": "未开票", "width": 68, "min_width": 58, "align": "r"},
+            {"label": "已收/付", "width": 68, "min_width": 58, "align": "r"},
+            {"label": "剩余未收/付", "width": 82, "min_width": 72, "align": "r"},
+        ],
+        "rows": rows,
+        # 表下合计行放"应收/应付余额"——这是对方最关心的一个数
+        "totals": {
+            "label": "应收/应付余额",
+            "chinese": f"大写：{amount_to_chinese(float(row.receivable_balance or 0))}",
+            "amount": _money(row.receivable_balance),
+        },
+        "extra_rows": [
+            ("未开票金额", _money(row.uninvoiced_amount)),
+            ("剩余未收/付", _money(row.outstanding_amount)),
+            ("预收/预付发生额", _money(row.prepaid_received)),
+            ("预收/预付已核销", _money(row.prepaid_applied)),
+            ("预收/预付余额", _money(row.prepaid_balance)),
+        ],
+        # 汇总块一行 5 格（再宽就挤成两三个字，反而看不清）
+        "summary": [
+            ("期初余额", _money(row.opening_balance)),
+            ("本期合同额", _money(row.contract_amount)),
+            ("本期已开票", _money(row.invoiced_amount)),
+            ("本期已收/付", _money(row.received_amount)),
+            ("应收/应付余额", _money(row.receivable_balance)),
+        ],
+        "notes": [
+            "说明：未开票金额 = 合同金额 − 已开票；剩余未收/付 = max(0, 合同金额 − 已收/付 − 预收已核销)；"
+            "应收/应付余额 = 期初余额 + 本期已开票 − 本期已收/付 − 预收已核销。",
+            f"备注：{_s(row.note)}" if row.note else "",
+            "如对上述往来无异议，请盖章确认回传；如有异议，请于 5 个工作日内与我司联系核对。",
+        ],
+        "signatures": ["制单", "审核", ("客户" if row.party_type == "customer" else "供应商") + "确认（盖章）"],
+    }
+
+
+
+# 对账单（已定稿的单据）登记进统一打印入口：
+# 路径是 /print/statement-record/{id}，与旧的实时聚合 /print/statement/{party_type}/{party_id}
+# 段数不同（2 段 vs 3 段），FastAPI 不会互相吃掉。
+_PRINT_KINDS["statement-record"] = ("对账单（单据）", _statement_record_print_spec, {})
+
+
+
 # ============================================================================
 # 打印类型注册表对外出口（打印模板表靠它播种，见 app/models/print_template.py）
 # ============================================================================
-
 def printable_doc_types() -> list[tuple[str, str]]:
     """全部可控打印的单据类型：[(doc_type, 中文名), ...]，按业务顺序。
 

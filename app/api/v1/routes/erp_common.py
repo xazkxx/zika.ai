@@ -21,6 +21,7 @@ from app.models.material_issue import MaterialIssueItem
 from app.models.material_return import MaterialReturnItem
 from app.models.outsourcing import OutsourcingItem
 from app.models.product import Product
+from app.models.product_unit import ProductUnit
 from app.models.production_plan import ProductionPlanItem
 from app.models.purchase_return import PurchaseReturnItem
 from app.models.quotation import QuotationItem
@@ -29,6 +30,7 @@ from app.models.stocktaking import StocktakingItem
 from app.models.warehouse import Warehouse
 from datetime import datetime
 from fastapi import HTTPException, Request, Response
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from urllib import request
 
@@ -92,6 +94,107 @@ def _normalize_period(value: str | None, fallback_date: str | None = None) -> st
 
 
 
+def resolve_contract_document_payload(db: Session, payload: dict) -> dict:
+    """把「新增购销合同」的表单态补全成合同正文需要的完整数据。
+
+    表单里只传了 `party_id` 和 `items[].product_id`（商品名/规格/单位由后端从档案取），
+    而合同正文必须写**全称**——所以这里统一补三样：
+
+      1. `party_name` / `party_tax_no` 等由 `party_id` 反查（表单不重复传，避免两边不一致）；
+      2. 明细的 `product_name / standards / unit` 由 `product_id` 反查；
+      3. `amount` 缺省按 数量 × 单价 现算（前端有时不传金额）。
+
+    补全后的 payload 会**原样返回给前端**，再打给 PDF 接口 ——
+    保证"预览看到的"和"导出的"是同一份数据，不会各算一遍算岔。
+    """
+    from app.models.customer import Customer
+    from app.models.product import Product
+    from app.models.supplier import Supplier
+
+    data = dict(payload or {})
+    party_type = str(data.get("party_type") or "").strip()
+    if not party_type:
+        # 表单用的是 contract_type（sales/purchase），这里换算成往来单位类型
+        party_type = "supplier" if str(data.get("contract_type") or "sales") == "purchase" else "customer"
+        data["party_type"] = party_type
+    if not data.get("direction"):
+        data["direction"] = "in" if party_type == "supplier" else "out"
+
+    party_id = data.get("party_id")
+    # ⚠️ 2026-10-23：原来只有 `party_name` 为空才去反查档案 —— 而合同表单里
+    # party_name 早就由下拉选好了，于是 **税号/开户行/账号从来没被带进正文**，
+    # 打出来的合同抬头永远是空的。现在改成"按字段各自补空缺"，与名称无关。
+    if party_id not in (None, ""):
+        try:
+            model = Supplier if party_type == "supplier" else Customer
+            party = db.get(model, int(party_id))
+        except (TypeError, ValueError):
+            party = None
+        if party is not None:
+            data["party_name"] = data.get("party_name") or getattr(party, "name", None)
+            data["party_tax_no"] = data.get("party_tax_no") or getattr(party, "tax_no", None)
+            data["party_address"] = data.get("party_address") or getattr(party, "address", None)
+            data["party_contact"] = data.get("party_contact") or getattr(party, "contact", None)
+            # 抬头电话优先用**开票电话**（财务留的那个号），没填才退回业务电话
+            data["party_phone"] = (
+                data.get("party_phone")
+                or getattr(party, "invoice_phone", None)
+                or getattr(party, "phone", None)
+            )
+            # 开户行 / 账号：合同结算条款与落款都要用
+            data["party_bank_name"] = data.get("party_bank_name") or getattr(party, "bank_name", None)
+            data["party_bank_account"] = (
+                data.get("party_bank_account") or getattr(party, "bank_account", None)
+            )
+
+    items: list[dict] = []
+    for row in data.get("items") or []:
+        item = dict(row)
+        product_id = item.get("product_id")
+        if product_id not in (None, "") and not item.get("product_name"):
+            try:
+                product = db.get(Product, int(product_id))
+            except (TypeError, ValueError):
+                product = None
+            if product is not None:
+                item["product_name"] = product.name
+                item["standards"] = item.get("standards") or getattr(product, "standards", None)
+                item["unit"] = item.get("unit") or getattr(product, "unit", None)
+        if item.get("amount") in (None, "", 0):
+            try:
+                item["amount"] = round(
+                    float(item.get("quantity") or 0) * float(item.get("unit_price") or 0), 2
+                )
+            except (TypeError, ValueError):
+                item["amount"] = 0
+        items.append(item)
+    data["items"] = items
+    return data
+
+
+def _next_flow_no(db: Session, day: str) -> str:
+    """生成资金流水号 `FL<yyyymmdd><3位序号>`（如 FL20261022001）。
+
+    为什么要有它：对账时客户问"这笔钱对应哪张回单"，靠自增 id 说不清 ——
+    流水号是可以抄到银行回单上、可以被对方核对的一串字符。
+    ⚠️ 逐日递增、**按字符串前缀取最大值**（同日序号定长 3 位，字典序=数值序）；
+    没有唯一索引，单机单用户足够；将来多人并发要改成序列或行锁。
+    """
+    prefix = f"FL{str(day or '').replace('-', '')[:8]}"
+    last = (
+        db.query(FinancialTransaction.flow_no)
+        .filter(FinancialTransaction.flow_no.like(f"{prefix}%"))
+        .order_by(FinancialTransaction.flow_no.desc())
+        .first()
+    )
+    seq = 1
+    if last and last[0]:
+        tail = str(last[0])[len(prefix):]
+        if tail.isdigit():
+            seq = int(tail) + 1
+    return f"{prefix}{seq:03d}"
+
+
 def _write_finance(
     db: Session,
     *,
@@ -108,8 +211,14 @@ def _write_finance(
     project_id: int | None = None,
     occurred_at: str | None = None,
     note: str | None = None,
+    invoice_id: int | None = None,
+    flow_no: str | None = None,
 ) -> FinancialTransaction:
-    """业务单据审核后由系统自动写财务流水，人工不允许绕过。"""
+    """业务单据审核后由系统自动写财务流水，人工不允许绕过。
+
+    `invoice_id`（2026-10-22）：把"付款流水 → 进项发票"这颗钉子传下去。
+    不传就是 None —— 历史调用方一个都不用改。
+    """
     day = (occurred_at or "")[:10] or datetime.now().strftime("%Y-%m-%d")
     record = FinancialTransaction(
         transaction_type=transaction_type,
@@ -126,6 +235,9 @@ def _write_finance(
         occurred_at=day,
         period=_normalize_period(day),
         note=note,
+        invoice_id=invoice_id,
+        # 流水号：调用方没给就自动生成（历史调用方一个都不用改）
+        flow_no=flow_no or _next_flow_no(db, day),
     )
     db.add(record)
     db.flush()  # 先拿 record.id，供凭证挂 flow_id 用
@@ -206,13 +318,40 @@ def _apply_stock(
     quantity: int,
     transaction_type: str,
     unit_price: float = 0.0,
+    unit_factor: int = 1,
     related_type: str | None = None,
     related_order_id: int | None = None,
     doc_no: str | None = None,
     note: str | None = None,
 ) -> InventoryTransaction | None:
-    """写一条库存流水。没有仓库或数量为 0 时跳过（返回 None）。"""
-    qty = int(quantity or 0)
+    """写一条库存流水。没有仓库或数量为 0 时跳过（返回 None）。
+
+    `quantity` / `unit_price` 都是**录入单位**口径；`unit_factor` 是
+    「1 个录入单位 = 几个基本单位」。落库前统一换算成**基本单位**：
+
+        流水 quantity  = quantity   × unit_factor    （基本单位，整数）
+        流水 unit_price = unit_price ÷ unit_factor    （每基本单位成本）
+
+    `unit_factor=1`（默认）与改动前**逐字节等价** —— IEEE754 下 `x*1` 与 `x/1.0`
+    都是精确恒等（含 `inf`/`nan` 的传播规则也一致），所以全库既有调用点
+    一行都不用改、也不需要传这个参数。
+
+    ⚠️ **unit_price 必须与 quantity 是同一个口径。** 如果你的单价来自
+    `_resolve_cost_price()`（它在价格为空时回落到 `products.purchase_price`，
+    那是**基本单位**口径），就**不要**同时传 `unit_factor > 1` ——
+    那会把档案价又除一次 factor，单价少 factor 倍。正确做法是先把单价换算成
+    录入口径，或者先把 `quantity` 换算成基本单位再传 `unit_factor=1`。
+    **绝不要两种口径混用。**
+    """
+    factor = int(unit_factor or 1)
+    # factor = 0 会把数量清零 —— 而下面 `qty == 0` 是直接 return None，
+    # 于是"整笔静默消失"：不报错、不记日志，一路潜伏到盘点才发现。
+    # factor < 0 更糟 —— 它会**翻转出入库方向**（入库变出库）。
+    # 两者都是"静默写出一条错流水"，宁可 400。理论上不可达（DB 有 CHECK(factor>=2)），
+    # 但它是最后一道闸，成本一行。
+    if factor < 1:
+        raise HTTPException(status_code=400, detail="换算率必须是 ≥1 的整数")
+    qty = int(quantity or 0) * factor
     if warehouse_id is None or qty == 0:
         return None
     record = InventoryTransaction(
@@ -220,7 +359,7 @@ def _apply_stock(
         warehouse_id=warehouse_id,
         transaction_type=transaction_type,
         quantity=qty,
-        unit_price=float(unit_price or 0.0),
+        unit_price=float(unit_price or 0.0) / factor,
         related_type=related_type,
         related_order_id=related_order_id,
         doc_no=doc_no,
@@ -228,6 +367,53 @@ def _apply_stock(
     )
     db.add(record)
     return record
+
+
+
+def _resolve_unit_factor(db: Session, product_id: int | None, unit_name: str | None) -> int:
+    """把「录入单位名」解析成「1 个该单位 = 几个基本单位」。
+
+    **服务端解析，绝不接受客户端传进来的 factor** —— 客户端能把自己那 3 箱
+    说成 3000 盒，库存就凭空放大 1000 倍。客户端只负责说"我要用哪个单位"。
+
+    返回 1 的三种情况（都表示"不需要换算"）：
+
+      · `unit_name` 为空             —— 老客户端 / 未改的前端根本不发这个字段
+      · `unit_name == products.unit` —— 用户选的就是基本单位
+      · 商品不存在                   —— **保持旧行为**：旧代码对不存在的 product_id
+        是放行的（`_resolve_item_snapshot` 会优雅降级），不要在这次改动里新引入一个 400
+
+    其余情况：必须能在 `product_units` 里查到 `(product_id, unit_name)` 且
+    `is_enabled = true`；查不到就 400。（**静默按 1 算**会让 3 箱入库变成 3 盒 ——
+    少 factor 倍、无报错、无日志，所以这里宁可报错。）
+    """
+    name = (unit_name or "").strip()
+    if not name or not product_id:
+        return 1
+    product = db.get(Product, int(product_id))
+    if product is None:
+        return 1
+    # `products.unit` 本身就是基本单位 —— 它不在 product_units 里占行（见该模型 docstring）
+    if name == (product.unit or "").strip():
+        return 1
+    row = (
+        db.query(ProductUnit)
+        .filter(
+            ProductUnit.product_id == int(product_id),
+            ProductUnit.unit_name == name,
+            ProductUnit.is_enabled.is_(True),
+        )
+        .first()
+    )
+    if row is None or not row.factor:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"商品「{product.name}」没有辅助单位「{name}」，"
+                f"请先在商品档案里配置，或改用基本单位「{product.unit or '—'}」。"
+            ),
+        )
+    return int(row.factor)
 
 
 
@@ -267,6 +453,138 @@ def _revert_finance(db: Session, related_type: str, related_order_id: int) -> in
     return len(rows)
 
 
+def _order_payment_flows(db: Session, order_id: int) -> list[FinancialTransaction]:
+    """这张单据上挂着的**真实资金**流水（收款 / 付款）。
+
+    ⚠️ 两个字段都要看，只认一个会漏（2026-10-18 实测踩坑）：
+      · `transaction_type` = 业务类型（这是谁的钱：receipt / payment），
+        `_register_payment` 写的就是它；
+      · `related_type` = 来源单据类型，历史上沿用它标记收付款来源。
+      目前两者都等于 receipt/payment，但 `POST /finance` 手工登记只写
+      transaction_type、related_type 留空 —— 只按 related_type 过滤就会放过这类流水，
+      用户"带收款的单据还能删"就是这么漏出去的。
+    """
+    return (
+        db.query(FinancialTransaction)
+        .filter(
+            FinancialTransaction.related_order_id == order_id,
+            or_(
+                FinancialTransaction.transaction_type.in_(("receipt", "payment")),
+                FinancialTransaction.related_type.in_(("receipt", "payment")),
+            ),
+        )
+        .all()
+    )
+
+
+def _payment_flow_amounts(rows: list[FinancialTransaction]) -> tuple[float, float]:
+    """把流水拆成（收款合计, 付款合计）。"""
+    receipt_amount = round(
+        sum(
+            float(row.amount or 0)
+            for row in rows
+            if (row.transaction_type or row.related_type) == "receipt"
+        ),
+        2,
+    )
+    payment_amount = round(
+        sum(
+            float(row.amount or 0)
+            for row in rows
+            if (row.transaction_type or row.related_type) == "payment"
+        ),
+        2,
+    )
+    return receipt_amount, payment_amount
+
+
+def _assert_no_payment_flows(db: Session, order_id: int, order_no: str) -> None:
+    """单据上一旦登记过收付款，就**禁止删除**（2026-10-18）。
+
+    背景：`_revert_finance` 只冲销"单据自己产生的"流水（related_type 是
+    sales_out / purchase_in 这种），而 `receipt` / `payment` 是**人工登记的真实资金
+    记录** —— 删单时它们不会被一起删掉，`related_order_id` 就指向了一张不存在的单据，
+    变成无主账（孤儿流水）。
+
+    这是财务数据里最不能出现的东西：钱在账上，单据没了，对账时无从追溯，
+    而且 `_recalc_debt_chain` 之后的重算也失去了依据。
+
+    所以这里在删单**之前**先拦一道，返回 409 + 结构化 detail（前端据此弹专门的
+    拦截提示，不走"强制删除"那条二次确认 —— 这个场景不存在"确认一下就能删"）。
+
+    ⚠️ 别改成"顺手把流水也删了"：那是把真实资金记录抹掉，比留孤儿更糟。
+    """
+    rows = _order_payment_flows(db, order_id)
+    if not rows:
+        return
+
+    receipt_amount, payment_amount = _payment_flow_amounts(rows)
+    parts = []
+    if receipt_amount:
+        parts.append(f"收款 ¥{receipt_amount:.2f}")
+    if payment_amount:
+        parts.append(f"付款 ¥{payment_amount:.2f}")
+
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "has_payment_flow",
+            "message": (
+                f"单据 {order_no} 存在资金流水 {len(rows)} 笔（{'、'.join(parts)}），无法删除。"
+            ),
+            "hint": (
+                "收付款是真实资金记录，删单会让这笔钱变成无主账（孤儿流水），"
+                "财务上不允许。请保留该单据；金额登错就再登记一笔冲销/退款，而不是删单。"
+            ),
+            "flow_count": len(rows),
+            "receipt_amount": receipt_amount,
+            "payment_amount": payment_amount,
+        },
+    )
+
+
+def _assert_source_order_no_payment(db: Session, source_order, doc_label: str = "开单") -> None:
+    """删开单（销售开单 / 采购入库）前，先看它**来源订单**上有没有资金流水。
+
+    为什么删开单也要拦（2026-10-18 用户实测踩到：订单 #4230 / 开单 #4231）：
+    开单删掉后，订单会停在 `completed` —— 既不能重新转单（`to-outbound` 挡 completed），
+    又因为收了款不能删（`has_payment_flow`），变成一张谁都动不了的死锁单。
+    表面看"删成功了"，实际是把一张带 1000 元收款的订单推进了死角。
+    """
+    if source_order is None:
+        return
+    rows = _order_payment_flows(db, source_order.id)
+    if not rows:
+        return
+
+    receipt_amount, payment_amount = _payment_flow_amounts(rows)
+    parts = []
+    if receipt_amount:
+        parts.append(f"收款 ¥{receipt_amount:.2f}")
+    if payment_amount:
+        parts.append(f"付款 ¥{payment_amount:.2f}")
+
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "has_source_payment_flow",
+            "message": (
+                f"该{doc_label}由订单 {source_order.order_no} 转入，而该订单已登记资金流水 "
+                f"{len(rows)} 笔（{'、'.join(parts)}），无法删除。"
+            ),
+            "hint": (
+                f"删掉这张{doc_label}后，订单会停在「已完成」——既不能重新转单、又因为收了款不能删，"
+                "单据就彻底动不了了。请先在财务流水里处理这笔收付款（冲销/退款），再来删单。"
+            ),
+            "flow_count": len(rows),
+            "receipt_amount": receipt_amount,
+            "payment_amount": payment_amount,
+            "source_order_id": source_order.id,
+            "source_order_no": source_order.order_no,
+        },
+    )
+
+
 
 def _net_stock_map(db: Session) -> dict[tuple[int, int], int]:
     """全库净库存：(product_id, warehouse_id) -> 现存量。"""
@@ -276,6 +594,53 @@ def _net_stock_map(db: Session) -> dict[tuple[int, int], int]:
         result[key] = result.get(key, 0) + _stock_delta(row.transaction_type, row.quantity)
     return result
 
+
+
+def _clean_order_lines(items, label: str = "单据"):
+    """剔除整行空白的明细行；半填行直接 400，绝不静默落库。
+
+    背景（2026-10-17 空行边界测试）：
+      前端每张单据默认渲染若干空明细行。如果原样提交，后端会为每一行
+      写一条「商品 0 / 数量 0」的垃圾记录 —— 污染明细表、合计与打印，
+      而且没有任何报错。`quantity` 是 NOT NULL INTEGER，空值只能用 0
+      表达，和「真的填了 0」无法区分，所以口径只能定在 `product_id`：
+
+        ① product_id 缺失 / 0  → 这行压根不构成一条明细，**静默丢弃**；
+        ② product_id 有值但 quantity <= 0 → **400**，绝不按 0 入账。
+           （`_apply_stock` 对 qty==0 是直接 return，会变成
+             "单据开出来了、库存一分没动" 的幽灵单，比报错更可怕。）
+
+      兜底：全部行都被丢掉时也 400 —— 否则会留下一张「只有表头、
+      没有明细」的空单。
+    """
+    kept = []
+    for index, line in enumerate(items or [], start=1):
+        try:
+            product_id = int(getattr(line, "product_id", 0) or 0)
+        except (TypeError, ValueError):
+            product_id = 0
+        if product_id <= 0:
+            continue
+        raw_qty = getattr(line, "quantity", 0)
+        try:
+            quantity = int(raw_qty or 0)
+        except (TypeError, ValueError):
+            quantity = 0
+        if quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"第 {index} 行选了商品但数量是「{raw_qty if raw_qty not in (None, '') else '空'}」，"
+                    f"{label}的数量必须大于 0；用不到的明细行请把商品留空。"
+                ),
+            )
+        kept.append(line)
+    if not kept:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label}至少要有一行有效商品明细（当前明细行都是空的）。",
+        )
+    return kept
 
 
 def _resolve_item_snapshot(db: Session, line) -> tuple[str | None, str | None, str | None]:

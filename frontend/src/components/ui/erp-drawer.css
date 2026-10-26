@@ -1,0 +1,138 @@
+/**
+ * 通用右侧抽屉（ErpDrawer）样式 —— 只写 `.erp-drawer*` 独占类名。
+ *
+ * ⚠️ 不覆写 .modal-* / .flow-drawer*：
+ *   .modal-backdrop 是全站 14 处弹窗共用的，改一处会连带影响删除确认、收款弹窗等；
+ *   .flow-drawer 是财务流水详情专用的两列只读布局，语义不同。
+ */
+
+.erp-drawer__backdrop {
+  position: fixed;
+  inset: 0;
+  /* ⚠️ 必须高于 .modal-backdrop（100），否则从列表点「新增」时抽屉会被已有弹窗盖住；
+     但要低于打印确认层（150），否则打印时抽屉会浮在打印预览上面。 */
+  z-index: 129;
+  background: rgba(15, 23, 42, 0.36);
+  display: flex;
+  justify-content: flex-end;
+  animation: erp-drawer-fade 140ms ease-out;
+}
+
+.erp-drawer {
+  height: 100%;
+  max-width: 96vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface, #fff);
+  border-left: 1px solid var(--border, #e2e8f0);
+  box-shadow: -18px 0 48px rgba(15, 23, 42, 0.18);
+  animation: erp-drawer-slide 180ms ease-out;
+}
+
+/* 三档宽度：窄（单列小表单）/ 标准（两列表单）/ 宽（明细表） */
+.erp-drawer--sm { width: 380px; }
+.erp-drawer--md { width: 520px; }
+.erp-drawer--lg { width: 760px; }
+
+@keyframes erp-drawer-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes erp-drawer-slide {
+  from { transform: translateX(24px); opacity: 0.6; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.erp-drawer__head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--divider, #eef2f7);
+}
+
+.erp-drawer__headline {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* ⭐ flex 子项要能缩，否则长标题把关闭按钮顶出可视区 */
+  min-width: 0;
+}
+
+.erp-drawer__headline h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg-strong, #0f172a);
+}
+
+.erp-drawer__sub {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted, #64748b);
+}
+
+.erp-drawer__close {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+}
+
+.erp-drawer__close:hover:not(:disabled) {
+  background: var(--gray-100, #f1f5f9);
+  color: var(--fg-strong, #0f172a);
+}
+
+.erp-drawer__close:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 主体滚动：表单再长也只滚这里，标题和底部按钮永远在手边 */
+.erp-drawer__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 16px 20px 20px;
+  min-width: 0;
+}
+
+/* 抽屉里的 .erp-form 去掉多余的外边距，避免顶部空一大块 */
+.erp-drawer__body > .erp-form:first-child {
+  margin-top: 0;
+}
+
+.erp-drawer__body .form-actions {
+  margin-bottom: 0;
+}
+
+.erp-drawer__foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--divider, #eef2f7);
+  background: var(--surface, #fff);
+}
+
+/* 窄屏：抽屉吃掉整幅宽度 */
+@media (max-width: 560px) {
+  .erp-drawer,
+  .erp-drawer--sm,
+  .erp-drawer--md,
+  .erp-drawer--lg {
+    width: 100vw;
+    max-width: 100vw;
+  }
+}

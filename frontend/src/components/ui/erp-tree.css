@@ -1,0 +1,150 @@
+/**
+ * ErpTree 样式 —— 命名空间 `.erp-tree`，与 styles.css / 商品档案那棵 .cat-* 零交叉
+ *
+ * 为什么要另起一套而不是复用 .cat-node：
+ *   .cat-node 在 styles.css 里有**三段**重复定义（4727 / 4988 / 5510 行），
+ *   最后一段还把 padding 收紧成了商品页专用值。复用等于把两个页面的样式
+ *   焊死在一起，改一边动另一边 —— 这正是这一轮要清掉的那类债。
+ *
+ * 视觉上刻意与 .cat-node 保持一致（同一套 --space / --radius / --color 令牌，
+ * 同样的 caret 旋转、同样的计数徽标），用户看不出是两套实现。
+ */
+
+.erp-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: var(--text-sm, 13px);
+  line-height: 1.5;
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------------ 一行 */
+.erp-tree__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding-right: var(--space-2);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  user-select: none;
+  transition: var(--transition-colors);
+}
+
+.erp-tree__row:hover {
+  background: var(--surface-muted, rgba(148, 163, 184, 0.1));
+}
+
+.erp-tree__row:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.erp-tree__row.is-active {
+  background: var(--color-primary-soft, rgba(37, 99, 235, 0.1));
+}
+
+.erp-tree__row.is-active .erp-tree__label {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.erp-tree__row.is-active .erp-tree__count {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+/* 「全部」那一行：跟下面分组隔一道线，视觉上是"重置"入口 */
+.erp-tree__row--all {
+  margin-bottom: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--divider, var(--border-soft));
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  font-weight: 600;
+}
+
+/* 维度根节点（第一层）：当分组标题用，比叶子重一点 */
+.erp-tree__row--group {
+  margin-top: var(--space-1, 4px);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: var(--text-xs, 12px);
+  letter-spacing: 0.02em;
+}
+
+.erp-tree__row--group.is-active {
+  color: var(--color-primary);
+}
+
+/* ---------------------------------------------------------------- caret */
+.erp-tree__caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm, 4px);
+  transition: var(--transition-colors);
+}
+
+.erp-tree__caret:hover {
+  color: var(--color-primary);
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.erp-tree__caret svg {
+  transition: transform 160ms var(--ease, ease);
+}
+
+.erp-tree__caret.is-collapsed svg {
+  transform: rotate(-90deg);
+}
+
+/* 叶子节点留同宽占位，让所有标签左对齐 */
+.erp-tree__caret--leaf {
+  cursor: default;
+}
+
+/* ---------------------------------------------------------------- 文本 */
+.erp-tree__label {
+  /* ⚠️ flex 子项的 min-width 默认是 auto（不小于内容宽度），
+     不显式写 0 的话下面的省略号全部失效，长分组名会把左栏顶宽。 */
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.erp-tree__hint {
+  color: var(--text-faint, var(--text-muted));
+  font-size: var(--text-xs, 12px);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- 计数 */
+.erp-tree__count {
+  flex: 0 0 auto;
+  min-width: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-muted, rgba(148, 163, 184, 0.16));
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  transition: var(--transition-colors);
+}
+
+/* 空分组把计数压暗，扫一眼就知道这块没东西 */
+.erp-tree__row.is-empty .erp-tree__count {
+  opacity: 0.5;
+}

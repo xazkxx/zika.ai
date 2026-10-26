@@ -1,0 +1,88 @@
+/**
+ * ResizableLayout 专用样式 —— 只新增 `.mgrid-` 前缀，不改任何现有声明。
+ *
+ * 关键点：手柄占一格（16px），正好抵消掉原来的 gap。
+ * 于是：
+ *   · 视觉间距还是 16px（跟改造前一模一样，不会突然变宽）
+ *   · 可拖区域从"一条 1px 的线"变成 16px 宽的整条，不用瞄准
+ */
+
+/* 3 列：左栏 / 手柄 / 右栏。gap 归零，由手柄那一列充当间隔。
+ *
+ * ⚠️⚠️ 选择器为什么是 `.management-grid.mgrid--split` 而不是单个 `.mgrid--split` ——
+ *   这是 2026-10-17 真实踩过的坑，改回去必坏：
+ *   Vite 打包时**组件 CSS 会被提到 styles.css 之前**（实测产物里 `.mgrid--split`
+ *   在偏移 0，而 `.management-grid` 在偏移 29171）。两条规则特异性都是 0,1,0，
+ *   于是后出现的 `.management-grid { grid-template-columns: 1fr 1.5fr }` 反压成功
+ *   —— 网格仍是 2 列，手柄被塞进第二行第 1 格，用户看到的就是"抓不到、拖不动"。
+ *   双类选择器 0,2,0 > 0,1,0，与加载顺序无关，才稳。
+ *   （调试口诀：`grep -o '\.mgrid--split{' dist/assets/index-*.css` 看它在第几个字符，
+ *     比 `.management-grid{` 小就是被压了。） */
+.management-grid.mgrid--split {
+  grid-template-columns:
+    var(--mgrid-left, calc((100% - 16px) * 0.4))
+    16px
+    minmax(0, 1fr);
+  gap: 0;
+}
+
+/* 拖动中禁止选中整页文字（组件里也设了 body.user-select，这里是双保险） */
+.management-grid.mgrid--split.is-dragging {
+  user-select: none;
+}
+
+.mgrid-handle {
+  position: relative;
+  align-self: stretch;
+  /* 触屏上必须关掉默认滚动，否则手指一按就变成"滚动页面"而不是拖动 */
+  touch-action: none;
+  cursor: col-resize;
+  outline: none;
+  /* 手柄整条都吃事件，但只有中间 2px 有线，视觉上不会多出一根柱子 */
+  background: transparent;
+}
+
+/* 那条 2px 的线：静止时是极淡的分隔线（否则用户根本不知道这里能拖），
+   悬浮 / 拖动 / 键盘聚焦时变成可见的蓝线。 */
+.mgrid-handle-line {
+  position: absolute;
+  top: 30px;      /* 让开 .panel 的 margin-top:30px，线跟面板顶边对齐 */
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.28);
+  transition: background-color 120ms ease, width 120ms ease;
+}
+
+.mgrid-handle:hover .mgrid-handle-line,
+.mgrid-handle:focus-visible .mgrid-handle-line,
+.management-grid.is-dragging .mgrid-handle-line {
+  background: var(--color-primary-border, #bfdbfe);
+}
+
+.mgrid-handle:focus-visible .mgrid-handle-line {
+  background: var(--color-primary, #2563eb);
+}
+
+/* 拖动时把手柄的线加粗一点，给一个"抓住了"的即时反馈 */
+.management-grid.is-dragging .mgrid-handle-line {
+  width: 3px;
+  background: var(--color-primary, #2563eb);
+}
+
+/* ⚠️ 窄屏这条同样必须是双类选择器（0,2,0）：
+   styles.css 里 `@media (max-width:1080px) .management-grid { grid-template-columns:1fr }`
+   只有 0,1,0，而**媒体查询本身不增加特异性**。上面那条基础规则已经是 0,2,0，
+   如果这里仍写单类，窄屏就会被自己的 3 列规则压住，网格撑破屏幕。 */
+@media (max-width: 1080px) {
+  .management-grid.mgrid--split {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .mgrid-handle {
+    display: none;
+  }
+}

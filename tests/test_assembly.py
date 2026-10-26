@@ -507,20 +507,32 @@ def test_frontend_page_and_menu_are_wired():
 
 
 def test_statement_menus_alias_the_existing_ledger_page():
-    """采购 / 销售对账单不另建页面 —— 它们就是「往来对账」的预设视图。
+    """对账单菜单不另建页面 —— 它就是「往来对账」的预设视图。
 
-    这条测试锁住的是**不做重复建设**这个决定：如果以后有人给这两个菜单
-    新写一套页面，就得同时维护两份对账逻辑，迟早对不上。
+    这条测试锁住的是**不做重复建设**这个决定：如果以后有人给它新写一套页面，
+    就得同时维护两份对账逻辑，迟早对不上。
+
+    2026-10-21 起「销售对账单」已随 v72 菜单瘦身下架（与「增强对账单」重叠），
+    所以现在只剩「采购对账单」一个别名入口 —— 断言的**结构**不变：
+    有菜单就必须走别名落到 ledger，不许有自己的渲染分支。
     """
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
+    # 2026-10-21：别名表已随页面拆分搬到 lib/appLib.js，所以两处都要读
     source = (root / "frontend" / "src" / "App.jsx").read_text(encoding="utf-8")
+    applib = (root / "frontend" / "src" / "lib" / "appLib.js").read_text(encoding="utf-8")
+    both = source + "\n" + applib
 
-    # 别名映射必须是这两条（采购=供应商、销售=客户）
-    assert "const LEDGER_ALIASES = { 'purchase-statement': 'supplier', 'sales-statement': 'customer' };" in source
+    # 别名映射：采购对账单 → 供应商往来（销售对账单已下架，不该再出现在别名表里）
+    assert (
+        "LEDGER_ALIASES = { 'purchase-statement': 'supplier' };" in both
+    ), "采购对账单的别名映射被改了 —— 它必须落到既有「往来对账」页"
+    assert "'sales-statement'" not in applib, (
+        "「销售对账单」已下架，别名表里不该再留着它（否则 alias 会把点击导到一个不存在的菜单）"
+    )
 
-    for key in ("purchase-statement", "sales-statement"):
+    for key in ("purchase-statement",):
         line = next(l for l in source.splitlines() if f"{{ key: '{key}', label:" in l)
         assert "todo: true" not in line, f"{key} 菜单还标着「待建」"
         # 不能有单独渲染分支（那意味着又造了一个页面）

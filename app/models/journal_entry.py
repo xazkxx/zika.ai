@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Float, Integer, String, func
+from sqlalchemy import DateTime, Float, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -34,8 +35,8 @@ class JournalEntry(Base):
     # 否则人工收支删掉后凭证会残留成孤儿，污染科目余额表与明细账。
     flow_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
-    total_debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # 借方合计
-    total_credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # 贷方合计
+    total_debit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)  # 借方合计
+    total_credit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)  # 贷方合计
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -50,8 +51,8 @@ class JournalEntryLine(Base):
     account_code: Mapped[str] = mapped_column(String(20), nullable=False)  # 科目编码快照（科目改名不影响历史）
     account_name: Mapped[str] = mapped_column(String(80), nullable=False)  # 科目名称快照
 
-    debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # 借方金额
-    credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # 贷方金额
+    debit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)  # 借方金额
+    credit: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, nullable=False)  # 贷方金额
 
     summary: Mapped[str | None] = mapped_column(String(255), nullable=True)  # 分录摘要
     # 分录级别的关联（一条凭证可能汇总多张同类型单据）

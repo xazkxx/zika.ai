@@ -1,0 +1,599 @@
+/* 客户文件抽屉 —— 只用 tokens.css 的变量，不引入任何新色值。
+
+   布局口径：
+     · 整层 `position: fixed; inset: 0`，层级 = `--z-modal`（与弹窗同层；
+       抽屉打开时业务上不会再开弹窗，不需要更高的层级）
+     · 面板从右侧滑入，宽度 `min(560px, 96vw)`
+     · 内部 = header / tabs / toolbar / list / footer 五段，**只有 list 滚动**，
+       头部与底部的操作永远够得着（文件多的客户最容易踩"滚到底就找不到上传按钮"）
+
+   列表用 grid 而不是 table：这里每行要放"名称 + 分类标签 + 备注"两行内容，
+   table 的单元格垂直居中会把两行挤成一坨；grid 的行高由内容自然决定。
+   ⚠️ 名称列必须 `minmax(0, 1fr)`，否则长文件名会把整行撑出横向滚动条。 */
+
+.pcfd-root {
+  position: fixed;
+  inset: 0;
+  /* 抽屉必须低于弹窗（--z-modal 1010），否则同值时后挂载的抽屉会盖住弹窗 */
+  z-index: var(--z-drawer, 1005);
+}
+
+.pcfd-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.38);
+  animation: pcfd-fade var(--dur, 180ms) var(--ease, ease);
+}
+
+.pcfd {
+  --pcfd-grid: minmax(0, 1fr) 76px 116px 104px;
+
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 96vw);
+  background: var(--surface, #fff);
+  border-left: 1px solid var(--border, #e2e8f0);
+  box-shadow: var(--shadow-modal);
+  animation: pcfd-slide-in var(--dur, 180ms) var(--ease, ease);
+}
+
+/* 拖拽悬停：整块面板描边 + 底下浮出提示，拖到哪都看得见 */
+.pcfd.is-dragover {
+  outline: 2px dashed var(--color-primary, #2563eb);
+  outline-offset: -6px;
+}
+
+/* ------------------------------------------------------------------ 头部 */
+
+.pcfd__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3, 12px);
+  padding: var(--space-4, 16px);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+/* 「← 返回」：二级页的统一退出口（2026-10-20 任务二）。
+   视觉上比标题弱一档 —— 它不是主操作，但必须一眼能找到、能手点。 */
+.pcfd__back {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 5px 10px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12.5px;
+  line-height: 1;
+  color: #475569;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pcfd__back:hover {
+  color: var(--fg-strong, #0f172a);
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.pcfd__head-main {
+  min-width: 0; /* 长客户名要能省略号，不给它 0 就会把关闭按钮挤出去 */
+  flex: 1 1 auto;
+}
+
+.pcfd__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin: 0;
+  font-size: var(--fs-md, 16px);
+  font-weight: var(--fw-semibold, 600);
+  color: var(--fg-strong, #0f172a);
+}
+
+.pcfd__count {
+  padding: 1px 8px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--color-primary-soft, #eff6ff);
+  color: var(--color-primary, #2563eb);
+  font-size: var(--fs-xs, 12px);
+  font-weight: var(--fw-medium, 500);
+  font-variant-numeric: tabular-nums;
+}
+
+.pcfd__subtitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  margin: 4px 0 0;
+  font-size: var(--fs-sm, 13px);
+  color: var(--fg-muted, #64748b);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pcfd__code {
+  padding: 0 6px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-soft, #f1f5f9);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs, 12px);
+  color: var(--fg-muted, #64748b);
+}
+
+.pcfd__close {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md, 6px);
+  background: transparent;
+  color: var(--fg-muted, #64748b);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pcfd__close:hover {
+  background: var(--bg-soft, #f1f5f9);
+  color: var(--fg-strong, #0f172a);
+}
+
+.pcfd__close:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+/* ------------------------------------------------------------------ Tab */
+
+.pcfd__tabs {
+  display: flex;
+  gap: var(--space-1, 4px);
+  padding: 0 var(--space-4, 16px);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  overflow-x: auto; /* 分类多到放不下时横滚，不要换行把头部顶高 */
+  scrollbar-width: none;
+}
+
+.pcfd__tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.pcfd__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 10px 4px;
+  margin-bottom: -1px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-base, 14px);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pcfd__tab:hover {
+  color: var(--fg-strong, #0f172a);
+}
+
+.pcfd__tab.is-active {
+  border-bottom-color: var(--color-primary, #2563eb);
+  color: var(--color-primary, #2563eb);
+  font-weight: var(--fw-medium, 500);
+}
+
+.pcfd__tab-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-soft, #f1f5f9);
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.pcfd__tab.is-active .pcfd__tab-count {
+  background: var(--color-primary-soft, #eff6ff);
+  color: var(--color-primary, #2563eb);
+}
+
+/* -------------------------------------------------------------- 工具条 */
+
+.pcfd__toolbar {
+  display: flex;
+  gap: var(--space-2, 8px);
+  padding: var(--space-3, 12px) var(--space-4, 16px) var(--space-2, 8px);
+}
+
+.pcfd__search {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-md, 6px);
+  background: var(--surface, #fff);
+  color: var(--fg-strong, #0f172a);
+  font-size: var(--fs-sm, 13px);
+}
+
+.pcfd__search:focus {
+  outline: none;
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: var(--ring);
+}
+
+.pcfd__upload {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--color-primary, #2563eb);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-primary, #2563eb);
+  color: var(--fg-inverse, #fff);
+  font-size: var(--fs-sm, 13px);
+  font-weight: var(--fw-medium, 500);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pcfd__upload:hover:not(:disabled) {
+  background: var(--color-primary-hover, #1d4ed8);
+}
+
+.pcfd__upload:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* ------------------------------------------------- 归档目标分类（只在「全部」下出现） */
+
+.pcfd__target {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 var(--space-4, 16px) var(--space-2, 8px);
+}
+
+.pcfd__target-label {
+  font-size: var(--fs-xs, 12px);
+  color: var(--fg-muted, #64748b);
+}
+
+.pcfd__chip {
+  padding: 3px 10px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--surface, #fff);
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+  cursor: pointer;
+}
+
+.pcfd__chip.is-active {
+  border-color: var(--color-primary, #2563eb);
+  background: var(--color-primary-soft, #eff6ff);
+  color: var(--color-primary, #2563eb);
+}
+
+/* ------------------------------------------------------------------ 提示条 */
+
+.pcfd__alert {
+  margin: 0 var(--space-4, 16px) var(--space-2, 8px);
+  padding: 8px 10px;
+  border-radius: var(--radius-md, 6px);
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.5;
+}
+
+.pcfd__alert--error {
+  border: 1px solid var(--color-danger-border, #fecaca);
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.pcfd__alert--ok {
+  border: 1px solid var(--color-success-border, #bbf7d0);
+  background: var(--color-success-soft, #f0fdf4);
+  color: var(--color-success-strong, #15803d);
+}
+
+/* ------------------------------------------------------------------ 列表 */
+
+.pcfd__list {
+  flex: 1 1 auto;
+  min-height: 0; /* flex 子项要能自己滚，这一行不能省 */
+  overflow-y: auto;
+  padding: 0 var(--space-4, 16px);
+}
+
+.pcfd__list-head {
+  display: grid;
+  grid-template-columns: var(--pcfd-grid);
+  gap: var(--space-2, 8px);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 0;
+  background: var(--surface, #fff);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  font-size: var(--fs-xs, 12px);
+  color: var(--fg-subtle, #94a3b8);
+}
+
+.pcfd__col-size,
+.pcfd__col-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+  white-space: nowrap;
+  align-self: center;
+}
+
+.pcfd__col-ops {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  align-self: center;
+}
+
+.pcfd__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pcfd__row {
+  display: grid;
+  grid-template-columns: var(--pcfd-grid);
+  gap: var(--space-2, 8px);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+.pcfd__row:hover {
+  background: var(--bg-soft, #f8fafc);
+}
+
+/* 名称列：上下两行（文件名 / 分类+备注），必须 min-width:0 才能省略号 */
+.pcfd__col-name {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pcfd__name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pcfd__name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-strong, #0f172a);
+  font-size: var(--fs-base, 14px);
+}
+
+.pcfd__kind {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--radius-sm, 4px);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-semibold, 600);
+  line-height: 16px;
+  letter-spacing: 0.02em;
+}
+
+/* 四种格式角标用语义色的浅底，一眼能把 PDF 和图片分开 */
+.pcfd__kind--pdf {
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.pcfd__kind--doc {
+  background: var(--color-primary-soft, #eff6ff);
+  color: var(--color-primary, #2563eb);
+}
+
+.pcfd__kind--xls {
+  background: var(--color-success-soft, #f0fdf4);
+  color: var(--color-success-strong, #15803d);
+}
+
+.pcfd__kind--img {
+  background: var(--color-warning-soft, #fffbeb);
+  color: var(--color-warning-strong, #b45309);
+}
+
+.pcfd__meta-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pcfd__tag {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-soft, #f1f5f9);
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+  line-height: 17px;
+}
+
+.pcfd__tag--missing {
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.pcfd__note {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle, #94a3b8);
+  font-size: var(--fs-xs, 12px);
+}
+
+.pcfd__op {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface, #fff);
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pcfd__op:hover:not(:disabled) {
+  border-color: var(--color-primary, #2563eb);
+  color: var(--color-primary, #2563eb);
+}
+
+.pcfd__op--danger:hover:not(:disabled) {
+  border-color: var(--color-danger, #dc2626);
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.pcfd__op:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------ 空态 / 骨架 */
+
+.pcfd__empty {
+  padding: 48px 8px;
+  text-align: center;
+}
+
+.pcfd__empty-title {
+  margin: 0 0 6px;
+  color: var(--fg-strong, #0f172a);
+  font-size: var(--fs-base, 14px);
+}
+
+.pcfd__empty-desc {
+  margin: 0;
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.6;
+}
+
+.pcfd__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+.pcfd__skeleton-row {
+  height: 40px;
+  border-radius: var(--radius-md, 6px);
+  background: linear-gradient(90deg, var(--bg-soft, #f1f5f9) 25%, #e9eef5 37%, var(--bg-soft, #f1f5f9) 63%);
+  background-size: 400% 100%;
+  animation: pcfd-shimmer 1.4s ease infinite;
+}
+
+/* ------------------------------------------------------------------ 底部 */
+
+.pcfd__foot {
+  flex: 0 0 auto;
+  padding: 10px var(--space-4, 16px);
+  border-top: 1px solid var(--border, #e2e8f0);
+  background: var(--bg-soft, #f8fafc);
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+}
+
+.pcfd__foot-dot {
+  margin: 0 6px;
+  color: var(--fg-subtle, #94a3b8);
+}
+
+/* 拖拽提示：浮在列表上方，不改变布局（否则拖进来时列表会跳一下） */
+.pcfd__dropzone {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 14px 22px;
+  border-radius: var(--radius-lg, 8px);
+  background: rgba(37, 99, 235, 0.92);
+  color: var(--fg-inverse, #fff);
+  font-size: var(--fs-base, 14px);
+  font-weight: var(--fw-medium, 500);
+  pointer-events: none;
+  box-shadow: var(--shadow-hover);
+}
+
+/* ------------------------------------------------------------------ 动效 */
+
+@keyframes pcfd-slide-in {
+  from {
+    transform: translateX(28px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes pcfd-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pcfd-shimmer {
+  from {
+    background-position: 100% 50%;
+  }
+  to {
+    background-position: 0 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pcfd,
+  .pcfd-backdrop,
+  .pcfd__skeleton-row {
+    animation: none;
+  }
+}
+
+/* 窄屏：抽屉占满整宽，列表列宽收紧 */
+@media (max-width: 520px) {
+  .pcfd {
+    --pcfd-grid: minmax(0, 1fr) 64px 96px;
+    width: 100vw;
+    border-left: none;
+  }
+
+  .pcfd__list-head .pcfd__col-time,
+  .pcfd__row .pcfd__col-time {
+    display: none;
+  }
+}

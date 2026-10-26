@@ -82,6 +82,9 @@ DOC_TYPE_ORDER: list[str] = [
     "contract",
     "statement",
     "balance-confirm",
+    # 第 13 批：增强版对账单（`statements` 表）—— 与上面那个"实时聚合"的
+    # `statement` 是两个不同的东西：那个按往来单位现算流水，这个打印一张已定稿的单据。
+    "statement-record",
     "inventory-transfer",
     "stocktaking",
     "assembly",

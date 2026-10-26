@@ -1,0 +1,433 @@
+/* ==========================================================================
+ * ERP 经营看板 · 样式
+ * --------------------------------------------------------------------------
+ * 【融入 45 页系统的两个关键约束】
+ *   1. 没有 body / html / * 这类全局选择器。原型的 `*{box-sizing}` / `body{font-family}`
+ *      直接搬进组件会把宿主页面一起带跑偏，这里全部收进 .erpdash 作用域。
+ *   2. 所有类名带 erpdash- 前缀，所有变量挂在 .erpdash 上而不是 :root，
+ *      避免和现有主题变量撞名。
+ *
+ * 想换肤：只改 .erpdash 里那一组变量即可。
+ * ========================================================================== */
+
+.erpdash {
+  /* ---- 主题变量 ---- */
+  --erpdash-bg: #f4f5f7;
+  --erpdash-card: #ffffff;
+  --erpdash-border: #e8eaed;
+  --erpdash-text-1: #1f2329;
+  --erpdash-text-2: #646a73;
+  --erpdash-text-3: #8f959e;
+  --erpdash-brand: #3370ff;
+  --erpdash-accent: #f59e0b;
+  --erpdash-up: #e5484d;      /* 涨 = 红（国内习惯） */
+  --erpdash-down: #17a34a;    /* 跌 = 绿 */
+  --erpdash-grid: #eef0f3;
+  --erpdash-radius: 12px;
+  --erpdash-shadow: 0 1px 2px rgba(31, 35, 41, 0.04), 0 2px 8px rgba(31, 35, 41, 0.04);
+
+  /* ---- 容器 ---- */
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 24px 20px 40px;
+  /* 嵌在现有页面里时，这两行可以删掉，让它继承宿主背景 */
+  background: var(--erpdash-bg);
+  border-radius: 8px;
+
+  color: var(--erpdash-text-1);
+  font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 盒模型只在本组件内生效 */
+.erpdash *,
+.erpdash *::before,
+.erpdash *::after {
+  box-sizing: border-box;
+}
+
+.erpdash__head { margin-bottom: 16px; }
+
+.erpdash__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.erpdash__sub {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--erpdash-text-3);
+}
+
+.erpdash__badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--erpdash-text-2);
+  background: #f0f1f3;
+  border-radius: 4px;
+}
+
+/* ============ 错误态 ============ */
+.erpdash-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #a8071a;
+  background: #fff1f0;
+  border: 1px solid #ffccc7;
+  border-radius: 8px;
+}
+
+.erpdash-error__btn {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: #a8071a;
+  background: #fff;
+  border: 1px solid #ffa39e;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.erpdash-error__btn:hover { background: #fff5f5; }
+
+/* ============ 1. 顶部 4 个 KPI 卡片 ============ */
+.erpdash-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.erpdash-kpi {
+  position: relative;
+  padding: 18px 18px 14px;
+  overflow: hidden;
+  background: var(--erpdash-card);
+  border: 1px solid var(--erpdash-border);
+  border-radius: var(--erpdash-radius);
+  box-shadow: var(--erpdash-shadow);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.erpdash-kpi:hover {
+  box-shadow: 0 4px 16px rgba(31, 35, 41, 0.08);
+  transform: translateY(-1px);
+}
+
+.erpdash-kpi__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--erpdash-text-2);
+}
+
+.erpdash-kpi__dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.erpdash-kpi__value {
+  margin-top: 10px;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.erpdash-kpi__unit {
+  margin-left: 4px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--erpdash-text-3);
+}
+
+.erpdash-kpi__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.erpdash-kpi__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.erpdash-kpi__delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.erpdash-kpi__delta--up { color: var(--erpdash-up); }
+.erpdash-kpi__delta--down { color: var(--erpdash-down); }
+.erpdash-kpi__delta--flat { color: var(--erpdash-text-3); }
+
+.erpdash-kpi__note {
+  font-size: 12px;
+  color: var(--erpdash-text-3);
+}
+
+/* 反向指标状态标：上涨=需关注 */
+.erpdash-kpi__chip {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  border-radius: 4px;
+}
+
+.erpdash-kpi__chip--warn { color: #d4380d; background: #fff2e8; }
+.erpdash-kpi__chip--ok { color: #0f9d58; background: #e9f7ef; }
+
+.erpdash-kpi__spark {
+  flex: 0 0 auto;
+  height: 28px;
+}
+
+/* ============ 2. 中间主图表 ============ */
+.erpdash-panel {
+  padding: 18px 18px 12px;
+  background: var(--erpdash-card);
+  border: 1px solid var(--erpdash-border);
+  border-radius: var(--erpdash-radius);
+  box-shadow: var(--erpdash-shadow);
+}
+
+.erpdash-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+
+.erpdash-panel__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.erpdash-panel__desc {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--erpdash-text-3);
+}
+
+.erpdash-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.erpdash-tabs {
+  display: inline-flex;
+  padding: 3px;
+  background: #f4f5f7;
+  border-radius: 8px;
+}
+
+.erpdash-tab {
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--erpdash-text-2);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.erpdash-tab:hover { color: var(--erpdash-text-1); }
+
+.erpdash-tab.is-active {
+  color: var(--erpdash-brand);
+  font-weight: 500;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(31, 35, 41, 0.06);
+}
+
+/* 图表容器：宽度自适应，高度固定；pan-y 让移动端横滑看图、竖滑继续滚页面 */
+.erpdash-chart {
+  position: relative;
+  width: 100%;
+  height: 320px;
+  touch-action: pan-y;
+}
+
+.erpdash-chart__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+/* ============ 悬浮提示 ============ */
+.erpdash-tooltip {
+  position: absolute;
+  z-index: 5;
+  min-width: 150px;
+  padding: 8px 10px;
+  pointer-events: none;
+  opacity: 0;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid var(--erpdash-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(31, 35, 41, 0.12);
+  transform: translate(-50%, -100%);
+  transition: opacity 0.12s ease;
+}
+
+.erpdash-tooltip.is-show { opacity: 1; }
+
+/* 上方放不下时翻到数据点下方，避免顶到面板标题 */
+.erpdash-tooltip.is-below { transform: translate(-50%, 0); }
+
+.erpdash-tooltip__date {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--erpdash-text-3);
+}
+
+.erpdash-tooltip__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.erpdash-tooltip__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--erpdash-text-2);
+}
+
+.erpdash-tooltip__key {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.erpdash-tooltip__val {
+  font-weight: 600;
+  color: var(--erpdash-text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============ 图例 ============ */
+.erpdash-legend {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 2px 4px 8px 56px;
+}
+
+.erpdash-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--erpdash-text-2);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.erpdash-legend__item.is-off { opacity: 0.38; }
+
+.erpdash-legend__key {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.erpdash-legend__key--dash {
+  height: 0;
+  background: none !important;
+  border-top: 2px dashed currentColor;
+}
+
+.erpdash-legend__axis {
+  font-size: 11px;
+  color: var(--erpdash-text-3);
+}
+
+/* ============ 骨架屏 & loading ============ */
+.erpdash-skel {
+  background: linear-gradient(90deg, #f2f3f5 25%, #e9ebef 37%, #f2f3f5 63%);
+  background-size: 400% 100%;
+  border-radius: 6px;
+  animation: erpdash-shimmer 1.4s ease infinite;
+}
+
+.erpdash-skel--label { width: 40%; height: 14px; }
+.erpdash-skel--value { width: 62%; height: 28px; margin-top: 12px; }
+.erpdash-skel--foot { width: 80%; height: 18px; margin-top: 14px; }
+.erpdash-skel--chart { width: 100%; height: 100%; border-radius: 8px; }
+
+.erpdash-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #dfe3e8;
+  border-top-color: var(--erpdash-brand);
+  border-radius: 50%;
+  animation: erpdash-spin 0.7s linear infinite;
+}
+
+@keyframes erpdash-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+@keyframes erpdash-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .erpdash-skel,
+  .erpdash-spinner { animation: none; }
+}
+
+/* ============ 响应式 ============ */
+@media (max-width: 1080px) {
+  .erpdash-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .erpdash { padding: 16px 12px 32px; }
+  .erpdash-kpis { grid-template-columns: 1fr; }
+  .erpdash-kpi__value { font-size: 24px; }
+  .erpdash-legend { padding-left: 8px; }
+}

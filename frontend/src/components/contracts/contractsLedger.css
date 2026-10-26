@@ -1,0 +1,869 @@
+/* 合同台账（第 13 批 · 第三阶段）—— 前缀统一 .cledger-
+ *
+ * 两条约束（项目里踩过的）：
+ *   ① 组件 CSS 在打包顺序上**早于** styles.css → 同特异性时会被后者反压。
+ *      所以凡是需要压过全局规则的（如 td 内边距），一律写**双类**选择器。
+ *   ② 只用 tokens.css 的变量，不写死颜色 → 换主题不用改这里。
+ */
+
+.cledger {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------------ 顶部 */
+
+.cledger__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.cledger__title-block {
+  min-width: 0;
+}
+
+.cledger__title-block h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  color: var(--fg-strong);
+}
+
+.cledger__sub {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.cledger__head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------- 方向 Tab */
+
+.cledger__tabs {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-1);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  /* 手机上两个 Tab 并排会挤成一坨，宁可让它换行 */
+  flex-wrap: wrap;
+}
+
+.cledger__tab {
+  flex: 1 1 220px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-fast, 0.15s) ease, border-color var(--dur-fast, 0.15s) ease;
+}
+
+.cledger__tab:hover {
+  background: var(--surface);
+}
+
+/* 选中态：白底 + 描边 + 主色文字。三条一起用，只改背景在深色主题下会糊 */
+.cledger__tab.is-active {
+  background: var(--surface);
+  border-color: var(--color-primary-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.cledger__tab-label {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+
+.cledger__tab.is-active .cledger__tab-label {
+  color: var(--color-primary);
+}
+
+.cledger__tab-hint {
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  /* 长文案省略：Tab 宽度是弹性的，不能因为一句提示把整行撑开 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* ---------------------------------------------------------------- 工具条 */
+
+.cledger__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.cledger__search {
+  flex: 1 1 260px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-base);
+  background: var(--surface);
+  color: var(--fg-strong);
+}
+
+.cledger__search:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-soft);
+}
+
+.cledger__toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.cledger__notice {
+  font-size: var(--fs-sm);
+  color: var(--color-primary);
+  max-width: 52ch;
+}
+
+.cledger__error {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-danger-border);
+  background: var(--color-danger-soft);
+  color: var(--color-danger-strong);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+}
+
+.cledger__muted {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ 徽标 */
+
+.cledger__badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.cledger__badge--draft,
+.cledger__badge--none {
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+}
+
+.cledger__badge--pending {
+  background: var(--color-warning-soft);
+  color: var(--color-warning-strong);
+  border-color: var(--color-warning-border);
+}
+
+.cledger__badge--active,
+.cledger__badge--signed,
+.cledger__badge--executing,
+.cledger__badge--parsed,
+.cledger__badge--reviewed {
+  background: var(--color-success-soft);
+  color: var(--color-success-strong);
+  border-color: var(--color-success-border);
+}
+
+.cledger__badge--finished {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border-color: var(--color-primary-border);
+}
+
+.cledger__badge--void,
+.cledger__badge--failed {
+  background: var(--color-danger-soft);
+  color: var(--color-danger-strong);
+  border-color: var(--color-danger-border);
+}
+
+/* 表格里的行内操作按钮：别让两个按钮换行把行撑高 */
+.cledger__row-actions {
+  display: inline-flex;
+  gap: var(--space-1);
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ 弹窗 */
+
+.cledger__modal-tag {
+  margin-left: var(--space-2);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.cledger__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-4);
+}
+
+.cledger__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.cledger__field--full {
+  grid-column: 1 / -1;
+}
+
+.cledger__field--check {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.cledger__field input[type='date'],
+.cledger__field input[type='number'],
+.cledger__field input:not([type]),
+.cledger__field input[type='text'] {
+  height: 34px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-base);
+  background: var(--surface);
+  color: var(--fg-strong);
+}
+
+.cledger__field input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-soft);
+}
+
+/* ---------------------------------------------------------------- 分段块 */
+
+.cledger__section {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--border);
+}
+
+.cledger__section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.cledger__section-head h4 {
+  margin: 0;
+  font-size: var(--fs-base);
+  color: var(--fg-strong);
+}
+
+.cledger__total {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.cledger__total strong {
+  font-size: var(--fs-md);
+  color: var(--color-danger-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------ 明细输入表 */
+
+/* 弹窗加宽：⚠️ width 和 max-width 必须双写。
+   基础样式 .modal-card 带 max-width:640px，只写 width 会被它钳住 → 实测卡片就只有
+   640px，明细表只剩 598px，商品搜索框被压成 26px 方块（用户反馈的那个 bug）。 */
+.cledger__modal {
+  width: min(1080px, 94vw);
+  max-width: min(1080px, 94vw);
+}
+
+/* 明细表横向兜底：table-layout:fixed 不会换行，内容只能溢出单元格。
+   宁可让表格横滚，也不能把搜索框挤成方块 —— 挤窄了根本没法输入。 */
+.cledger__items-wrap {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/* 列宽契约（配合 JSX 里的 <colgroup>）：
+   ⚠️ fixed 布局下 min-width 完全无效，只认第一行（col/th）的 width。
+   所以商品列写成 auto 吃余量（实测 ≥250px），其余列由 colgroup 定死。 */
+.cledger__items {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+  table-layout: fixed;
+}
+
+/* 双类：压过 styles.css 里通用的 th/td 内边距（否则一行明细高到离谱） */
+.cledger__items th,
+.cledger__items td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  min-width: 0;
+}
+
+.cledger__items th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: var(--bg-soft);
+  font-size: var(--fs-xs);
+}
+
+.cledger__items td input {
+  width: 100%;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  background: var(--surface);
+  color: var(--fg-strong);
+}
+
+.cledger__items td input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+/* 搜索框铺满单元格：.ssel 自身已是 width:100%/min-width:0，这里再兜一层，
+   防止以后有人在明细行里给它套 wrapper 又把宽度丢了。
+   触发器高度对齐同行的 input（30px），否则一行明细被 38px 的触发器撑高。 */
+.cledger__items td .ssel {
+  width: 100%;
+  min-width: 0;
+}
+
+.cledger__items td .ssel-trigger {
+  min-height: 30px;
+  padding: 0 6px;
+  font-size: var(--fs-sm);
+  border-radius: var(--radius-sm);
+}
+
+/* 金额列：等宽数字右对齐，视觉上能一眼看出量级 */
+.cledger__items-amount {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-strong);
+  white-space: nowrap;
+}
+
+.cledger__items--readonly td {
+  padding: 6px;
+  color: var(--fg-strong);
+}
+
+/* ------------------------------------------------------------ OCR 占位区 */
+
+.cledger__ocr-stub,
+.cledger__ocr-panel {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  background: var(--bg-soft);
+}
+
+/* 骨架屏：三条灰条 + 扫光。用 CSS 动画而不是塞假数据 ——
+   假数据在截图里会被当成真识别结果，反而误导 */
+.cledger__ocr-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+.cledger__ocr-skeleton span {
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--border) 25%, var(--surface) 37%, var(--border) 63%);
+  background-size: 400% 100%;
+  animation: cledger-shimmer 1.4s ease infinite;
+}
+
+.cledger__ocr-skeleton span:nth-child(1) {
+  width: 62%;
+}
+
+.cledger__ocr-skeleton span:nth-child(2) {
+  width: 84%;
+}
+
+.cledger__ocr-skeleton span:nth-child(3) {
+  width: 46%;
+}
+
+@keyframes cledger-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+/* 无障碍：系统开了"减少动态效果"就停掉扫光，静态灰条同样能表达"占位" */
+@media (prefers-reduced-motion: reduce) {
+  .cledger__ocr-skeleton span {
+    animation: none;
+    background: var(--border);
+  }
+}
+
+.cledger__ocr-raw {
+  margin-top: var(--space-2);
+  font-size: var(--fs-sm);
+}
+
+.cledger__ocr-raw pre {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  max-height: 220px;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---------- 识别结果（任务 B · 2026-10-19）---------- */
+
+/* 识别失败 / 后端拒绝时的错误条 —— 用 danger 色，一眼和普通提示区分开 */
+.cledger__ocr-error {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-danger, #dc2626);
+  font-size: var(--fs-sm);
+}
+
+/* 识别出的字段以"标签"平铺：比表格轻，一眼扫完所有候选 */
+.cledger__ocr-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.cledger__ocr-field {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  max-width: 100%;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-soft);
+  font-size: var(--fs-xs);
+}
+
+.cledger__ocr-field i {
+  flex: 0 0 auto;
+  font-style: normal;
+  color: var(--fg-muted);
+}
+
+/* 关键：值必须能截断 —— 长公司名不换行的话会把标签撑爆（flex 子项要 min-width:0） */
+.cledger__ocr-field b {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 识别 vs 合同的对照表：这是"核对"的实质 —— 不一样的地方人工裁决 */
+.cledger__ocr-diff {
+  width: 100%;
+  margin-top: var(--space-2);
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.cledger__ocr-diff th,
+.cledger__ocr-diff td {
+  padding: 4px var(--space-2);
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.cledger__ocr-diff th {
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+
+/* 一致 = 绿字，让人放心；不一致 = 红字，逼人停下来看一眼 */
+.cledger__ocr-diff tr.is-same td:nth-child(2) {
+  color: var(--color-success-strong, #15803d);
+}
+
+.cledger__ocr-diff tr.is-diff td {
+  color: var(--color-danger, #dc2626);
+}
+
+.cledger__ocr-diff tr.is-diff td:first-child {
+  color: var(--fg-strong);
+}
+
+.cledger__ocr-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* ------------------------------------------------------------ 详情弹窗 */
+
+.cledger__detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-4);
+}
+
+.cledger__detail-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cledger__detail-grid span {
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+
+.cledger__detail-grid strong {
+  font-size: var(--fs-base);
+  color: var(--fg-strong);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.cledger__detail-full {
+  grid-column: 1 / -1;
+}
+
+.cledger__file-line {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--fg-strong);
+}
+
+.cledger__inline-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: var(--space-2);
+}
+
+.cledger__inline-actions input[type='file'] {
+  font-size: var(--fs-sm);
+  max-width: 100%;
+}
+
+/* ------------------------------------------- 新建弹窗：智能优先（传原件→识别→按策略回填）
+   一块区域承担整条链路：上传（暂存）→ 识别（骨架屏）→ 结果（字段卡片+明细预览）
+   → 冲突条（仅填充空白 / 覆盖 / 暂不填）→ 已应用提示。 */
+.cledger__draft {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-soft);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cledger__draft-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.cledger__draft-pick {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.cledger__draft-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px dashed var(--border);
+  padding-top: var(--space-2);
+}
+
+.cledger__draft-items-wrap {
+  overflow-x: auto;
+}
+
+.cledger__draft-items {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.cledger__draft-items th,
+.cledger__draft-items td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.cledger__draft-items th {
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+.cledger__draft-items th:not(:first-child),
+.cledger__draft-items td:not(:first-child) {
+  text-align: right;
+}
+
+/* Word 原件的温和提示（黄色，不是红色报错）——
+   用户选了 .doc/.docx 不是"出错"，只是这条路走不通，别用 danger 色吓人。
+   放在「开始识别」按钮上方，让人在点按钮之前就看到。 */
+.cledger__draft-hint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-warning-border);
+  border-left: 3px solid var(--color-warning-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  font-size: var(--fs-sm);
+  color: var(--fg);
+}
+
+.cledger__draft-hint strong {
+  color: var(--color-warning-strong);
+}
+
+/* flex 子项默认 min-width:auto → 长文件名会把提示条撑出容器，必须显式 0 */
+.cledger__draft-hint span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 冲突条：识别完成但表单已有内容时的唯一出口 —— 三个策略按钮，绝不自动覆盖 */
+.cledger__draft-conflict {
+  border: 1px solid var(--color-warning-border);
+  background: var(--color-warning-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.cledger__draft-conflict strong {
+  color: var(--color-warning-strong);
+}
+
+.cledger__draft-conflict p {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.cledger__draft-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-1);
+}
+
+.cledger__draft-applied {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--color-success-strong);
+}
+
+/* OCR 回填后「假选中」的唯一出口：只填了显示文字、没绑到档案 id 时给用户的黄条
+   —— 文案由 ContractsLedger 的 partyHint 决定，这里只管形态。
+   ⚠️ 这个 span 是 <label> 的子元素，必须 display:block 才能独占一行。 */
+.cledger__party-hint {
+  /* 从"一段文字"升级成"文字 + 一个按钮"的容器：竖向排，按钮另起一行，
+     ⚠️ 不能用 flex-row —— 长公司名会把按钮挤成竖排单字。 */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-left: 3px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-soft);
+  color: var(--color-warning-strong);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* 黄条里的"一键新建"：长得像链接，但它是真按钮（键盘可达、有 focus 环）。
+   颜色用主色而不是黄色 —— 它是出路，不是警告。 */
+.cledger__party-hint-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-primary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.cledger__party-hint-link:hover {
+  color: var(--color-primary-strong, var(--color-primary));
+}
+
+.cledger__party-hint-link:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---- 就地新建往来单位（PartyQuickCreate）---- */
+
+.cledger__quick {
+  width: min(560px, 94vw);
+}
+
+.cledger__quick-lead {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.cledger__quick-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-4);
+}
+
+.cledger__quick-note {
+  margin: var(--space-3) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+
+.cledger__req {
+  color: var(--color-danger);
+  font-weight: 700;
+}
+
+/* ---- 重新识别二次确认 ---- */
+
+.cledger__confirm {
+  width: min(460px, 92vw);
+}
+
+.cledger__confirm-text {
+  margin: 0;
+  font-size: var(--fs-base);
+  line-height: 1.7;
+  color: var(--fg-strong);
+}
+
+/* 窄屏：两列塌成一列，否则名称/编码挤成一条竖线 */
+@media (max-width: 520px) {
+  .cledger__quick-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 按名称相似匹配上的信息条：蓝色，属于「能用但要你确认一眼」，不是错误 */
+.cledger__party-hint--info {
+  border-left-color: var(--color-info);
+  background: var(--color-info-soft);
+  color: var(--color-info-strong);
+}
+
+/* ------------------------------------------------------------------ 窄屏 */
+
+@media (max-width: 860px) {
+  .cledger__grid,
+  .cledger__detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cledger__tab {
+    flex: 1 1 100%;
+  }
+
+  .cledger__head-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* ---- 「确认无误」→「已完成核对」的灰态（2026-10-19 封神前修复） ----
+   起因：按钮只有 disabled 属性、没有对应样式，视觉上仍是纯蓝主按钮，
+   用户点了没反应，以为系统卡死。这里做三件事：变灰、去阴影、鼠标 not-allowed。
+   选择器用 .cledger__ocr-actions .primary-btn 提高特异性（组件 CSS 在 styles.css 之前）。 */
+.cledger__ocr-actions .primary-btn:disabled,
+.cledger__ocr-actions .primary-btn.is-done {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+  color: #64748b;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+.cledger__ocr-actions .primary-btn.is-done::before {
+  content: '✓';
+  margin-right: 6px;
+  font-weight: 700;
+  color: #16a34a;
+}

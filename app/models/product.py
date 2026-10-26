@@ -30,6 +30,11 @@ class Product(Base):
     color: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 颜色
     size: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 尺码
     manufacturer: Mapped[str | None] = mapped_column(String(150), nullable=True)  # 生产商
+    # 生产厂家 → 供应商档案的关联键（2026-10-17）。
+    # 为什么名称还要留一列：供应商改名/停用后，商品档案上应该显示"当时录的那个厂家"，
+    # 而不是跟着档案一起变；同时历史商品（只有名字、没有 id）也能原样显示。
+    # 按项目惯例**不加外键**（全库只有 3 个 FK），靠应用层保证引用完整。
+    manufacturer_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     serial_no: Mapped[str | None] = mapped_column(String(80), nullable=True)  # 序列号
     unit_weight: Mapped[float | None] = mapped_column(Float, nullable=True)  # 单位重量
     stock_upper: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 库存上限

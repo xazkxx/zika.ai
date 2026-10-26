@@ -1,0 +1,104 @@
+/**
+ * 全局渲染兜底卡片（ErrorBoundary 的样式）
+ *
+ * 只写 `.error-boundary*`，不碰任何全局类。
+ * 用整页居中的卡片而不是 toast：这是"这一块彻底画不出来"，
+ * 需要用户看清、并且有地方点按钮，一闪而过的提示扛不住这个职责。
+ */
+
+.error-boundary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 20px;
+  min-height: 320px;
+  box-sizing: border-box;
+}
+
+.error-boundary__card {
+  width: 100%;
+  max-width: 680px;
+  padding: 24px 26px 20px;
+  border: 1px solid var(--border, #d8e0ea);
+  border-left: 4px solid var(--danger, #dc2626);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.08);
+}
+
+.error-boundary__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 10px;
+  border-radius: 50%;
+  background: var(--danger, #dc2626);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.error-boundary__title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg-strong, #0f172a);
+}
+
+.error-boundary__lead {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-muted, #64748b);
+}
+
+/* 错误正文：等宽、可滚动。长路径 / 长 JSON 不能把卡片撑破 */
+.error-boundary__message {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.06);
+  border: 1px solid rgba(220, 38, 38, 0.2);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #991b1b;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.error-boundary__details {
+  margin: 0 0 16px;
+  font-size: 12.5px;
+  color: var(--text-muted, #64748b);
+}
+
+.error-boundary__details summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.error-boundary__details pre {
+  max-height: 260px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--gray-50, #f8fafc);
+  border: 1px solid var(--divider, #eef2f7);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-strong, #0f172a);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.error-boundary__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}

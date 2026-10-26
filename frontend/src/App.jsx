@@ -1,23 +1,103 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { API_BASE, APP_VERSION, APP_CACHE, APP_VERSION_LABEL, APP_BUILD_AT, APP_HASH, NAV_THEMES, emptyCustomerForm, emptyProductForm, emptyOrderItem, emptyPurchaseOrderForm, emptySalesOrderForm, emptyInboundForm, emptyOutboundForm, DOC_STATUS_LABELS, OUTBOUND_STATUS_LABELS, emptySupplierForm, emptyWarehouseForm, emptyEmployeeForm, LEDGER_ALIASES, STATEMENT_ALIASES, BANK_ACCOUNT_TYPE_LABEL, emptyBankAccountForm, emptyBankTransferForm, emptyEntryForm, emptyEntryQuery, emptyAssemblyForm, OPENING_TABS, emptyOpeningDraft, emptyContractForm, CONTRACT_STATUS_LABEL, contractStatusLabel, emptyQuotationForm, QUOTATION_STATUS_LABEL, quotationStatusLabel, emptyPurchaseReturnForm, PURCHASE_RETURN_STATUS_LABEL, purchaseReturnStatusLabel, emptySalesReturnForm, SALES_RETURN_STATUS_LABEL, salesReturnStatusLabel, emptyTransferForm, TRANSFER_STATUS_LABEL, transferStatusLabel, emptyStocktakingForm, STOCKTAKING_STATUS_LABEL, stocktakingStatusLabel, emptyAdjustmentForm, ADJUSTMENT_STATUS_LABEL, adjustmentStatusLabel, ADJUST_TYPE_LABEL, ADJUST_TYPE_DIRECTION, adjustTypeLabel, emptyProductionPlanForm, PLAN_TYPE_LABEL, planTypeLabel, PRODUCTION_PLAN_STATUS_LABEL, productionPlanStatusLabel, MRP_STATUS_LABEL, mrpStatusLabel, emptyMaterialIssueForm, MATERIAL_ISSUE_STATUS_LABEL, materialIssueStatusLabel, emptyMaterialReturnForm, MATERIAL_RETURN_STATUS_LABEL, materialReturnStatusLabel, emptyFinishedGoodsForm, FINISHED_GOODS_STATUS_LABEL, finishedGoodsStatusLabel, emptyOutsourcingForm, OUTSOURCING_STATUS_LABEL, outsourcingStatusLabel, REPORT_SHAPE_LABEL, emptyReportQuery, money, plain, emptyInventoryForm, STOCK_STATUS_LABEL, stockStatusLabel, DOC_TYPE_LABEL, docTypeLabel, financeTypeLabel, PROJECT_STATUS_LABEL, PROJECT_STATUS_TONE, emptyStockLogFilter, emptyFinanceForm, emptySystemUserForm, emptyRoleForm, emptyDepartmentForm, emptyPermissionDraft, emptyMenuForm, SYSTEM_TABS, PARAM_VALUE_TYPE_LABEL, emptyParamForm, emptyDictionaryForm, emptyDictItemForm, LOOKUP_TYPES, emptyTemplateDraft, emptyLogQuery, LOG_STATUS_TONE, formatLogTime, isTemplateCustomized, readCompanyFromToken } from './lib/appLib';
+import ResizableLayout from './components/resizable-layout/ResizableLayout.jsx';
+import ErpSearchSelect from './components/ui/ErpSearchSelect.jsx';
+import PartnerModal from './components/partners/PartnerModal.jsx';
+// 订单收/付款登记弹窗（2026-10-18）：补上「前端从不调用 /finance/receipt|payment」这条断链。
+// 受控组件：自己不发请求，POST 在本文件 submitOrderPayment 里做。
+import OrderPaymentDialog from './components/docs/OrderPaymentDialog.jsx';
+// 打印二次确认（2026-10-18，需求 3）：宿主挂在下面弹窗区；调用口是 lib/printConfirm.js 的单例，
+// 这样 `printPdf`（唯一收敛点）和 StatementEditor 自带的打印都能共用同一个确认框。
+import PrintConfirmHost from './components/ui/PrintConfirmHost.jsx';
+import { confirmPrint, confirmDanger } from './lib/printConfirm.js';
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { countProductsByCategory, filterProductsByCategory } from './lib/productCategory';
+// 接口错误文案统一解析（422 的 detail 是数组，直接渲染会白屏 —— v76 事故）
+import { parseApiDetail } from './lib/apiDetail.js';
+import { findDuplicateName, findSimilarNames } from './lib/nameGuard.js';
+// 左侧树 ↔ 右侧列表的三态选中契约（null 未选 / ALL 全部 / 具体 id）
+import { ALL } from './lib/treeSelection';
+// 明细行空行/半填判定（2026-10-17 边界测试）：纯函数，页面与提交口共用同一套口径
+import { inspectItemRows } from './lib/orderLines';
+import { serializeUnits } from './lib/productUnits';
+// 单据明细行的「单位」下拉复用 3c 的单位选项构造（含基础单位、过滤停用与脏 factor）
+import { buildUnitOptions } from './lib/salesUnits';
+import { ProductCategoryTree } from './components/product-category';
+import { ProductEditModal } from './components/product-edit';
 import jsQR from 'jsqr';
 import * as pdfjsLib from 'pdfjs-dist';
 import Tesseract from 'tesseract.js';
 import * as XLSX from 'xlsx';
+import AgentPage from './pages/AgentPage';
+import AnalysisPage from './pages/AnalysisPage';
+import AssemblyPage from './pages/AssemblyPage';
+import BankPage from './pages/BankPage';
+import BomPage from './pages/BomPage';
+import ContractsPage from './pages/ContractsPage';
+// 第 13 批（第三阶段）：合同台账 —— 独立自包含组件，不依赖 appCtx。
+// 与上面的「购销合同」是两个页面：那个逐条填 A2 条款、开单；这个看/筛/导出/挂原件。
+// ⚠️ 懒加载：本页带着明细编辑表 + OCR 面板，静态引入会把约 10KB gzip 塞进首屏主包，
+//    而它只在「销售管理 → 合同台账」这一条路径上用得到（与 MenusPage 的 MenuTreeEditor 同一口径）。
+const ContractsLedger = lazy(() => import('./components/contracts/ContractsLedger.jsx'));
+// 第 13 批（第三阶段第三步）：增强版对账单编辑器。
+// 同样是自包含组件（自己取数、不读 ctx），懒加载 —— 这一页带 6 张汇总卡 + 明细编辑表，
+// 只有「销售管理 → 增强对账单」这条路径用得到，不该进首屏主包。
+const StatementEditor = lazy(() => import('./components/statements/StatementEditor.jsx'));
+import CustomersPage from './pages/CustomersPage';
+import DataioPage from './pages/DataioPage';
+import DictionariesPage from './pages/DictionariesPage';
+import FinancePage from './pages/FinancePage';
+import ThreeWayMatchPage from './pages/ThreeWayMatchPage';
+import FinishedGoodsPage from './pages/FinishedGoodsPage';
+import IncomeExpensePage from './pages/IncomeExpensePage';
+import InventoryPage from './pages/InventoryPage';
+import InvoicesPage from './pages/InvoicesPage';
+import LogsPage from './pages/LogsPage';
+import LossOverflowPage from './pages/LossOverflowPage';
+import MaterialIssuePage from './pages/MaterialIssuePage';
+import MaterialReturnPage from './pages/MaterialReturnPage';
+import MenusPage from './pages/MenusPage';
+import MobilePage from './pages/MobilePage';
+import MrpPage from './pages/MrpPage';
+import OpeningStockPage from './pages/OpeningStockPage';
+import OutsourcingPage from './pages/OutsourcingPage';
+import OverviewPage from './pages/OverviewPage';
+import ParamsPage from './pages/ParamsPage';
+import PrintTemplatesPage from './pages/PrintTemplatesPage';
+import ProductionPage from './pages/ProductionPage';
+import ProductionPlanPage from './pages/ProductionPlanPage';
+import ProductsPage from './pages/ProductsPage';
+import ProjectsPage from './pages/ProjectsPage';
+import PurchaseOrderPage from './pages/PurchaseOrderPage';
+import PurchasePage from './pages/PurchasePage';
+import PurchaseReturnPage from './pages/PurchaseReturnPage';
+import QuotationPage from './pages/QuotationPage';
+import ReportsPage from './pages/ReportsPage';
+import SalesOrderPage from './pages/SalesOrderPage';
+import SalesPage from './pages/SalesPage';
+import SalesReturnPage from './pages/SalesReturnPage';
+import SettingsPage from './pages/SettingsPage';
+import StaffPage from './pages/StaffPage';
+import StockAlertPage from './pages/StockAlertPage';
+import StocktakingPage from './pages/StocktakingPage';
+import SuppliersPage from './pages/SuppliersPage';
+import TransferPage from './pages/TransferPage';
+import UsersPage from './pages/UsersPage';
+import WarehousesPage from './pages/WarehousesPage';
+
+/**
+ * 明细行 / 表单字段的取值统一入口。
+ *
+ * 原生控件给的是 event（`event.target.value`），而 ErpSearchSelect 这类可搜索下拉
+ * 直接抛原始值（product_id 本身，没有 target）。两种入参都要能吃。
+ *
+ * 放在模块级而不是组件内：有十几个 handler 定义在组件前段（比组件内定义的
+ * `readChangeValue` 位置更靠前），虽然事件回调是渲染后才跑、TDZ 不会真的炸，
+ * 但把纯函数提到模块级更稳，也省得以后调整顺序时踩雷。
+ */
+export const readChangeValue = (input) =>
+  (input && typeof input === 'object' && 'target' in input ? input.target.value : input);
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
-
-// 使用同源相对路径：开发时由 Vite 代理转发到后端；
-// 手机/局域网访问时请求也走当前服务器，不会指向错误的 127.0.0.1。
-const API_BASE = '/api/v1';
-// 菜单按业务域分组。items 里的 key 与业务逻辑一一对应，改分组不会影响任何功能。
-// 左侧菜单框架 —— 业务域对齐浩技云进销存（基础资料 / 采购 / 销售 / 库存 / 生产 / 财务 / 系统设置），
-// 并保留本系统独有的模块（工作台、报表分析、项目管理、移动与智能）。
-//
-// 设计口径：
-//   1. 分组名与功能名沿用浩技云的说法，员工从浩技云迁过来零学习成本；
-//   2. 基础档案类保留本系统原有叫法（客户档案 / 商品档案…），比「客户管理」更准确；
-//   3. `todo: true` = 框架位已按浩技云预留、功能待建设，点击显示「模块建设中」占位页；
-//   4. key 一律沿用原有值，改的只是分组归属与显示名，不触及任何业务逻辑。
 const menuGroups = [
   {
     key: 'workspace',
@@ -36,7 +116,6 @@ const menuGroups = [
       { key: 'warehouses', label: '仓库档案' },
       { key: 'staff', label: '员工档案' },
       { key: 'opening-stock', label: '商品期初库存' },
-      { key: 'dataio', label: '导入导出' },
     ],
   },
   {
@@ -60,7 +139,13 @@ const menuGroups = [
       { key: 'quotation', label: '报价单' },
       { key: 'sales-return', label: '销售退货' },
       { key: 'contracts', label: '购销合同' },
-      { key: 'sales-statement', label: '销售对账单' },
+      // 第 13 批：合同台账（进/出双向台账 + 导出 + 原件 + OCR 展示区）。
+      // ⚠️ 必须追加在**组末**：后端 `PERMISSION_CATALOG` 按 items 下标 ×10 生成 sort_order，
+      // 插在中间会与既有行撞号（`_backfill_builtin_menus` 只补不改不重编号）。
+      { key: 'contracts-ledger', label: '合同台账' },
+      // 第 13 批第三步：增强对账单（真表 + 勾选核对 + 打印/导出）。
+      // 同样**只能追加在组末**（后端 sort_order = items 下标 × 10）。
+      { key: 'statements-editor', label: '增强对账单' },
     ],
   },
   {
@@ -74,6 +159,7 @@ const menuGroups = [
       { key: 'stocktaking', label: '盘点管理' },
       { key: 'assembly', label: '组合拆卸' },
       { key: 'loss-overflow', label: '报损报溢' },
+      { key: 'stock-alert', label: '库存预警' },
     ],
   },
   {
@@ -105,6 +191,9 @@ const menuGroups = [
       { key: 'income-expense', label: '日常收支' },
       { key: 'payroll', label: '工资管理', todo: true },
       { key: 'invoices', label: '发票管理' },
+      // 三单匹配（2026-10-23）：合同/发票/付款 三方对账看板。
+      // ⚠️ 只能追加在组末（后端 sort_order = items 下标 × 10）
+      { key: 'three-way-match', label: '三单匹配' },
     ],
   },
   {
@@ -152,28 +241,6 @@ const tabs = menuGroups.flatMap((group) =>
   group.items.map((item) => ({ ...item, group: group.key, groupLabel: group.label })),
 );
 
-// ---------------------------------------------------------------------------
-// 顶栏操作：**按页面**配置的跨页快捷入口。
-//
-// 此前顶栏把「新建报价 / 新增订单」两个按钮**硬编码**在模板里，于是客户档案、
-// 现金银行、报表中心、操作日志……所有约 50 个页面的右上角都挂着同一对按钮，
-// 跟当前页面毫无关系。这里改成按菜单 key 查表：只渲染当前页真正该有的入口，
-// 查不到就**一个按钮都不显示**（宁可空着，也不要放个无关的按钮）。
-//
-// 收录标准（严格照这条卡，否则又会变成噪音）：
-//   只放「在这个页面上干完活，最可能接着点的那一步」——即业务上的下一步动作。
-//   **不放"能跳到哪"**：侧边栏本来就能到的地方，放进来只是重复，等于把
-//   "全站挂同一对按钮"的老毛病换个形式再犯一遍。
-//   所以系统设置类（用户角色/参数/字典/打印模板/操作日志/公司信息）一律不配。
-//
-// 两个约定：
-// 1. 为什么不写进上面的 menuGroups：那份结构被 tests/test_system_users.py 用正则
-//    逐行解析，与后端 PERMISSION_CATALOG 做一致性比对，往里塞字段会破坏那条断言。
-// 2. 这些是页面级的**导航**入口，与页面内部的「保存/开单」是两种职责 ——
-//    后者仍留在各自表单里。
-//
-// 字段：label 按钮文字 / to 目标菜单 key / variant primary(实心,主操作) | secondary(描边)
-// 顺序约定：次要动作在左、主要动作在右（与参考图一致）。
 const pageActions = {
   overview: [
     { label: '经营分析', to: 'analysis', variant: 'secondary' },
@@ -191,7 +258,6 @@ const pageActions = {
     { label: '库存管理', to: 'inventory', variant: 'primary' },
   ],
   warehouses: [{ label: '商品期初库存', to: 'opening-stock', variant: 'primary' }],
-  'opening-stock': [{ label: '导入导出', to: 'dataio', variant: 'secondary' }],
 
   // 采购：入库与订单是一对，互为上下游
   purchase: [{ label: '采购订单', to: 'purchase-order', variant: 'primary' }],
@@ -262,738 +328,6 @@ const pageActions = {
   reports: [{ label: '经营分析', to: 'analysis', variant: 'primary' }],
   analysis: [{ label: '报表中心', to: 'reports', variant: 'primary' }],
 };
-
-// 左侧导航配色主题清单：`key` 与 styles.css 的 [data-nav-theme=...] 一一对应，
-// `swatch` 是切换器上那个小圆点的预览渐变（与主题块里的 brand-mark 保持一致）。
-// 新增一套风格 = 这里加一行 + styles.css 加一个同名主题块，两处都是纯数据。
-const NAV_THEMES = [
-  { key: 'default', label: '深空蓝', swatch: 'linear-gradient(135deg, #2563eb, #4f46e5)' },
-  { key: 'graphite', label: '石墨黑', swatch: 'linear-gradient(135deg, #52525b, #18181b)' },
-  { key: 'indigo', label: '靛蓝', swatch: 'linear-gradient(135deg, #6366f1, #8b5cf6)' },
-  { key: 'pine', label: '青松绿', swatch: 'linear-gradient(135deg, #0d9488, #059669)' },
-  { key: 'burgundy', label: '勃艮第红', swatch: 'linear-gradient(135deg, #be123c, #7f1d1d)' },
-  { key: 'light', label: '珍珠白', swatch: 'linear-gradient(135deg, #f8fafc, #cbd5e1)' },
-];
-
-const emptyCustomerForm = {
-  code: '',
-  name: '',
-  phone: '',
-  email: '',
-  address: '',
-};
-
-const emptyProductForm = {
-  sku: '',
-  name: '',
-  category: '',
-  unit: '',
-  purchase_price: '',
-  sale_price: '',
-  // 默认税率留空：货物 13 / 农产品 9 / 服务 6 各档不同，预设一个会让人开错票
-  tax_rate: '',
-  // —— 对齐浩技云商品档案的字段：后端早就存了，前端表单/列表此前一直没接 ——
-  mnemonic: '',      // 助记码
-  standards: '',     // 规格
-  brand: '',         // 型号
-  bar_code: '',      // 条码
-  color: '',         // 颜色
-  size: '',          // 尺码
-  manufacturer: '',  // 生产商
-  serial_no: '',     // 序列号
-  unit_weight: '',   // 单位重量
-  stock_upper: '',   // 库存上限
-  stock_lower: '',   // 库存下限
-  pack_qty: '',      // 包装数
-  shelf_life: '',    // 保质期（天）
-  warn_days: '',     // 预警天数
-  image_url: '',     // 商品图片
-  note: '',          // 备注
-};
-
-// 采购/销售订单（doc_type=order）：只订货不动库存财务，多行明细
-const emptyOrderItem = { product_id: '', quantity: '1', unit_price: '0' };
-const emptyPurchaseOrderForm = {
-  supplier_id: '',
-  warehouse_id: '',
-  // 归集到哪个项目（可空）：项目成本/收入靠它从财务流水里归集
-  project_id: '',
-  delivery_date: '',
-  payment_method: '',
-  note: '',
-  items: [{ ...emptyOrderItem }],
-};
-const emptySalesOrderForm = {
-  customer_id: '',
-  warehouse_id: '',
-  // 归集到哪个项目（可空）：项目成本/收入靠它从财务流水里归集
-  project_id: '',
-  delivery_date: '',
-  payment_method: '',
-  note: '',
-  items: [{ ...emptyOrderItem }],
-};
-// 采购入库单（doc_type=inbound）：真实入库，写库存 + 应付
-const emptyInboundForm = {
-  supplier_id: '',
-  warehouse_id: '',
-  order_date: '',
-  payment_method: '',
-  note: '',
-  items: [{ ...emptyOrderItem }],
-};
-// 销售开单 / 出库单（doc_type=outbound）：真实出库，写库存 + 应收
-const emptyOutboundForm = {
-  customer_id: '',
-  warehouse_id: '',
-  order_date: '',
-  payment_method: '',
-  note: '',
-  items: [{ ...emptyOrderItem }],
-};
-const DOC_STATUS_LABELS = {
-  draft: '草稿',
-  submitted: '已提交',
-  completed: '已转单',
-  cancelled: '已取消',
-};
-
-const emptySupplierForm = {
-  code: '',
-  name: '',
-  phone: '',
-  email: '',
-  address: '',
-};
-
-// 仓库档案：进销存的采购入库 / 销售出库 / 调拨都要选仓库，是库存模块的主数据。
-const emptyWarehouseForm = {
-  code: '',
-  name: '',
-  location: '',
-  manager: '',
-  phone: '',
-  is_active: true,
-  note: '',
-};
-
-// —— 基础资料收尾：员工档案 / 期初建账 ——
-const emptyEmployeeForm = {
-  code: '',
-  name: '',
-  gender: '',
-  department_id: '',
-  position: '',
-  phone: '',
-  id_card: '',
-  hire_date: '',
-  leave_date: '',
-  status: 'active',
-  base_salary: '',
-  bank_name: '',
-  bank_account: '',
-  emergency_contact: '',
-  emergency_phone: '',
-  note: '',
-};
-
-// 采购 / 销售对账单**不另建页面**：
-// 后端按往来单位出账（`/finance/reconciliation`）与对账单打印早就做好了，
-// 前端「往来对账」页也已经是"期初 → 逐笔 → 期末 + 打印"。
-// 这两个菜单是**预设视图入口**：点进去就是往来对账页，只把往来类型锁定成
-// 供应商 / 客户。再造两个页面只会让同一份账有两处实现，迟早对不上。
-const LEDGER_ALIASES = { 'purchase-statement': 'supplier', 'sales-statement': 'customer' };
-
-// —— 现金银行 / 日常收支（财务管理收尾）——
-const BANK_ACCOUNT_TYPE_LABEL = { cash: '现金', bank: '银行', other: '其他' };
-
-const emptyBankAccountForm = {
-  id: '',
-  code: '',
-  name: '',
-  account_type: 'bank',
-  bank_name: '',
-  account_no: '',
-  init_balance: '0',
-  sort_order: '0',
-  is_active: true,
-  note: '',
-};
-
-const emptyBankTransferForm = {
-  from_account_id: '',
-  to_account_id: '',
-  amount: '',
-  transfer_date: '',
-  handler: '',
-  note: '',
-};
-
-const emptyEntryForm = {
-  transaction_type: 'expense',
-  category: '',
-  bank_account_id: '',
-  amount: '',
-  occurred_at: '',
-  handler: '',
-  note: '',
-};
-
-const emptyEntryQuery = { entry_type: '', from: '', to: '', bank_account_id: '', keyword: '' };
-
-// —— 组合拆卸（库存管理）——
-const emptyAssemblyForm = {
-  doc_type: 'combo',
-  warehouse_id: '',
-  product_id: '',
-  quantity: '1',
-  order_date: '',
-  handler: '',
-  note: '',
-};
-
-// 期初建账页的三个 Tab
-const OPENING_TABS = [
-  { key: 'stock', label: '库存期初' },
-  { key: 'receivable', label: '应收期初' },
-  { key: 'payable', label: '应付期初' },
-];
-
-// 期初录入草稿的一行（还没保存进库）
-const emptyOpeningDraft = { warehouse_id: '', product_id: '', quantity: '', unit_price: '', note: '' };
-
-// 购销合同（模板 A2 · 标准版）表单。条款变量留空则由后端用行业常规表述兜底，
-// 所以这里只给必填项与几个常用默认值，用户想改再改。
-const emptyContractForm = {
-  contract_type: 'sales',
-  party_id: '',
-  warehouse_id: '',
-  own_name: '',
-  own_tax_no: '',
-  own_legal_person: '',
-  own_address: '',
-  own_contact: '',
-  own_phone: '',
-  own_bank_name: '',
-  own_bank_account: '',
-  sign_date: '',
-  sign_place: '',
-  delivery_date: '',
-  delivery_place: '',
-  delivery_method: '',
-  freight_bearer: '',
-  payment_terms: '',
-  invoice_requirement: '',
-  quality_standard: '',
-  package_standard: '',
-  inspection_days: '7',
-  objection_days: '15',
-  warranty_terms: '',
-  penalty_rate: '5', // 万分之（违约金日利率）
-  dispute_resolution: '',
-  copies: '2',
-  service_address: '',
-  other_terms: '',
-  note: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-// 合同状态 → 中文标签
-const CONTRACT_STATUS_LABEL = {
-  draft: '草稿',
-  signed: '已签订',
-  executing: '执行中',
-  finished: '已完成',
-  void: '已作废',
-};
-const contractStatusLabel = (status) => CONTRACT_STATUS_LABEL[status] || status;
-
-// 销售报价单表单（对齐浩技云「销售 → 报价单」）。报价单是商务意向文件，
-// 不产生应收、不动库存；客户确认后一键转成销售订单再走单据链路。
-const emptyQuotationForm = {
-  customer_id: '',
-  customer_name: '',
-  customer_address: '',
-  contact: '',
-  contact_phone: '',
-  fax: '',
-  quote_date: '',
-  valid_until: '',
-  warehouse_id: '',
-  businesser: '',
-  payment_method: '银行转账',
-  transport_method: '货运',
-  delivery_place: '',
-  note: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-// 报价单状态 → 中文标签
-const QUOTATION_STATUS_LABEL = {
-  draft: '草稿',
-  quoted: '已报价',
-  accepted: '已接受',
-  rejected: '已拒绝',
-  void: '已作废',
-};
-const quotationStatusLabel = (status) => QUOTATION_STATUS_LABEL[status] || status;
-
-// 采购退货单表单（对齐浩技云「采购管理 → 退货管理」）。退货是采购入库的反向单据：
-// 货退回给供应商，库存减少、应付冲减。选供应商自动带出联系人/电话/地址快照。
-const emptyPurchaseReturnForm = {
-  supplier_id: '',
-  warehouse_id: '',
-  businesser: '',
-  return_date: '',
-  return_reason: '',
-  payment_method: '',
-  note: '',
-  source_order_id: '',
-  source_order_no: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-// 采购退货状态 → 中文标签
-const PURCHASE_RETURN_STATUS_LABEL = {
-  draft: '草稿',
-  submitted: '已退货',
-  cancelled: '已取消',
-};
-const purchaseReturnStatusLabel = (status) => PURCHASE_RETURN_STATUS_LABEL[status] || status;
-
-// 销售退货单表单（对齐浩技云「销售管理 → 销售退货」）。退货是销售开单（出库）的反向单据：
-// 客户把货退回来，库存增加、应收冲减。选客户自动带出联系人/电话/地址快照。
-const emptySalesReturnForm = {
-  customer_id: '',
-  warehouse_id: '',
-  businesser: '',
-  return_date: '',
-  return_reason: '',
-  payment_method: '',
-  note: '',
-  source_order_id: '',
-  source_order_no: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-// 销售退货状态 → 中文标签
-const SALES_RETURN_STATUS_LABEL = {
-  draft: '草稿',
-  submitted: '已退货',
-  cancelled: '已取消',
-};
-const salesReturnStatusLabel = (status) => SALES_RETURN_STATUS_LABEL[status] || status;
-
-// 库存调拨单表单（对齐浩技云「库存管理 → 调拨管理」）。调拨是同一企业内部的库存
-// 位置转移：货物从调出仓库搬到调入仓库，总量与资产总额都不变，所以只写库存流水、
-// 不写财务流水。明细只录数量（成本单价可选，仅打印参考）。
-const emptyTransferForm = {
-  from_warehouse_id: '',
-  to_warehouse_id: '',
-  transfer_date: '',
-  handler: '',
-  reason: '',
-  note: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-// 调拨单状态 → 中文标签
-const TRANSFER_STATUS_LABEL = {
-  draft: '草稿',
-  submitted: '已调拨',
-  cancelled: '已取消',
-};
-const transferStatusLabel = (status) => TRANSFER_STATUS_LABEL[status] || status;
-
-// 库存盘点单表单（对齐浩技云「库存管理 → 盘点管理」）。盘点是账实核对：
-// 账面数由系统按现存量带出（「带出账面库存」按钮调 /stocktakings/plan），
-// 人只填实盘数，盈亏由后端统一算（实盘 - 账面）。
-const emptyStocktakingForm = {
-  warehouse_id: '',
-  check_date: '',
-  handler: '',
-  scope: '',
-  note: '',
-  items: [],
-};
-
-const STOCKTAKING_STATUS_LABEL = {
-  draft: '草稿',
-  submitted: '已调整',
-  cancelled: '已取消',
-};
-const stocktakingStatusLabel = (status) => STOCKTAKING_STATUS_LABEL[status] || status;
-
-// 报损报溢单表单（对齐浩技云「库存管理 → 报损报溢」）。报损与报溢是同一张表的
-// 两个方向，用 adjust_type 区分：报损减库存、报溢加库存；明细数量恒正。
-const emptyAdjustmentForm = {
-  adjust_type: 'scrap',
-  warehouse_id: '',
-  adjust_date: '',
-  handler: '',
-  reason: '',
-  note: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-const ADJUSTMENT_STATUS_LABEL = {
-  draft: '草稿',
-  submitted: '已生效',
-  cancelled: '已取消',
-};
-const adjustmentStatusLabel = (status) => ADJUSTMENT_STATUS_LABEL[status] || status;
-
-// 报损报溢类型 → 中文标签 + 库存方向
-const ADJUST_TYPE_LABEL = { scrap: '报损', overflow: '报溢' };
-const ADJUST_TYPE_DIRECTION = { scrap: '减少库存', overflow: '增加库存' };
-const adjustTypeLabel = (type) => ADJUST_TYPE_LABEL[type] || type;
-
-// 生产计划单表单（对齐浩技云「生产管理 → 生产计划」）。计划只是排产意图，
-// 不写库存、不写财务，是整条生产链路的起点：MRP → 领料 → 退料 → 成品入库。
-const emptyProductionPlanForm = {
-  plan_type: 'self',
-  warehouse_id: '',
-  plan_date: '',
-  delivery_date: '',
-  handler: '',
-  workshop: '',
-  source_order_no: '',
-  note: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-const PLAN_TYPE_LABEL = { self: '自制', outsource: '委外' };
-const planTypeLabel = (type) => PLAN_TYPE_LABEL[type] || type;
-
-const PRODUCTION_PLAN_STATUS_LABEL = {
-  draft: '草稿',
-  planned: '已计划',
-  released: '已下达',
-  closed: '已关闭',
-  cancelled: '已取消',
-};
-const productionPlanStatusLabel = (status) => PRODUCTION_PLAN_STATUS_LABEL[status] || status;
-
-// MRP 物料行状态 → 中文标签（product=顶层产出，不参与缺料判定）
-const MRP_STATUS_LABEL = {
-  product: '产出',
-  sufficient: '库存充足',
-  partial: '部分缺料',
-  shortage: '缺料',
-};
-const mrpStatusLabel = (status) => MRP_STATUS_LABEL[status] || status;
-
-// 生产领料单表单（对齐浩技云「生产管理 → 生产领料」）。领料把原材料从仓库
-// 发到车间：原材料库存减少，属纯库存单据，不写财务。可按生产计划一键带出底稿。
-const emptyMaterialIssueForm = {
-  plan_id: '',
-  warehouse_id: '',
-  issue_date: '',
-  workshop: '',
-  handler: '',
-  note: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-const MATERIAL_ISSUE_STATUS_LABEL = {
-  draft: '草稿',
-  submitted: '已领料',
-  cancelled: '已取消',
-};
-const materialIssueStatusLabel = (status) => MATERIAL_ISSUE_STATUS_LABEL[status] || status;
-
-// 生产退料单表单（领料的反向单据）：车间余料退回仓库，原材料库存增加。
-const emptyMaterialReturnForm = {
-  plan_id: '',
-  warehouse_id: '',
-  return_date: '',
-  workshop: '',
-  handler: '',
-  reason: '',
-  note: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-const MATERIAL_RETURN_STATUS_LABEL = {
-  draft: '草稿',
-  submitted: '已退料',
-  cancelled: '已取消',
-};
-const materialReturnStatusLabel = (status) => MATERIAL_RETURN_STATUS_LABEL[status] || status;
-
-// 成品入库单表单（对齐浩技云「生产管理 → 成品入库」）。成品入库是生产链路
-// 的收口：车间把成品交回仓库，成品库存增加，并结转生产成本（写财务成本流水）。
-const emptyFinishedGoodsForm = {
-  plan_id: '',
-  warehouse_id: '',
-  receipt_date: '',
-  workshop: '',
-  handler: '',
-  note: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-const FINISHED_GOODS_STATUS_LABEL = {
-  draft: '草稿',
-  submitted: '已入库',
-  cancelled: '已取消',
-};
-const finishedGoodsStatusLabel = (status) => FINISHED_GOODS_STATUS_LABEL[status] || status;
-
-// 委外加工单表单（对齐浩技云「生产管理 → 委外加工」）。一张单两个方向：
-// 发料（原材料出库）+ 收成品（成品入库），并按加工费产生应付。
-const emptyOutsourcingForm = {
-  supplier_id: '',
-  warehouse_id: '',
-  order_date: '',
-  handler: '',
-  product_id: '',
-  quantity: '1',
-  unit_price: '0',
-  process_fee: '0',
-  note: '',
-  items: [{ product_id: '', quantity: '1', unit_price: '0' }],
-};
-
-const OUTSOURCING_STATUS_LABEL = {
-  draft: '草稿',
-  submitted: '已收发',
-  cancelled: '已取消',
-};
-const outsourcingStatusLabel = (status) => OUTSOURCING_STATUS_LABEL[status] || status;
-
-// ——— 报表中心（第 4 批）———
-// 16 张报表**不写死在前端**：目录由后端 /reports/catalog 下发（唯一事实来源），
-// 页面按目录渲染菜单，再按 report.shape 选渲染器。加一张报表只需改后端目录。
-const REPORT_SHAPE_LABEL = {
-  crosstab: '交叉表',
-  detail: '明细表',
-  flow: '收发存',
-  overview: '大盘',
-};
-
-// 报表查询条件。留空 = 用后端给的默认区间（日报 30 天、月报 12 个月…）。
-const emptyReportQuery = {
-  date_from: '',
-  date_to: '',
-  dimension: '',
-  period: '',
-  keyword: '',
-};
-
-const money = (value) => `¥${Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`;
-const plain = (value) => Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
-
-const emptyInventoryForm = {
-  product_id: '',
-  warehouse_id: '',
-  transaction_type: 'inbound',
-  quantity: '1',
-  unit_price: '0',
-};
-
-// 现存量状态 → 中文标签与样式类（阈值来自商品档案的库存上下限）
-const STOCK_STATUS_LABEL = {
-  shortage: '缺货',
-  low_stock: '低库存',
-  overstock: '积压',
-  normal: '正常',
-};
-const stockStatusLabel = (status) => STOCK_STATUS_LABEL[status] || '正常';
-
-// 单据来源 → 中文标签。库存流水/财务流水共用后端 DOC_TYPES 的 key，
-// 再补一个库存专用的 opening（期初建账）。
-const DOC_TYPE_LABEL = {
-  purchase_order: '采购订单',
-  purchase_in: '采购入库',
-  purchase_return: '采购退货',
-  sales_order: '销售订单',
-  sales_out: '销售开单',
-  sales_return: '销售退货',
-  receipt: '收款登记',
-  payment: '付款登记',
-  inv_check: '库存盘点',
-  inv_scrap: '报损',
-  inv_overflow: '报溢',
-  inv_transfer: '库存调拨',
-  production_order: '生产工单',
-  production_plan: '生产计划',
-  production_issue: '生产领料',
-  production_return: '生产退料',
-  production_in: '成品入库',
-  production_wage: '计件工资',
-  outsourcing: '委外加工',
-  project_cost: '项目费用',
-  invoice: '发票',
-  expense: '日常支出',
-  contract: '购销合同',
-  opening: '期初建账',
-};
-const docTypeLabel = (type) => DOC_TYPE_LABEL[type] || type || '手工登记';
-
-// 项目状态：取值必须与后端 PROJECT_STATUS 一致（不一致的那个选项一保存就 400）
-const PROJECT_STATUS_LABEL = {
-  planned: '计划中',
-  in_progress: '进行中',
-  delayed: '延期',
-  completed: '已完成',
-  closed: '已关闭',
-};
-const PROJECT_STATUS_TONE = {
-  planned: 'muted',
-  in_progress: 'ok',
-  delayed: 'warn',
-  completed: 'ok',
-  closed: 'muted',
-};
-
-// 变动查询页的筛选条件
-const emptyStockLogFilter = { type: '', warehouse_id: '', keyword: '' };
-
-const emptyFinanceForm = {
-  transaction_type: 'income',
-  amount: '0',
-  currency: 'CNY',
-  note: '',
-  related_order_id: '',
-  customer_id: '',
-  supplier_id: '',
-};
-
-// —— 系统管理（第 5 批）：用户 / 角色 / 组织机构 ——
-// 三个表单都用 id 区分「新增」与「编辑」：id 非空即编辑态
-const emptySystemUserForm = {
-  id: '',
-  username: '',
-  password: '',
-  full_name: '',
-  email: '',
-  role_id: '',
-  department_id: '',
-  phone: '',
-  position: '',
-  remark: '',
-  is_active: true,
-};
-
-const emptyRoleForm = {
-  id: '',
-  code: '',
-  name: '',
-  description: '',
-  sort_order: '0',
-  is_active: true,
-};
-
-const emptyDepartmentForm = {
-  id: '',
-  code: '',
-  name: '',
-  parent_id: '',
-  leader: '',
-  phone: '',
-  sort_order: '0',
-  is_active: true,
-  note: '',
-};
-
-// 角色权限草稿：all=true 是超级管理员（勾不勾都拥有全部菜单），menus 是勾中的菜单键
-const emptyPermissionDraft = { all: false, menus: [] };
-
-// 菜单管理（第 10 批）：新增/编辑一个菜单节点。
-// page_key 留空 = 分组（容器，可继续往里加下级）；选了页面 = 菜单项（叶子，点它跳那个页面）。
-const emptyMenuForm = {
-  id: null,
-  label: '',
-  parent_id: '',
-  page_key: '',
-  sort_order: 0,
-  is_enabled: true,
-  note: '',
-};
-
-const SYSTEM_TABS = [
-  { key: 'users', label: '用户管理' },
-  { key: 'roles', label: '角色管理' },
-];
-
-// —— 系统管理（第 5 批第 2 轮）：参数设置 / 数字字典 ——
-const PARAM_VALUE_TYPE_LABEL = { string: '文本', bool: '开关', int: '整数', decimal: '小数' };
-
-const emptyParamForm = {
-  param_key: '',
-  label: '',
-  param_value: '',
-  param_group: 'system',
-  value_type: 'string',
-  description: '',
-  sort_order: '0',
-};
-
-const emptyDictionaryForm = { dict_type: '', dict_name: '', description: '', is_active: true };
-
-const emptyDictItemForm = {
-  id: '',
-  item_value: '',
-  item_label: '',
-  sort_order: '0',
-  is_enabled: true,
-  remark: '',
-};
-
-// 业务表单要用到的字典（对应后端 /system/lookups 的 types 参数）：
-//   payment_method → 采购/销售/报价/退货单的「付款方式」候选
-//   product_unit   → 商品档案「单位」候选
-//   position       → 用户岗位候选
-//   bank_name      → 客户/供应商「开户银行」候选
-const LOOKUP_TYPES = ['payment_method', 'product_unit', 'position', 'bank_name', 'income_category', 'expense_category', 'tax_rate'];
-
-// —— 系统管理（第 5 批第 3 轮）：打印模板 / 操作日志 ——
-// 打印模板草稿：只有渲染器真正支持的项，改完点「保存」才对真单据生效
-const emptyTemplateDraft = {
-  name: '',
-  title: '',
-  header_text: '',
-  footer_text: '',
-  show_company: true,
-  show_signatures: true,
-  note: '',
-};
-
-const emptyLogQuery = { keyword: '', method: '', username: '', start: '', end: '' };
-
-const LOG_STATUS_TONE = (code) => (code >= 500 ? 'danger' : code >= 400 ? 'warn' : 'ok');
-
-// 日志时间显示到分钟：跟用户表格里的「最后登录」保持同一写法
-const formatLogTime = (value) => (value ? String(value).slice(0, 16).replace('T', ' ') : '—');
-
-// 模板是否被改过默认外观：列在左栏一眼看出"哪些单据动过"
-const isTemplateCustomized = (row) =>
-  Boolean(
-    (row.title || '') ||
-    (row.header_text || '') ||
-    (row.footer_text || '') ||
-    (row.note || '') ||
-    (row.name && row.name !== row.default_name) ||
-    row.show_company === false ||
-    row.show_signatures === false
-  );
-
-// 从 JWT 里解出账套号（schema 名）。
-// 只解 payload、**不校验签名** —— 前端本来就不该拿它当权限凭据，
-// 这里只是为了"刷新页面后知道自己在哪套账"，真正的校验在服务端每次请求都做。
-const readCompanyFromToken = (token) => {
-  try {
-    const payload = token.split('.')[1];
-    if (!payload) return '';
-    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const decoded = JSON.parse(decodeURIComponent(escape(atob(normalized))));
-    return typeof decoded.company === 'string' ? decoded.company : '';
-  } catch {
-    return '';
-  }
-};
-
 function App() {
   const getStoredToken = () => {
     try {
@@ -1014,7 +348,13 @@ function App() {
   const [productSearch, setProductSearch] = useState(''); // 顶部搜索
   const [productBusy, setProductBusy] = useState(''); // 忙碌标记
   const [categoryModal, setCategoryModal] = useState(null); // 类别新增/编辑弹窗，{mode, node}
+  // 「上级类别」下拉的受控值（ErpSearchSelect 是受控组件，不能再靠 defaultValue + FormData 读）。
+  // 由 openCategoryModal 在打开时初始化；提交时 submitCategory 直接读它。
+  const [categoryParentDraft, setCategoryParentDraft] = useState('');
   const [productModalOpen, setProductModalOpen] = useState(false); // 新增产品弹窗
+  // 左侧类别树的选中项：null = 全部商品；'__uncategorized__' = 未分类；数字 = 类别 id（含其全部子孙）
+  // （折叠/展开是纯展示状态，留在 ProductCategoryTree 组件内部，不占这里的 state）
+  const [categoryFilter, setCategoryFilter] = useState(null);
   const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [salesOrders, setSalesOrders] = useState([]);
   // 采购/销售订单页（doc_type=order）独立数据源，与老出入库页互不干扰
@@ -1171,7 +511,15 @@ function App() {
   const [analysisRange, setAnalysisRange] = useState({ startDate: '', endDate: '' });
   const [agentPrompt, setAgentPrompt] = useState('请评估当前业务健康度，并给出建议。');
   const [agentResponse, setAgentResponse] = useState({ answer: '', summary: {}, risk_level: '健康' });
-  const [selectedTab, setSelectedTab] = useState('overview');
+  // 刷新后停在上一个页面（2026-10-21 对齐 v96）：只存 sessionStorage，
+  // 换标签页/重新登录仍是后端下发的落地页（登录那处显式 applyLanding=true 会覆盖它）。
+  const [selectedTab, setSelectedTab] = useState(() => {
+    try {
+      return sessionStorage.getItem('erp:tab:last') || 'overview';
+    } catch (_) {
+      return 'overview';
+    }
+  });
   const [collapsedGroups, setCollapsedGroups] = useState([]);
   // 左侧树状导航的配色主题（多风格）。存 localStorage，刷新后保持选择。
   // `default` 不写 data-nav-theme 属性，样式与改造前完全一致。
@@ -1182,10 +530,31 @@ function App() {
       return 'default';
     }
   });
+  // 记住当前页面：同一标签页刷新后回到原处（换标签页/重新登录仍走落地页）
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('erp:tab:last', selectedTab);
+    } catch (_) {
+      /* 隐私模式下 sessionStorage 可能不可用，忽略即可 */
+    }
+  }, [selectedTab]);
+
   // 手机端：侧边栏改成抽屉，用这个开关控制滑出/收起（桌面端不生效）
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getStoredToken()));
+  const [menuOpen, setMenuOpen] = useState(false);  const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getStoredToken()));
   const [authToken, setAuthToken] = useState(getStoredToken());
+  // 用户是否已经**自己点过菜单**（见 gotoMenu）。
+  //
+  // 为什么需要它：登录/刷新的落地页（`system.default_page`）是跟着
+  // `/system/me/permissions` 一起**异步**回来的。首屏侧边栏在权限回来之前
+  // 就已经渲染并可点击了（用的是内置 menuGroups），于是存在这样一个时序：
+  //
+  //   1. 页面刚渲染，用户点「库存预警」→ setSelectedTab('stock-alert')
+  //   2. 权限接口这时才返回 → 里面还有一句 setSelectedTab(落地页 = 'overview')
+  //   3. 用户刚点开的页面被**顶回运营概览** —— 表现为"点了没反应 / 闪回首页"
+  //
+  // 所以：落地页只在"用户还没自己选过页面"时才生效。这个坑在集成新页面时
+  // 特别容易被误判成"菜单没注册 / 分发区没加"，实测排查见 INTEGRATION.md。
+  const userNavigatedRef = useRef(false);
   const [userProfile, setUserProfile] = useState({ username: '', role: 'staff' });
   // ——— 多账套（多公司）：当前账套与可进入的账套清单 ———
   // 账套号（schema 名）写在登录凭证里，所以**切换账套＝换发一张新 token**，
@@ -1194,11 +563,23 @@ function App() {
   const [activeCompany, setActiveCompany] = useState({ code: '', name: '' });
   const [companySwitching, setCompanySwitching] = useState(false);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  // 登录页状态：加载态（按钮置灰「登录中…」）+ 密码显示/隐藏
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [customerForm, setCustomerForm] = useState(emptyCustomerForm);
   const [supplierForm, setSupplierForm] = useState(emptySupplierForm);
   // —— 新增弹窗化：主界面只留列表，点「新增」才弹窗（对齐浩技云「点创建弹窗」）——
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
+  // 「智能识别上传 · 仅上传作为附件」暂存的文件：客户还没 id，只能先拿在手里，
+  // 等 POST /customers 成功拿到 id 再逐个挂到 /customers/{id}/files。
+  const [customerSmartFiles, setCustomerSmartFiles] = useState([]);
   const [supplierModalOpen, setSupplierModalOpen] = useState(false);
+  // 弹窗「所属分类」下拉的选项（树 → flat 全路径）。弹窗打开时才拉，平时不发请求。
+  const [partnerCategoryOptions, setPartnerCategoryOptions] = useState({ customer: [], supplier: [] });
+  // null = 新增态；数字 = 正在编辑的客户 / 供应商 id（与 518 行 editingWarehouseId 同一套约定）。
+  // 弹窗是同一个，靠这两个 id 决定标题文案、编码是否只读、以及提交走 POST 还是 PATCH。
+  const [editingCustomerId, setEditingCustomerId] = useState(null);
+  const [editingSupplierId, setEditingSupplierId] = useState(null);
   const [customerSearch, setCustomerSearch] = useState('');
   const [supplierSearch, setSupplierSearch] = useState('');
   const [warehouseForm, setWarehouseForm] = useState(emptyWarehouseForm);
@@ -1235,6 +616,8 @@ function App() {
   // 销售退货：列表 / 录入表单 / 搜索词
   const [salesReturns, setSalesReturns] = useState([]);
   const [salesReturnForm, setSalesReturnForm] = useState(emptySalesReturnForm);
+  // 非空 = 正在编辑这张退货单（表单切到"编辑"模式，提交走 PATCH 而不是 POST）
+  const [salesReturnEditingId, setSalesReturnEditingId] = useState(null);
   const [salesReturnKeyword, setSalesReturnKeyword] = useState('');
   // 库存调拨：列表 / 录入表单 / 搜索词
   const [transfers, setTransfers] = useState([]);
@@ -1301,6 +684,11 @@ function App() {
   // 同一个页面可以挂多个入口（菜单管理支持这么做），光按 pageKey 反查会永远取到
   // 树里第一个 —— 点第二个入口却显示第一个入口的名字，很怪。所以要记住点击来源。
   const [activeMenuEntry, setActiveMenuEntry] = useState(null);
+  // 对账单三个入口（加强版对账单 / 销售对账单 / 采购对账单）都落到同一个页面，
+  // 区别只是进来时预设哪个方向。`nonce` 用来在**已经停在该页**时再点另一个入口
+  // 也能强制重挂载 StatementEditor（否则 selectedTab 没变，React 不会重建组件，
+  // 预设方向就不生效 —— 表现为"点了采购对账单还是应收"）。
+  const [statementPreset, setStatementPreset] = useState({ scope: 'all', nonce: 0 });
   const [systemTab, setSystemTab] = useState('users');
   const [systemUsers, setSystemUsers] = useState([]);
   const [systemUserForm, setSystemUserForm] = useState(emptySystemUserForm);
@@ -1322,6 +710,9 @@ function App() {
   const [openingSummary, setOpeningSummary] = useState({ lines: 0, total_quantity: 0, total_amount: 0, business_lines: 0 });
   // 录入草稿：先攒在页面上，点「保存全部」才落库（与参数页同一思路）
   const [openingDraftRows, setOpeningDraftRows] = useState([]);
+  /* 正在编辑的期初行 id（null = 新增）。点「改这一项」时写入，
+     表单按钮随之变成「保存修改」，保存后清空。 */
+  const [openingEditingId, setOpeningEditingId] = useState(null);
   const [openingDraft, setOpeningDraft] = useState(emptyOpeningDraft);
   const [openingBalances, setOpeningBalances] = useState({ receivables: [], payables: [], summary: {} });
   // 期初金额的编辑草稿：{ "customer-3": { init_amount, init_invoice_debt } }
@@ -1419,9 +810,61 @@ function App() {
   const [selectedRecommendation, setSelectedRecommendation] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [notice, setRawNotice] = useState('');
+  /* 提示条语气：'' 普通 / 'danger' 红字拦截 / 'warn' 黄色提醒。
+     用包装函数而不是改所有调用点 —— 现有几十处 setNotice('...') 保持原样。 */
+  const [noticeTone, setNoticeTone] = useState('');
+  const setNotice = useCallback((message, tone = '') => {
+    setRawNotice(message);
+    setNoticeTone(tone);
+  }, []);
   // 删除确认弹窗：{ id, ids, endpoint, label, kind }
   const [confirmDelete, setConfirmDelete] = useState(null);
+  /* 名称防呆（2026-10-22）：重名红字拦下；相似弹黄框，确认后重放这次提交 */
+  const [nameGuard, setNameGuard] = useState(null);
+  const skipNameGuardRef = useRef(false);
+  const pendingFormRef = useRef(null);
+
+  /**
+   * 提交前查名。返回 true = 放行；false = 已拦下（提示已显示）。
+   * 相似命中时不直接提交，而是弹确认框；用户点"仍然新建"后用 requestSubmit 重放。
+   */
+  const guardName = useCallback(({ list, name, excludeId, label, form, event, mnemonicKey }) => {
+    if (skipNameGuardRef.current) {
+      skipNameGuardRef.current = false;
+      return true;
+    }
+    const dup = findDuplicateName(list, name, { excludeId });
+    if (dup) {
+      setNotice(
+        `该名称已存在：${label}「${dup.name}」${dup.code ? `（编码 ${dup.code}）` : ''}，请检查是否已录入。`,
+        'danger',
+      );
+      return false;
+    }
+    const similar = findSimilarNames(list, name, { excludeId, mnemonicKey });
+    if (similar.length) {
+      pendingFormRef.current = form || event?.currentTarget || null;
+      setNameGuard({ label, name: String(name || '').trim(), similar });
+      return false;
+    }
+    return true;
+  }, []);
+  // 删单被拦（2026-10-18）：{ label, message, hint } —— 单据已登记收付款，财务上不允许删。
+  // 刻意**不提供"强制删除"**：这不是"确认一下就能删"的场景，是真实的钱。
+  const [deleteBlocked, setDeleteBlocked] = useState(null);
+  // 订单收/付款弹窗（2026-10-18）：{ kind, row } —— 打开时记住是哪一侧、哪一行。
+  // row 是点开那一刻的快照，所以提交成功后**必须重新拉列表**（金额会变），
+  // 不能指望 row 自己更新。
+  const [orderPayDialog, setOrderPayDialog] = useState(null);
+  const [orderPayBusy, setOrderPayBusy] = useState(false);
+  // 后端返回的 { amount, applied_amount, prepaid_amount, occurred_at }；有值 = 弹窗切成功态
+  const [orderPayResult, setOrderPayResult] = useState(null);
+  const [orderPayError, setOrderPayError] = useState('');
+  // 票据状态（业财一体化 2026-10-22）：采购付款前拉一次"这单还有多少没票"，
+  // 付款弹窗靠它决定要不要弹「此笔付款暂无发票」。销售不需要，留 null。
+  const [orderPayInvoice, setOrderPayInvoice] = useState(null);
+  const [orderPayInvoiceLoading, setOrderPayInvoiceLoading] = useState(false);
   // 发票列表批量勾选删除：已勾选的发票 id 数组
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState([]);
   // 表头复选框与左下角全选框共用这两个判断，避免两处各算一遍算岔。
@@ -1438,6 +881,14 @@ function App() {
   const [excelBusy, setExcelBusy] = useState('');
 
   useEffect(() => {
+    // ⚠️ 千万不要在这里写 userNavigatedRef.current = false 来"每次会话重置"。
+    // useEffect 是**被动（异步）执行**的：组件挂载时排队的这个 effect，会被用户
+    // 第一次点击引发的 state 更新一起刷出 —— 于是这行重置紧跟在用户点击之后执行，
+    // 把刚设好的 true 抹回 false，落地页照样把他顶走。实测时序（jsdom 复现）：
+    //   t+74ms  点击「库存预警」→ userNavigatedRef.current = true
+    //   t+80ms  本 effect 被刷出 → 重置回 false   ← 手贱的一行
+    //   t+1696ms 落地页判断读到 false → setSelectedTab('overview') → 闪回
+    // 刷新页面时组件本来就是新实例、ref 天然是 false，落地页照样生效，不需要重置。
     async function loadCurrentUser() {
       if (!authToken) {
         setUserProfile({ username: '', role: 'staff' });
@@ -1456,8 +907,15 @@ function App() {
         const data = await response.json();
         setUserProfile({ username: data.username, role: data.role || 'staff' });
         // 菜单可见性由角色权限决定（后端算好），跟着登录态一起拉。
-        // 这是唯一需要"跳到默认落地页"的地方 —— 用户刚登录，页面还没定过。
-        await loadMyPermissions(authToken, true);
+        // 落地页只在「没有可恢复的上次页面」时才跳 —— 否则刷新一下就被顶回首页，
+        // 用户刚填到一半的单据页会当场消失（2026-10-21 对齐 v96 行为）。
+        let canRestoreTab = false;
+        try {
+          canRestoreTab = Boolean(sessionStorage.getItem('erp:tab:last'));
+        } catch (_) {
+          canRestoreTab = false;
+        }
+        await loadMyPermissions(authToken, !canRestoreTab);
       } catch {
         localStorage.removeItem('erp_token');
         setAuthToken('');
@@ -1965,8 +1423,213 @@ function App() {
     setSupplierForm((prev) => ({ ...prev, [field]: event.target.value }));
   };
 
-  const handleProductChange = (field) => (event) => {
-    setProductForm((prev) => ({ ...prev, [field]: event.target.value }));
+  /** 智能识别回填（供应商）：只覆盖认出来的字段（2026-10-23 铺开第二步） */
+  const applySupplierSmartFill = (fields) => {
+    if (!fields || typeof fields !== 'object') return;
+    setSupplierForm((prev) => ({ ...prev, ...fields }));
+  };
+
+  /** 智能识别回填（商品）：报价单里的 name/standards/unit/sale_price 直接进表单 */
+  const applyProductSmartFill = (patch) => {
+    if (!patch || typeof patch !== 'object') return;
+    setProductForm((prev) => ({ ...prev, ...patch }));
+  };
+
+  /** 智能识别回填（编辑商品）：productEdit 是编辑态的表单 state，同一套"只覆盖认出字段" */
+  const applyProductEditSmartFill = (patch) => {
+    if (!patch || typeof patch !== 'object') return;
+    setProductEdit((prev) => (prev ? { ...prev, ...patch } : prev));
+  };
+
+  /**
+   * 报价单明细 → 批量生成商品（2026-10-23）。
+   *
+   * 为什么在 App.jsx 而不是面板里：POST /products 的载荷形状、SKU 去重、
+   * 商品列表 state（products）都住在这里 —— 面板只认字段，落库是 App 的事。
+   *
+   * 规则：
+   *   · 没有名称的行直接跳过（建不出有意义的档案）；
+   *   · SKU 自动生成 `SP-YYMMDD-序号`，撞号追加随机尾巴（去重对照现有档案 + 本批已用）；
+   *   · 报价单价进 purchase_price（供应商报价 = 成本），sale_price 留 0 由用户补；
+   *   · 逐行独立提交：一行失败不拖累其它行，最后按实际成功数汇总播报。
+   */
+  const applyProductBulkItems = async (rows) => {
+    const list = (Array.isArray(rows) ? rows : []).filter((row) =>
+      String(row && row.name ? row.name : '').trim(),
+    );
+    if (!list.length) {
+      setNotice('报价单里没有可生成商品的明细行（每行至少要有名称）。');
+      return;
+    }
+
+    const taken = new Set(products.map((row) => String(row.sku || '').toUpperCase()));
+    const stamp = new Date().toISOString().slice(2, 10).replace(/-/g, ''); // 261023
+    const numOr0 = (value) =>
+      value === '' || value === null || value === undefined ? 0 : Number(value) || 0;
+
+    let created = 0;
+    const failures = [];
+    for (let index = 0; index < list.length; index += 1) {
+      const row = list[index];
+      let sku = `SP-${stamp}-${String(index + 1).padStart(2, '0')}`;
+      while (taken.has(sku.toUpperCase())) sku += Math.floor(Math.random() * 90 + 10);
+      taken.add(sku.toUpperCase());
+
+      const payload = {
+        sku,
+        name: String(row.name).trim(),
+        category: null,
+        unit: String(row.unit || '').trim() || null,
+        purchase_price: numOr0(row.unit_price),
+        sale_price: 0,
+        tax_rate: null,
+        mnemonic: null,
+        standards: String(row.spec || '').trim() || null,
+        brand: null,
+        bar_code: null,
+        color: null,
+        size: null,
+        manufacturer: null,
+      };
+      try {
+        const response = await fetch(`${API_BASE}/products`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          failures.push(`「${payload.name}」${parseApiDetail(data && data.detail, `HTTP ${response.status}`)}`);
+          continue;
+        }
+        const saved = await response.json();
+        setProducts((prev) => [saved, ...prev]);
+        created += 1;
+      } catch {
+        failures.push(`「${payload.name}」网络错误`);
+      }
+    }
+
+    if (!created) {
+      setNotice(failures[0] || '没有生成任何商品。');
+      return;
+    }
+    // 弹窗不管从哪个入口开的（新增 productForm / 编辑 productEdit）都关掉复位，
+    // 让用户回到商品列表一眼看到新追加的这批
+    setProductForm(emptyProductForm);
+    setProductEdit(null);
+    setProductModalOpen(false);
+    setNotice(
+      failures.length
+        ? `已从报价单生成 ${created} 个商品，${failures.length} 行失败：${failures[0]}`
+        : `已从报价单一键生成 ${created} 个商品（SKU 自动编号），请到「商品档案」核价。`,
+    );
+  };
+
+  /** 把一行档案摊成弹窗表单（键集合以 emptyXxxForm 为准，多余/缺失都不会漏字段）
+   *  —— 回填时 `null` 一律变 `''`，否则 React 会把 input 判成非受控。 */
+  /**
+   * 弹窗「所属分类」下拉的选项：GET /customer-categories（**树**）。
+   *
+   * ⚠️ 2026-10-21 修复：这里曾经把树摊平成 `[{value,label}]`（v75 的形状），
+   *    而弹窗 v76 已经换成 `<ErpTreeSelect nodes={categoryOptions}>`，
+   *    组件默认按 `node.id` / `node.name` 取值 —— 拿到扁平数组时：
+   *      · 回显找不到 id → 兜底显示原始数字（用户看到输入框里写着「330」）；
+   *      · 树渲染读不到 name → 一个节点都画不出来，只剩组件自带的「未分类」。
+   *    所以**原样把后端的树传下去**，不要再摊平、不要再拼路径
+   *    （路径由组件回显时自己拼，见 ErpTreeSelect 的 selectedLabel）。
+   */
+  const loadPartnerCategoryOptions = async (kind) => {
+    try {
+      const path = kind === 'customer' ? 'customer-categories' : 'supplier-categories';
+      const response = await fetch(`${API_BASE}/${path}`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      setPartnerCategoryOptions((prev) => ({
+        ...prev,
+        [kind]: Array.isArray(data) ? data : [],
+      }));
+    } catch {
+      /* 网络失败静默：分类下拉只剩「未分类」，别的字段不受影响 */
+    }
+  };
+
+  // 弹窗打开即拉一次（新增 / 编辑两个入口都汇到这两个 state，不用挨个埋点）
+  useEffect(() => {
+    if (customerModalOpen) loadPartnerCategoryOptions('customer');
+  }, [customerModalOpen]);
+  useEffect(() => {
+    if (supplierModalOpen) loadPartnerCategoryOptions('supplier');
+  }, [supplierModalOpen]);
+
+  // 登录后各预拉一次：等弹窗打开才拉的话，首帧会先显示原始 id（用户会当成"回显失败"）
+  useEffect(() => {
+    if (!authToken) return;
+    loadPartnerCategoryOptions('customer');
+    loadPartnerCategoryOptions('supplier');
+  }, [authToken]);
+
+  const pickPartnerForm = (row, template) => {
+    const next = { ...template };
+    Object.keys(template).forEach((key) => {
+      const value = row ? row[key] : '';
+      next[key] = value === null || value === undefined ? '' : String(value);
+    });
+    return next;
+  };
+
+  // 列表「编辑」按钮 → 回填 + 打开同一个弹窗（编码在弹窗里 readOnly，后端也挡）
+  const openCustomerEdit = (row) => {
+    if (!row) return;
+    setCustomerForm(pickPartnerForm(row, emptyCustomerForm));
+    setEditingCustomerId(row.id);
+    setCustomerModalOpen(true);
+  };
+
+  const openSupplierEdit = (row) => {
+    if (!row) return;
+    setSupplierForm(pickPartnerForm(row, emptySupplierForm));
+    setEditingSupplierId(row.id);
+    setSupplierModalOpen(true);
+  };
+
+  /** 关闭弹窗时把编辑态一起复位 —— 否则下次点「新增」会带着上次的 id 去 PATCH。 */
+  const closeCustomerModal = () => {
+    setCustomerModalOpen(false);
+    setEditingCustomerId(null);
+    setCustomerForm(emptyCustomerForm);
+    // 关掉就把暂存附件丢掉：用户都没保存这个客户，文件也没有归属
+    setCustomerSmartFiles([]);
+  };
+
+  /** 智能识别回填：只覆盖认出来的字段，其余保持用户已填的内容。 */
+  const applyCustomerSmartFill = (fields) => {
+    if (!fields || typeof fields !== 'object') return;
+    setCustomerForm((prev) => ({ ...prev, ...fields }));
+  };
+
+  const closeSupplierModal = () => {
+    setSupplierModalOpen(false);
+    setEditingSupplierId(null);
+    setSupplierForm(emptySupplierForm);
+  };
+
+  // 商品表单字段变更。签名是 (field, value) 而不是原来的 (field) => (event) => …
+  // —— 因为新增/编辑弹窗已抽成独立组件（components/product-edit/ProductEditModal.jsx），
+  // 组件不认识 event，只把值回传出来。全仓确认过：这几个 ctx 键在 pages 里只被解构、
+  // 没有任何真实调用点，改签名不影响其它页面。
+  const handleProductChange = (field, value) => {
+    setProductForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  // 编辑态表单的同一个回调（状态是 productEdit，不是 productForm）
+  const handleProductEditChange = (field, value) => {
+    setProductEdit((prev) => (prev ? { ...prev, [field]: value } : prev));
   };
 
   const updateSalesOrderStatus = async (orderId, nextStatus) => {
@@ -1998,8 +1661,48 @@ function App() {
     }
   };
 
-  const handleInventoryChange = (field) => (event) => {
-    setInventoryForm((prev) => ({ ...prev, [field]: event.target.value }));
+  const handleInventoryChange = (field) => (input) => {
+    const value = readChangeValue(input);
+    setInventoryForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  /**
+   * 物流 / 签收保存（2026-10-21 补回）。
+   *
+   * 出库单详情抽屉里的「物流 / 签收」区块会调 ctx.saveSalesOrderLogistics(id, payload)；
+   * 代码覆盖事故后这个函数丢了，按钮点了只会提示"ctx 缺失"。
+   * 后端只认这 4 个键（PATCH /sales-orders/{id}/logistics），
+   * 其它字段的改动必须走冲销/转单，不能顺手改 —— 所以这里也只传这 4 个。
+   */
+  const saveSalesOrderLogistics = async (orderId, payload) => {
+    if (!orderId) return false;
+    try {
+      const response = await fetch(`${API_BASE}/sales-orders/${orderId}/logistics`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify(payload || {}),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '保存物流信息失败' }));
+        const detail = errorData && errorData.detail;
+        throw new Error(typeof detail === 'string' ? detail : detail?.message || '保存物流信息失败');
+      }
+      const updated = await response.json();
+      // 两个列表（开单管理 / 销售订单）共用同一批行数据，都要跟着更新
+      const merge = (prev) =>
+        prev.map((item) => (item.id === orderId ? { ...item, ...updated } : item));
+      setSalesOrders(merge);
+      setSalesOrderList(merge);
+      setSelectedSalesOrder((prev) => (prev && prev.id === orderId ? { ...prev, ...updated } : prev));
+      setNotice(`已保存 ${updated.order_no || orderId} 的物流 / 签收信息。`);
+      return true;
+    } catch (err) {
+      setNotice(err.message || '保存物流信息失败');
+      return false;
+    }
   };
 
   const handleFinanceChange = (field) => (event) => {
@@ -2134,6 +1837,11 @@ function App() {
   };
 
   const printPdf = async (path, filename) => {
+    // 二次确认（2026-10-18）：打印入口有二十多个（打印中心对账单、销售/采购订单、
+    // 入库单、出库单、合同、发票…），逐个页面加确认必然漏一个。这个函数是**唯一收敛点**，
+    // 在这里拦一次，所有页面自动都有；StatementEditor 自带的那份直接调 confirmPrint。
+    // 注意：确认必须发生在 fetch **之前** —— 否则用户点「取消」时 PDF 已经生成了。
+    if (!(await confirmPrint({ name: filename, title: '确认打印此单据？' }))) return;
     try {
       const response = await fetch(`${API_BASE}${path}`, {
         headers: {
@@ -2286,6 +1994,158 @@ function App() {
     }
   };
 
+  /**
+   * 拖拽归档 · 商品版：把一批商品挂到某个类别下。
+   *
+   * ⚠️ 商品走的是 `/products/batch-category`，目标传的是**类别名**不是 id ——
+   * `products.category` 从来就是字符串列（ProductCategory 模型注释里写了原因：
+   * 避免迁移 262 个存量商品）。所以这里收 `categoryName`，不传节点 id。
+   */
+  async function moveProductsToCategory(ids, categoryName) {
+    if (!Array.isArray(ids) || ids.length === 0) return null;
+    try {
+      const response = await fetch(`${API_BASE}/products/batch-category`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ ids, category: categoryName || '' }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(parseApiDetail(data && data.detail, '移动商品失败'));
+      const moved = Number(data.moved ?? ids.length);
+      setNotice(
+        data.category
+          ? `已成功移动 ${moved} 个商品至「${data.category}」类别`
+          : `已成功把 ${moved} 个商品移到「未分类」`,
+      );
+      await reloadAfterImport('products');
+      return data;
+    } catch (err) {
+      setNotice(err && err.message ? err.message : '移动商品失败');
+      return null;
+    }
+  }
+
+  /**
+   * 拖拽归档（2026-10-21，客户档案试点）：把一批客户/供应商挂到某个分类下。
+   *
+   * 为什么收在 App 而不是 PartnersBoard：那个组件刻意"不认识 /customers/{id}、
+   * 不发请求"（见其文件头「职责边界」）。档案页的增删改一直是这个分工 ——
+   * 薄壳拼好 endpoint 交进去，组件只管画和交互。
+   *
+   * 返回后端原始结果（`{moved, category_id, category_name}`），
+   * 组件据此判断"要不要刷树"；失败返回 null 并已弹提示。
+   */
+  async function movePartnersToCategory(kind, ids, categoryId, expectedName = '') {
+    const isSupplier = kind === 'supplier';
+    const path = isSupplier ? 'suppliers' : 'customers';
+    const label = isSupplier ? '供应商' : '客户';
+    if (!Array.isArray(ids) || ids.length === 0) return null;
+    try {
+      const response = await fetch(`${API_BASE}/${path}/batch-category`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        // 键必须**显式**带上（null = 移到未分类）；漏传键后端会 400，
+        // 这是刻意的：静默把分类清空是最坏的一种"成功"。
+        body: JSON.stringify({ ids, category_id: categoryId ?? null }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(parseApiDetail(data && data.detail, '归档失败'));
+      }
+      const moved = Number(data.moved ?? ids.length);
+      /* 提示语以**用户松手那一行**（树回传的 name）为准。
+         服务端回话只在"落库分类和用户看到的不一致"时补一句，让这种偏差立刻暴露
+         —— 以前只信服务端字符串，出现"拖进国家电网、提示中铁一局"时无从判断。 */
+      const serverName = data.category_name || '';
+      const localName = expectedName || serverName;
+      const mismatch = Boolean(serverName && expectedName && serverName !== expectedName);
+      setNotice(
+        moved === 0
+          ? `这些${label}本来就在「${localName || '未分类'}」下，没有需要移动的`
+          : localName
+            ? `已成功移动 ${moved} 个${label}至「${localName}」分类${mismatch ? `（注意：服务端记录的是「${serverName}」）` : ''}`
+            : `已成功把 ${moved} 个${label}移到「未分类」`,
+      );
+      // 乐观更新：先把本地这几行的 category_id 改掉，再让页面切到目标分类 ——
+      // 否则"切了筛选但数据还是旧的"会有一段空白期，用户看到的是"列表空了、
+      // 提示已选中 1 项但不在筛选内"（2026-10-21 实测）。随后 reload 校准。
+      const patch = (rows) =>
+        (rows || []).map((row) =>
+          ids.some((id) => String(id) === String(row.id)) ? { ...row, category_id: categoryId ?? null } : row,
+        );
+      if (isSupplier) setSuppliers(patch);
+      else setCustomers(patch);
+      await reloadAfterImport(isSupplier ? 'suppliers' : 'customers');
+      return data;
+    } catch (err) {
+      setNotice(err && err.message ? err.message : '归档失败');
+      return null;
+    }
+  }
+
+  /** 行内编辑提示语用的字段中文名（只在提示条里出现） */
+  const FIELD_LABELS = {
+    name: '名称',
+    phone: '电话',
+    email: '邮箱',
+    address: '地址',
+    level: '级别',
+    businesser: '业务员',
+    standards: '规格',
+    unit: '单位',
+  };
+
+  /**
+   * 行内编辑落库（2026-10-22）：只 PATCH 改过的那个字段。
+   * 后端 `CustomerUpdate/SupplierUpdate` 是 `exclude_unset` 语义 —— 没传的列不动，
+   * 所以这里绝不能把整行塞过去（会把别人正在改的字段覆盖回旧值）。
+   */
+  async function patchPartner(kind, id, patch) {
+    const isSupplier = kind === 'supplier';
+    const path = isSupplier ? 'suppliers' : 'customers';
+    const label = isSupplier ? '供应商' : '客户';
+    try {
+      const response = await fetch(`${API_BASE}/${path}/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(patch),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(parseApiDetail(data && data.detail, '保存失败'));
+      // 乐观更新：先把本地这一行改掉，表格立刻显示新值（列表刷新在后台进行）
+      const apply = (rows) =>
+        (rows || []).map((row) => (String(row.id) === String(id) ? { ...row, ...patch } : row));
+      if (isSupplier) setSuppliers(apply);
+      else setCustomers(apply);
+      const field = Object.keys(patch)[0];
+      setNotice(`已更新${label}的${FIELD_LABELS[field] || field}`);
+      return data;
+    } catch (err) {
+      setNotice(err && err.message ? err.message : '保存失败');
+      return null;
+    }
+  }
+
+  /** 商品行内编辑：只 PATCH 改过的字段（ProductUpdate 同样是 exclude_unset 语义） */
+  async function patchProduct(id, patch) {
+    try {
+      const response = await fetch(`${API_BASE}/products/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(patch),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(parseApiDetail(data && data.detail, '保存失败'));
+      setProducts((rows) => (rows || []).map((row) => (String(row.id) === String(id) ? { ...row, ...patch } : row)));
+      const field = Object.keys(patch)[0];
+      setNotice(`已更新商品的${FIELD_LABELS[field] || field}`);
+      return data;
+    } catch (err) {
+      setNotice(err && err.message ? err.message : '保存失败');
+      return null;
+    }
+  }
+
   const reloadAfterImport = async (kind) => {
     const headers = authHeaders();
     const jobs = [];
@@ -2302,6 +2162,40 @@ function App() {
       jobs.push(refreshStock());
     }
     await Promise.allSettled(jobs);
+  };
+
+  // 档案类批量删除：这里只负责弹确认框，真正的请求仍走 handleDeleteConfirm 的
+  // `ids` 分支（后端 /products|/customers|/suppliers 的 `/batch` 早就存在）。
+  // 三个函数长得一样却刻意不合并：endpoint 与文案是业务信息，合并后调用处反而
+  // 要传一堆配置，"少写三行"换来的是更难读。
+  const batchDeleteProducts = (ids) => {
+    if (!ids || !ids.length) return;
+    setConfirmDelete({
+      ids,
+      endpoint: '/products/batch',
+      label: `选中的 ${ids.length} 个商品`,
+      kind: 'product',
+    });
+  };
+
+  const batchDeleteCustomers = (ids) => {
+    if (!ids || !ids.length) return;
+    setConfirmDelete({
+      ids,
+      endpoint: '/customers/batch',
+      label: `选中的 ${ids.length} 个客户`,
+      kind: 'customer',
+    });
+  };
+
+  const batchDeleteSuppliers = (ids) => {
+    if (!ids || !ids.length) return;
+    setConfirmDelete({
+      ids,
+      endpoint: '/suppliers/batch',
+      label: `选中的 ${ids.length} 个供应商`,
+      kind: 'supplier',
+    });
   };
 
   const handleDeleteConfirm = async () => {
@@ -2322,6 +2216,28 @@ function App() {
       });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ detail: '删除失败' }));
+        // 单据已登记收付款 → 直接拦死。后端两种 409：
+        //   has_payment_flow       —— 这张单自己收过款/付过款
+        //   has_source_payment_flow —— 这是开单，钱记在它的来源订单上
+        // 这条**不能**走下面"409 → 强制删除"那条路：那等于给"抹掉真实资金记录"开后门。
+        const rawDetail = errorData && errorData.detail;
+        const blockedDetail = rawDetail && typeof rawDetail === 'object' ? rawDetail : null;
+        const isOrderKind = ['sales-order', 'purchase-order', 'purchase-inbound'].includes(kind);
+        const hitPaymentBlock =
+          response.status === 409 &&
+          isOrderKind &&
+          (['has_payment_flow', 'has_source_payment_flow'].includes(blockedDetail?.code) ||
+            // 兜底：万一跑的是旧后端（detail 还是纯字符串），也别掉进通用提示里
+            (typeof rawDetail === 'string' && /资金流水|收付款|收款|付款/.test(rawDetail)));
+        if (hitPaymentBlock) {
+          setDeleteBlocked({
+            label,
+            message: blockedDetail?.message || (typeof rawDetail === 'string' ? rawDetail : '该单据存在资金流水，无法删除。'),
+            hint: blockedDetail?.hint || '',
+            flowCount: blockedDetail?.flow_count || 0,
+          });
+          return;
+        }
         // 档案被业务数据引用时后端返回 409，改为二次确认，让用户决定是否强制删除
         if (response.status === 409 && ['customer', 'supplier', 'product', 'warehouse', 'contract', 'quotation', 'employee'].includes(kind)) {
           // detail 可能是字符串（档案类）也可能是对象（合同带引用清单），统一取成可读文案
@@ -2332,7 +2248,42 @@ function App() {
           setConfirmDelete({ id, endpoint, label, kind, force: true, blockedReason: reason });
           return;
         }
-        throw new Error(errorData.detail ?? '删除失败');
+        // detail 可能是对象（合同引用清单 / 收付款拦截等结构化 detail），
+        // 直接丢进 Error 会显示成「[object Object]」，等于没有报错文案
+        const plainDetail = errorData && errorData.detail;
+        const reasonText =
+          typeof plainDetail === 'string'
+            ? plainDetail
+            : [plainDetail?.message, plainDetail?.hint].filter(Boolean).join('；');
+        throw new Error(reasonText || '删除失败');
+      }
+      // ── 批量删除（档案类）──────────────────────────────────────────
+      // 与单条最大的不同：`/xxx/batch` 永远 200，被业务数据引用的行进 `blocked`
+      // 而不是整体 409 —— 所以这里**不能**套下面那套 409 → force 二次确认。
+      // 用"删掉几条 + 几条被拦"的老实话告诉用户，比一句"删除成功"可信得多。
+      if (ids) {
+        const result = await response.json().catch(() => null);
+        const done = (result && result.deleted_count) ?? ids.length;
+        const blocked = (result && result.blocked_count) ?? 0;
+        const drop = (prev) => prev.filter((row) => !ids.includes(row.id));
+        if (kind === 'product') setProducts(drop);
+        else if (kind === 'customer') setCustomers(drop);
+        else if (kind === 'supplier') setSuppliers(drop);
+        else if (kind === 'invoice-batch') {
+          // 发票列表的 state 叫 invoiceItems（不是 invoices），而且汇总卡片是另一份数据。
+          // ⚠️ 这里曾经漏掉：批量分支只认 product/customer/supplier 就 return 了，
+          // 发票走不到下面那段 invoice-batch —— 后端其实已经删成功（204），
+          // 但列表一行没少、也没有"删了几张"的反馈，用户看到的就是"点了没反应"。
+          setInvoiceItems(drop);
+          setSelectedInvoiceIds([]);
+          await refreshInvoiceAggregate();
+        }
+        setNotice(
+          blocked
+            ? `${label}：已删除 ${done} 条，${blocked} 条被业务数据引用未删除。`
+            : `${label}：已删除 ${done} 条。`,
+        );
+        return;
       }
       if (kind === 'sales-order') {
         setSalesOrders((prev) => prev.filter((row) => row.id !== id));
@@ -2602,6 +2553,8 @@ function App() {
       issue_mode: item.issue_mode || 'manual',
       handler: item.handler || '',
       deducted: Boolean(item.deducted),
+      // 2026-10-22：关联出库单。完结闸按它统计"已开票金额"，没有它这张单永远结不了案。
+      related_order_id: item.related_order_id ?? '',
     });
   };
 
@@ -2633,6 +2586,11 @@ function App() {
         issue_mode: form.issue_mode,
         handler: form.handler.trim() || null,
         deducted: Boolean(form.deducted),
+        // 关联销售出库单（完结闸的"未开票"口径就是按这个字段统计的）
+        related_order_id:
+          form.related_order_id === '' || form.related_order_id === null || form.related_order_id === undefined
+            ? null
+            : Number(form.related_order_id),
       };
       const response = await fetch(`${API_BASE}/invoices/${form.id}`, {
         method: 'PATCH',
@@ -3549,6 +3507,7 @@ function App() {
   const handleToggleDeducted = async (item) => {
     if (!item || item.id == null) return;
     const nextDeducted = !item.deducted;
+    setInvoiceBusy(`deduct-${item.id}`);
     try {
       const response = await fetch(`${API_BASE}/invoices/${item.id}`, {
         method: 'PATCH',
@@ -3565,12 +3524,78 @@ function App() {
           headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
         });
         if (summaryRes.ok) setInvoiceAggregate(await summaryRes.json());
-        setNotice(nextDeducted ? '已标记为已抵扣。' : '已取消抵扣标记。');
+        setNotice(
+          nextDeducted
+            ? `专票「${updated.invoice_no || updated.id}」已标记抵扣${
+                updated.deducted_at ? `（${new Date(updated.deducted_at).toLocaleString('zh-CN')}）` : ''
+              }。`
+            : `专票「${updated.invoice_no || updated.id}」已取消抵扣标记。`
+        );
       } else {
-        setNotice('更新抵扣状态失败。');
+        const errorData = await response.json().catch(() => ({}));
+        setNotice(errorData.detail ?? '更新抵扣状态失败。');
       }
     } catch {
       setNotice('更新抵扣状态失败：无法连接后端。');
+    } finally {
+      setInvoiceBusy('');
+    }
+  };
+
+  // 「待判定 → 进项/销项」一键定性（2026-10-24）：PATCH direction 后**立刻**触发
+  // 自动匹配引擎（唯一强证据才写库，其余返回候选）—— 判定和挂单一步到位，
+  // 不让用户判完还要自己找入口去匹配。匹配失败绝不影响判定结果本身。
+  const handleSetInvoiceDirection = async (item, direction) => {
+    if (!item || item.id == null) return;
+    if (!['input', 'output'].includes(direction)) return;
+    if (item.direction === direction) return; // 已是这个方向，重复点没有意义
+    const label = direction === 'input' ? '进项' : '销项';
+    setInvoiceBusy(`dir-${item.id}`);
+    try {
+      const response = await fetch(`${API_BASE}/invoices/${item.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({ direction }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '判定失败' }));
+        throw new Error(errorData.detail ?? '判定失败');
+      }
+      const updated = await response.json();
+      let matchNote = '';
+      try {
+        const matchRes = await fetch(`${API_BASE}/invoices/${item.id}/auto-match`, {
+          method: 'POST',
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+        });
+        if (matchRes.ok) {
+          const outcome = await matchRes.json();
+          if (outcome.applied && outcome.order_no) {
+            matchNote = `，已自动挂单「${outcome.order_no}」`;
+          } else if ((outcome.candidates || []).length > 0) {
+            matchNote = `，找到 ${outcome.candidates.length} 张候选单据（${outcome.candidates[0].order_no} 等），请点「编辑」人工确认挂单`;
+          } else {
+            matchNote = '，暂未找到可关联的单据';
+          }
+        }
+      } catch {
+        matchNote = '（自动匹配暂时没跑成，可稍后在编辑里手动挂单）';
+      }
+      setInvoiceItems((prev) =>
+        prev.map((row) => (row.id === updated.id ? normalizeInvoiceRecord(updated) : row))
+      );
+      const summaryRes = await fetch(`${API_BASE}/invoices/summary`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      });
+      if (summaryRes.ok) setInvoiceAggregate(await summaryRes.json());
+      setNotice(`发票「${updated.invoice_no || updated.id}」已判定为${label}${matchNote}。`);
+    } catch (err) {
+      setNotice(err.message || '判定失败');
+    } finally {
+      setInvoiceBusy('');
     }
   };
 
@@ -3847,6 +3872,13 @@ function App() {
     event.preventDefault();
     setNotice('');
 
+    // 空值校验：给友好文案（不依赖浏览器原生 required 气泡）
+    if (!loginForm.username.trim() || !loginForm.password.trim()) {
+      setNotice('账号或密码不能为空');
+      return;
+    }
+
+    setLoginLoading(true);
     try {
       const response = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
@@ -3855,8 +3887,11 @@ function App() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: '登录失败' }));
-        throw new Error(errorData.detail ?? '登录失败');
+        // 账号不存在 / 密码错误：统一成设计要求里的友好文案，且保留已填账号（不清表单）
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          response.status === 401 ? '账号或密码错误，请重新输入' : (errorData.detail ?? '登录失败'),
+        );
       }
 
       const data = await response.json();
@@ -3880,6 +3915,8 @@ function App() {
           ? '无法连接服务器：ERP 后端可能还在启动（请等几秒再试），或服务已关闭。若持续失败请重启桌面端。'
           : (raw || '登录失败'),
       );
+    } finally {
+      setLoginLoading(false);
     }
   };
 
@@ -3940,33 +3977,103 @@ function App() {
     event.preventDefault();
     setNotice('');
 
+    const isEdit = editingCustomerId != null;
+    // 名称防呆：重名直接拦（红字），相似弹黄框确认
+    if (
+      !guardName({
+        list: customers,
+        name: customerForm.name,
+        excludeId: isEdit ? editingCustomerId : null,
+        label: '客户',
+        event,
+      })
+    ) {
+      return;
+    }
+    // 空串一律送 null（列是 nullable 的，'' 会被存成空字符串，列表里看着像有值）
+    // ⚠️ `level`（客户级别）已从表单移除：这里**不再发这个键** ——
+    //    发 null 会把老客户已有的级别字段清掉，而界面上根本没人维护它。
+    const clean = (value) => String(value ?? '').trim() || null;
+    const payload = {
+      ...customerForm,
+      tax_no: clean(customerForm.tax_no),
+      bank_name: clean(customerForm.bank_name),
+      bank_account: clean(customerForm.bank_account),
+      invoice_phone: clean(customerForm.invoice_phone),
+      businesser: customerForm.businesser || null,
+      contact: customerForm.contact || null,
+      phone: customerForm.phone || null,
+      email: customerForm.email || null,
+      address: customerForm.address || null,
+      // 所属分类：''（未选）= null；数字字符串 = 分类 id
+      category_id: customerForm.category_id === '' || customerForm.category_id == null
+        ? null
+        : Number(customerForm.category_id),
+    };
+    // 编码只读：PATCH 干脆不带这个字段（后端即使收到不同的值也会 400，双保险）；
+    // 新增态 code 留空 = 后端自动生成（CUS+日期+流水），所以空串原样带上。
+    if (isEdit) delete payload.code;
+
     try {
-      const response = await fetch(`${API_BASE}/customers`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      const response = await fetch(
+        isEdit ? `${API_BASE}/customers/${editingCustomerId}` : `${API_BASE}/customers`,
+        {
+          method: isEdit ? 'PATCH' : 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+          body: JSON.stringify(payload),
         },
-        body: JSON.stringify({
-          ...customerForm,
-          phone: customerForm.phone || null,
-          email: customerForm.email || null,
-          address: customerForm.address || null,
-        }),
-      });
+      );
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: '创建客户失败' }));
-        throw new Error(errorData.detail ?? '创建客户失败');
+        const errorData = await response
+          .json()
+          .catch(() => ({ detail: isEdit ? '保存客户失败' : '创建客户失败' }));
+        throw new Error(errorData.detail ?? (isEdit ? '保存客户失败' : '创建客户失败'));
       }
 
-      const newCustomer = await response.json();
-      setCustomers((prev) => [newCustomer, ...prev]);
+      const saved = await response.json();
+      if (isEdit) {
+        setCustomers((prev) => prev.map((row) => (row.id === saved.id ? saved : row)));
+        setNotice(`客户「${saved.name}」已更新。`);
+      } else {
+        setCustomers((prev) => [saved, ...prev]);
+        setNotice('客户已成功新增。');
+        // 「智能识别上传」选了「仅上传作为附件」→ 档案刚拿到 id，现在才挂得上去。
+        // 逐个传、单个失败不拖累其它文件（一张图坏了不该让整个客户保存看起来失败）。
+        if (customerSmartFiles.length && saved.id) {
+          let uploaded = 0;
+          for (const file of customerSmartFiles) {
+            try {
+              const body = new FormData();
+              body.append('file', file, file.name);
+              body.append('category', 'qualification');
+              body.append('note', '智能识别上传');
+              const uploadResponse = await fetch(`${API_BASE}/customers/${saved.id}/files`, {
+                method: 'POST',
+                headers: authHeaders ? authHeaders() : {},
+                body,
+              });
+              if (uploadResponse.ok) uploaded += 1;
+            } catch {
+              /* 单个文件失败：下面按实际成功数给提示 */
+            }
+          }
+          setNotice(
+            uploaded === customerSmartFiles.length
+              ? `客户已成功新增，${uploaded} 个附件已归档。`
+              : `客户已成功新增，附件归档 ${uploaded}/${customerSmartFiles.length} 个，其余可在「客户档案」里补传。`,
+          );
+        }
+      }
       setCustomerForm(emptyCustomerForm);
+      setEditingCustomerId(null);
       setCustomerModalOpen(false);
-      setNotice('客户已成功新增。');
+      setCustomerSmartFiles([]);
     } catch (err) {
-      setNotice(err.message || '客户新增失败');
+      setNotice(err.message || (isEdit ? '客户保存失败' : '客户新增失败'));
     }
   };
 
@@ -3974,33 +4081,73 @@ function App() {
     event.preventDefault();
     setNotice('');
 
+    if (
+      !guardName({
+        list: suppliers,
+        name: supplierForm.name,
+        excludeId: editingSupplierId != null ? editingSupplierId : null,
+        label: '供应商',
+        event,
+      })
+    ) {
+      return;
+    }
+
+    const isEdit = editingSupplierId != null;
+    const payload = {
+      ...supplierForm,
+      // 税号：去空格、空串归 null（后端按 null 存，不写成空字符串 —— 空串会和"没填"混在一起）
+      tax_no: (supplierForm.tax_no || '').trim() || null,
+      // 开票信息（2026-10-23）：开户行 / 账号 / 开票电话
+      bank_name: (supplierForm.bank_name || '').trim() || null,
+      bank_account: (supplierForm.bank_account || '').trim() || null,
+      invoice_phone: (supplierForm.invoice_phone || '').trim() || null,
+      short_name: supplierForm.short_name || null,
+      contact: supplierForm.contact || null,
+      mobile: supplierForm.mobile || null,
+      phone: supplierForm.phone || null,
+      email: supplierForm.email || null,
+      address: supplierForm.address || null,
+      // 所属分类：''（未选）= null；口径同 submitCustomer
+      category_id: supplierForm.category_id === '' || supplierForm.category_id == null
+        ? null
+        : Number(supplierForm.category_id),
+    };
+    if (isEdit) delete payload.code;
+
     try {
-      const response = await fetch(`${API_BASE}/suppliers`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      const response = await fetch(
+        isEdit ? `${API_BASE}/suppliers/${editingSupplierId}` : `${API_BASE}/suppliers`,
+        {
+          method: isEdit ? 'PATCH' : 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+          body: JSON.stringify(payload),
         },
-        body: JSON.stringify({
-          ...supplierForm,
-          phone: supplierForm.phone || null,
-          email: supplierForm.email || null,
-          address: supplierForm.address || null,
-        }),
-      });
+      );
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: '创建供应商失败' }));
-        throw new Error(errorData.detail ?? '创建供应商失败');
+        const errorData = await response
+          .json()
+          .catch(() => ({ detail: isEdit ? '保存供应商失败' : '创建供应商失败' }));
+        throw new Error(errorData.detail ?? (isEdit ? '保存供应商失败' : '创建供应商失败'));
       }
 
-      const newSupplier = await response.json();
-      setSuppliers((prev) => [newSupplier, ...prev]);
+      const saved = await response.json();
+      if (isEdit) {
+        setSuppliers((prev) => prev.map((row) => (row.id === saved.id ? saved : row)));
+        setNotice(`供应商「${saved.name}」已更新。`);
+      } else {
+        setSuppliers((prev) => [saved, ...prev]);
+        setNotice('供应商已成功新增。');
+      }
       setSupplierForm(emptySupplierForm);
+      setEditingSupplierId(null);
       setSupplierModalOpen(false);
-      setNotice('供应商已成功新增。');
     } catch (err) {
-      setNotice(err.message || '供应商新增失败');
+      setNotice(err.message || (isEdit ? '供应商保存失败' : '供应商新增失败'));
     }
   };
 
@@ -4191,7 +4338,7 @@ function App() {
     };
 
     return (
-      <div className="management-grid">
+      <ResizableLayout>
         <section className="panel form-panel">
           <div className="section-header">
             <h2>{title}</h2>
@@ -4339,7 +4486,7 @@ function App() {
             对账单期间沿用「财务管理 → 打印中心」里设置的起止日期；未设置则统计全部期间。
           </p>
         </section>
-      </div>
+      </ResizableLayout>
     );
   };
 
@@ -4373,7 +4520,7 @@ function App() {
       .reduce((sum, row) => sum + Number(row.quantity || 0), 0);
 
     return (
-      <div className="management-grid">
+      <ResizableLayout>
         <section className="panel form-panel">
           <div className="section-header">
             <h2>流水筛选</h2>
@@ -4490,7 +4637,7 @@ function App() {
           )}
           {rows.length > 200 && <div className="table-hint">共 {rows.length} 条，仅显示最近 200 条</div>}
         </section>
-      </div>
+      </ResizableLayout>
     );
   };
 
@@ -4507,7 +4654,7 @@ function App() {
     };
 
     return (
-      <div className="management-grid">
+      <ResizableLayout>
         <section className="panel form-panel">
           <div className="section-header">
             <h2>往来对账</h2>
@@ -4535,15 +4682,18 @@ function App() {
               </label>
               <label>
                 {ledgerParty.party_type === 'customer' ? '客户' : '供应商'}
-                <select
-                  value={ledgerParty.party_id}
-                  onChange={(event) => setLedgerParty((prev) => ({ ...prev, party_id: event.target.value }))}
-                >
-                  <option value="">— 请选择 —</option>
-                  {parties.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
+                {/* 档案可能几百条：平铺下拉改可搜索。切换往来类型时 party_id 已重置为 ''，
+                    组件会回落到 placeholder，不会残留上一类型的选择。 */}
+                <ErpSearchSelect
+                  options={parties}
+                  value={String(ledgerParty.party_id ?? '')}
+                  onChange={(value) => setLedgerParty((prev) => ({ ...prev, party_id: value }))}
+                  placeholder={`搜索${ledgerParty.party_type === 'customer' ? '客户' : '供应商'}名称 / 编码`}
+                  emptyText="没有匹配的往来单位"
+                  getOptionValue={(item) => String(item.id)}
+                  getOptionLabel={(item) => `${item.name}（${item.code}）`}
+                  getSearchText={(item) => [item.name, item.code, item.short_name, item.phone].filter(Boolean).join(' ')}
+                />
               </label>
             </div>
 
@@ -4650,7 +4800,7 @@ function App() {
             </table>
           )}
         </section>
-      </div>
+      </ResizableLayout>
     );
   };
 
@@ -4661,7 +4811,7 @@ function App() {
     const balanceTotal = glBalance || { total_debit: 0, total_credit: 0, balanced: true };
 
     return (
-      <div className="management-grid">
+      <ResizableLayout>
         {/* —— 科目余额表（试算平衡）—— */}
         <section className="panel table-panel">
           <div className="section-header">
@@ -4790,20 +4940,23 @@ function App() {
             <div className="form-row two-col">
               <label>
                 科目
-                <select
-                  value={glAccountCode}
-                  onChange={(event) => {
-                    setGlAccountCode(event.target.value);
-                    refreshGlDetail(event.target.value);
+                {/* 会计科目有上百个：平铺下拉改可搜索。
+                    ⚠️ 这里的取值是**科目编码**（account.code），不是 id —— 下拉本身
+                    原来没有空选项，所以关掉 allowClear，不引入"已清空"这个新状态。 */}
+                <ErpSearchSelect
+                  options={glAccounts}
+                  value={String(glAccountCode ?? '')}
+                  onChange={(value) => {
+                    setGlAccountCode(value);
+                    refreshGlDetail(value);
                   }}
-                >
-                  {glAccounts.length === 0 && <option value="">— 无科目 —</option>}
-                  {glAccounts.map((account) => (
-                    <option key={account.code} value={account.code}>
-                      {account.code} · {account.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder={glAccounts.length === 0 ? '— 无科目 —' : '搜索科目编码 / 名称'}
+                  emptyText="没有匹配的科目"
+                  allowClear={false}
+                  getOptionValue={(item) => String(item.code)}
+                  getOptionLabel={(item) => `${item.code} · ${item.name}`}
+                  getSearchText={(item) => [item.code, item.name].filter(Boolean).join(' ')}
+                />
               </label>
               <div className="form-actions">
                 <button
@@ -4903,13 +5056,26 @@ function App() {
             </div>
           </div>
         )}
-      </div>
+      </ResizableLayout>
     );
   };
 
   const submitProduct = async (event) => {
     event.preventDefault();
     setNotice('');
+
+    // 商品额外比助记码（本来就是拼音首字母，命中率最高）
+    if (
+      !guardName({
+        list: products,
+        name: productForm.name,
+        label: '商品',
+        event,
+        mnemonicKey: 'mnemonic',
+      })
+    ) {
+      return;
+    }
 
     try {
       const response = await fetch(`${API_BASE}/products`, {
@@ -4922,8 +5088,10 @@ function App() {
       });
 
       if (!response.ok) {
+        // ⚠️ 必须走 parseApiDetail：422 的 detail 是**数组**，直接当 message 会变成
+        //    "[object Object]"（2026-10-22 E2E 实拍：没填价格时界面就长这样）
         const errorData = await response.json().catch(() => ({ detail: '创建产品失败' }));
-        throw new Error(errorData.detail ?? '创建产品失败');
+        throw new Error(parseApiDetail(errorData && errorData.detail, '创建产品失败'));
       }
 
       const newProduct = await response.json();
@@ -4942,14 +5110,18 @@ function App() {
   // 要么被丢掉、要么把 "" 直接送后端导致 float 解析失败。
   const serializeProductForm = (form) => {
     const num = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
+    /* 价格/税率这类"后端非空"的数字：空串要发 0 而不是 null。
+       发 null 会被 Pydantic 判成 `Input should be a valid number`（422），
+       而界面上只会显示 "[object Object]"，用户完全不知道哪里错了（2026-10-22 E2E 抓到）。 */
+    const numOr0 = (v) => (v === '' || v === null || v === undefined ? 0 : Number(v) || 0);
     const str = (v) => (v === '' || v === null || v === undefined ? null : v);
     return {
       sku: form.sku,
       name: form.name,
       category: str(form.category),
       unit: str(form.unit),
-      purchase_price: num(form.purchase_price),
-      sale_price: num(form.sale_price),
+      purchase_price: numOr0(form.purchase_price),
+      sale_price: numOr0(form.sale_price),
       tax_rate: num(form.tax_rate),
       mnemonic: str(form.mnemonic),
       standards: str(form.standards),
@@ -4958,6 +5130,9 @@ function App() {
       color: str(form.color),
       size: str(form.size),
       manufacturer: str(form.manufacturer),
+      // 生产厂家关联到供应商档案（可空）：manufacturer 仍保留名称快照 ——
+      // 供应商改名/停用后，历史商品档案上显示的还是当时的名字。
+      manufacturer_id: num(form.manufacturer_id),
       serial_no: str(form.serial_no),
       unit_weight: num(form.unit_weight),
       stock_upper: num(form.stock_upper),
@@ -4967,6 +5142,13 @@ function App() {
       warn_days: num(form.warn_days),
       image_url: str(form.image_url),
       note: str(form.note),
+      // 辅助单位（第三阶段 3a）：**只有 form.units 是数组时才带上这个键**。
+      //   · 新增态：emptyProductForm.units = []，随 POST /products 一起提交，
+      //     后端把商品和它的辅助单位放在**一个事务**里落库
+      //   · 编辑态：打开弹窗时由 ProductUnitsField 异步拉取，拉回来之后才是数组；
+      //     拉不到（网络失败）时是 undefined → 键不出现 → 后端 PATCH 用
+      //     `exclude_unset` 就一个字段都不碰，**绝不会把已有的辅助单位清空**
+      ...(Array.isArray(form.units) ? { units: serializeUnits(form.units) } : {}),
     };
   };
 
@@ -4999,6 +5181,7 @@ function App() {
       color: row.color || '',
       size: row.size || '',
       manufacturer: row.manufacturer || '',
+      manufacturer_id: row.manufacturer_id ?? '',
       serial_no: row.serial_no || '',
       unit_weight: row.unit_weight ?? '',
       stock_upper: row.stock_upper ?? '',
@@ -5014,6 +5197,18 @@ function App() {
   const submitProductEdit = async (event) => {
     event.preventDefault();
     if (!productEdit) return;
+    if (
+      !guardName({
+        list: products,
+        name: productEdit.name,
+        excludeId: productEdit.id,
+        label: '商品',
+        event,
+        mnemonicKey: 'mnemonic',
+      })
+    ) {
+      return;
+    }
     setProductBusy('edit');
     try {
       const response = await fetch(`${API_BASE}/products/${productEdit.id}`, {
@@ -5034,15 +5229,54 @@ function App() {
   };
 
   // 类别管理：录入 / 编辑 / 删除 / 刷新（图片里的四个操作）
-  const openCategoryModal = (mode, node = null) => setCategoryModal({ mode, node });
+  const openCategoryModal = (mode, node = null) => {
+    // 同步初始化「上级类别」的受控值：新增子类默认挂到当前节点下，编辑时取父级
+    setCategoryParentDraft(
+      mode === 'edit'
+        ? String(node?.parent_id ?? '')
+        : (node ? String(node.id) : ''),
+    );
+    setCategoryModal({ mode, node });
+  };
   const submitCategory = async (event) => {
     event.preventDefault();
     if (!categoryModal) return;
+    // ⚠️ 防重复提交：按钮虽然有 disabled，但**在输入框里按回车**会直接触发表单提交、
+    // 绕过按钮的 disabled —— 连按两下回车就是两次 POST，第二次命中唯一性校验报
+    // 「同一上级下已有同类别」，用户看到的却是"新建失败"（其实第一次已经建成了）。
+    if (productBusy === 'cat') return;
     const { mode, node } = categoryModal;
     const name = (event.currentTarget.elements?.name?.value || '').trim();
-    const parentId = event.currentTarget.elements?.parent_id?.value || '';
+    // ⚠️ 上级类别是 ErpSearchSelect（受控、不是表单控件），读不到 elements.parent_id，
+    // 必须读 state。这一步是替换成可搜索下拉时最容易静默出错的地方：
+    // 读不到就会当成空值，把子类偷偷存成顶级类。
+    const parentId = categoryParentDraft || '';
     const note = (event.currentTarget.elements?.note?.value || '').trim();
     if (!name) { setNotice('请填写类别名称'); return; }
+    // 同一父级下不允许重名（后端 409 兜底，这里先挡一道省一个来回）
+    {
+      const parentKey = String(parentId === '' ? '' : parentId);
+      const flat = [];
+      const walk = (list) =>
+        (list || []).forEach((node) => {
+          flat.push({ id: node.id, name: node.name, parent_id: node.parent_id, code: '' });
+          walk(node.children);
+        });
+      walk(productCategories);
+      const sameParent = flat.filter((n) => String(n.parent_id ?? '') === parentKey);
+      const isEditMode = mode === 'edit' && node;
+      if (
+        !guardName({
+          list: sameParent,
+          name,
+          excludeId: isEditMode ? node.id : null,
+          label: '分类',
+          event,
+        })
+      ) {
+        return;
+      }
+    }
     setProductBusy('cat');
     try {
       const isEdit = mode === 'edit' && node;
@@ -5056,7 +5290,18 @@ function App() {
         }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail ?? '保存类别失败');
+      if (!response.ok) {
+        // 重名不是"系统坏了"：先刷新树，让用户看见那个已经存在的分类，
+        // 再给一句能指导下一步的话（是要改名，还是它本来就在）。
+        const detail = String(data.detail ?? '');
+        if (/同一上级下已有同类别|已存在/.test(detail)) {
+          await loadProductCategories();
+          setCategoryModal(null);
+          setNotice(`已存在同名类别「${name}」，已刷新左侧类别树 —— 换个名字，或直接用现有的那个。`);
+          return;
+        }
+        throw new Error(detail || '保存类别失败');
+      }
       setCategoryModal(null);
       await loadProductCategories();
       setNotice(isEdit ? `类别「${data.name}」已保存。` : `类别「${data.name}」已新增。`);
@@ -5085,6 +5330,99 @@ function App() {
       setNotice(err.message || '删除类别失败');
     } finally {
       setProductBusy('');
+    }
+  };
+
+  /**
+   * 拖拽落地：发 `POST /product-categories/{id}/move`，然后**重拉整棵树**。
+   *
+   * 为什么不在这里做乐观更新（客户/供应商树是做的）：
+   *   商品树的节点**不带 count/total**，树上的角标来自 `countProductsByCategory()`
+   *   —— 那是从 `productCategories` 现场算的。乐观改树 = 角标也要一起算一遍，
+   *   而"移动一个类"根本不改变任何商品的归属，角标本来就一个数都不会变。
+   *   少一半代码、少一处分叉，失败时也不需要"回滚"（组件按原 `nodes` 重渲染即可）。
+   *   代价是松手到树重排之间有不到一个 RTT 的空档 —— 拖拽浮标撤得比它快，实际看不出来。
+   *
+   * 为什么必须重拉而不是"本地改 parent_id"：
+   *   后端会把**目标父级下的兄弟整段重排成 10/20/30**，我们本地猜不到新的 sort_order，
+   *   自己拼一遍迟早和服务端不一致（下一次刷新就跳位）。
+   *
+   * 返回 `true` 表示已处理；`false`/抛错时组件保持原样，等于自动回滚。
+   */
+  /**
+   * 商品类别拖拽落地（2026-10-22 重写）。
+   *
+   * ⚠️ 原来打的是 `POST /product-categories/{id}/move` —— **这个路由后端根本没有**，
+   *    而且 `renderCategoryNodes` 也没把 onMove 传下去，所以商品树既没有拖拽手柄、
+   *    也拖不动（一旦接上就是 404）。现在改成用现成的 `PATCH /product-categories/{id}`：
+   *    先改 `parent_id`，再按目标父级重新排 `sort_order`（后端支持这两个字段）。
+   *
+   * 为什么自己排 sort_order：接口没有 "插入到某节点之前" 的语义，
+   * 而拖拽松手给的是 `beforeId`。把目标父级下的兄弟按现有顺序排一遍、
+   * 把被拖节点插到 beforeId 前面，再逐条 PATCH 序号，结果与用户看到的一致。
+   */
+  const moveCategory = async (dragId, move) => {
+    if (!dragId || !move) return false;
+    const { parentId = null, beforeId = null } = move;
+    const headers = { 'Content-Type': 'application/json', ...authHeaders() };
+    try {
+      // 1) 换父级（后端会校验成环与重名）
+      const res = await fetch(`${API_BASE}/product-categories/${dragId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ parent_id: parentId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setNotice(parseApiDetail(data && data.detail, `调整类别位置失败（${res.status}）`));
+        return false;
+      }
+
+      // 2) 重排目标父级下的顺序：拿到最新树，找到落点
+      const fresh = await fetch(`${API_BASE}/product-categories`, { headers: authHeaders() })
+        .then((r) => r.json())
+        .catch(() => null);
+      const findSiblings = (list, pid) => {
+        if (pid === null) return Array.isArray(list) ? list : [];
+        const stack = [...(Array.isArray(list) ? list : [])];
+        while (stack.length) {
+          const node = stack.pop();
+          if (Number(node.id) === Number(pid)) return node.children || [];
+          (node.children || []).forEach((child) => stack.push(child));
+        }
+        return [];
+      };
+      const siblings = findSiblings(fresh, parentId).filter((n) => Number(n.id) !== Number(dragId));
+      const insertAt = beforeId
+        ? Math.max(0, siblings.findIndex((n) => Number(n.id) === Number(beforeId)))
+        : siblings.length;
+      const ordered = [
+        ...siblings.slice(0, insertAt === -1 ? siblings.length : insertAt),
+        { id: dragId },
+        ...siblings.slice(insertAt === -1 ? siblings.length : insertAt),
+      ];
+
+      // 3) 逐条写序号（只有真的变了才发请求）
+      const jobs = [];
+      ordered.forEach((node, index) => {
+        const next = (index + 1) * 10;
+        if (Number(node.sort_order) !== next) {
+          jobs.push(
+            fetch(`${API_BASE}/product-categories/${node.id}`, {
+              method: 'PATCH',
+              headers,
+              body: JSON.stringify({ sort_order: next }),
+            }),
+          );
+        }
+      });
+      await Promise.all(jobs);
+
+      await loadProductCategories();
+      return true;
+    } catch (err) {
+      setNotice(parseApiDetail(err && err.message, '调整类别位置失败，请检查网络后重试'));
+      return false;
     }
   };
 
@@ -5142,17 +5480,83 @@ function App() {
     setSalesOrderForm((prev) => ({ ...prev, [field]: event.target.value }));
   };
 
-  const makeOrderItemHandler = (setter, priceField) => (index, field) => (event) => {
-    const value = event.target.value;
+  // ── 单据明细行的「单位」下拉（2026-10-17）─────────────────────────────────
+  // 采购入库 / 采购订单 / 销售开单 / 销售订单 这四张老表单原本只能按**基本单位**
+  // 录数量，辅助单位（箱/包）只有多单位看板支持 —— 于是「3 箱」只能手算成 36 盒再录。
+  //
+  // 这里补一套共享缓存：选中商品时异步拉 `/products/{id}/units`，同一商品只发一次
+  // （并发去重），失败**不写缓存**（否则改完档案回来还是空表，界面一直说"没有单位"）。
+  // `unitEpoch` 只负责在数据回来时触发一次重渲染 —— 读的是 ref，不怕快照过期。
+  const unitCacheRef = useRef(new Map());
+  const unitInflightRef = useRef(new Map());
+  const [unitEpoch, setUnitEpoch] = useState(0);
+
+  const loadProductUnits = useCallback(async (productId) => {
+    const key = String(productId ?? '');
+    if (!key) return [];
+    if (unitCacheRef.current.has(key)) return unitCacheRef.current.get(key);
+    if (unitInflightRef.current.has(key)) return unitInflightRef.current.get(key);
+
+    const task = (async () => {
+      try {
+        const response = await fetch(`${API_BASE}/products/${key}/units`, {
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+        });
+        if (!response.ok) throw new Error(`读取商品单位失败（HTTP ${response.status}）`);
+        const rows = await response.json();
+        const list = Array.isArray(rows) ? rows : [];
+        unitCacheRef.current.set(key, list);
+        setUnitEpoch((value) => value + 1);
+        return list;
+      } finally {
+        unitInflightRef.current.delete(key);
+      }
+    })();
+
+    unitInflightRef.current.set(key, task);
+    return task;
+  }, [authToken]);
+
+  /** 某商品可选的全部单位（基础单位恒在第一位；还没加载完时先给基础单位，下拉不会空着）。 */
+  const unitOptionsFor = useCallback((productId) => {
+    const key = String(productId ?? '');
+    if (!key) return [];
+    const product = products.find((item) => String(item.id) === key) || null;
+    const cached = unitCacheRef.current.get(key);
+    if (cached === undefined) return product ? buildUnitOptions(product, []) : [];
+    return buildUnitOptions(product, cached);
+    // unitEpoch 是"数据到了"的信号：进依赖让函数身份跟着变，页面才会重算选项
+  }, [products, unitEpoch]);
+
+  // 明细行的输入既可能来自原生控件的事件，也可能是 ErpSearchSelect 直接抛出来的原始值
+  // （商品下拉改成可搜索组件后，onChange 给的是 product_id 本身，不是 event）
+  // `readChangeValue` 已提到模块级（见文件顶部），这里不再重复定义。
+
+  const makeOrderItemHandler = (setter, priceField) => (index, field) => (input) => {
+    const value = readChangeValue(input);
     setter((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
         if (i !== index) return row;
         const next = { ...row, [field]: value };
-        // 选了商品就把档案价格带出来（采购带进价、销售带售价），省得手打
+        // 选了商品就把档案价格带出来（采购带进价、销售带售价），省得手打；
+        // 同时把单位归位到基本单位，并去拉这个商品的辅助单位。
         if (field === 'product_id') {
           const product = products.find((item) => String(item.id) === String(value));
-          if (product) next.unit_price = String(product[priceField] ?? '0');
+          if (product) {
+            next.unit_price = String(product[priceField] ?? '0');
+            next.unit = product.unit || '';
+          } else {
+            next.unit = '';
+          }
+          if (value) loadProductUnits(value).catch(() => {});
+        }
+        // 换单位：把这个单位自己的价格带出来（箱价 ≠ 盒价）。
+        // 辅助单位没单独定价（null）就保留原值，绝不静默改成 0 —— 那是丢钱。
+        if (field === 'unit') {
+          const option = unitOptionsFor(row.product_id).find((item) => item.name === value);
+          const price = option ? (priceField === 'sale_price' ? option.salePrice : option.purchasePrice) : null;
+          if (price !== null && price !== undefined) next.unit_price = String(price);
         }
         return next;
       }),
@@ -5183,6 +5587,47 @@ function App() {
   const addOutboundItem = makeAddItem(setOutboundForm);
   const removeOutboundItem = makeRemoveItem(setOutboundForm);
 
+  // ── 复制行（2026-10-21 补回）─────────────────────────────────────────────
+  // OrderBoard 按命名约定从 ctx 取 `copy{sales|purchase}OrderItem`；
+  // 代码覆盖事故后这两个函数丢了，点「复制」会 `undefined is not a function`。
+  // 语义：整行复制到末尾，**数量重置为 1**（复制的是商品+价格，不是重复下单）。
+  const makeCopyItem = (setter) => (index) => {
+    setter((prev) => {
+      const row = (prev.items || [])[index];
+      if (!row) return prev;
+      return { ...prev, items: [...prev.items, { ...row, quantity: '1' }] };
+    });
+  };
+  const copySalesOrderItem = makeCopyItem(setSalesOrderForm);
+  const copyPurchaseOrderItem = makeCopyItem(setPurchaseOrderForm);
+
+  // ── 批量选商品（2026-10-21 补回）─────────────────────────────────────────
+  // OrderBoard 取 `addProductsTo{sales|purchase}Order`。语义：把勾选的商品
+  // 一次性追加成明细行，单价取档案价（销售 sale_price / 采购 purchase_price），
+  // 数量默认 1；**先复用第一行空行**，避免用户看到"多出来一行空的"。
+  const makeAddProducts = (setter, priceField) => (productIds) => {
+    const ids = (Array.isArray(productIds) ? productIds : []).filter(Boolean);
+    if (ids.length === 0) return;
+    setter((prev) => {
+      const lines = prev.items || [];
+      const emptyIndex = lines.findIndex((row) => !row.product_id);
+      const base = emptyIndex >= 0 ? lines.filter((_, i) => i !== emptyIndex) : lines;
+      const added = ids.map((id) => {
+        const product = products.find((item) => String(item.id) === String(id));
+        return {
+          ...emptyOrderItem,
+          product_id: String(id),
+          quantity: '1',
+          unit_price: String(product ? (product[priceField] ?? '0') : '0'),
+          unit: product?.unit || '',
+        };
+      });
+      return { ...prev, items: [...base, ...added] };
+    });
+  };
+  const addProductsToSalesOrder = makeAddProducts(setSalesOrderForm, 'sale_price');
+  const addProductsToPurchaseOrder = makeAddProducts(setPurchaseOrderForm, 'purchase_price');
+
   const handleInboundFormChange = (field) => (event) => {
     const value = event.target.value;
     setInboundForm((prev) => ({ ...prev, [field]: value }));
@@ -5207,13 +5652,32 @@ function App() {
     event.preventDefault();
     setNotice('');
 
-    const lines = form.items
-      .filter((row) => row.product_id)
-      .map((row) => ({
+    // 往来对象必选由下面的 `if (!form[partyField])` 兜住（这里原本就有，
+    // 只是位置在明细体检之后）。客户/供应商换成 ErpSearchSelect 后原生 required 失效，
+    // 但 JS 守卫还在，所以无需另加 —— 别因为"看起来没有 required"就重复补一遍。
+
+    // 明细行先体检：半填行红字拦截、空行静默丢弃 —— 半填的一行都不许发给后端
+    const check = inspectItemRows(form.items);
+    if (check.issues.length > 0) {
+      setNotice(
+        check.issues.length === 1
+          ? check.issues[0].message
+          : `有 ${check.issues.length} 行明细不完整：${check.issues[0].message}（其余 ${check.issues.length - 1} 行同理）`,
+      );
+      return;
+    }
+    const lines = check.usable.map((row) => {
+      const line = {
         product_id: Number(row.product_id),
         quantity: Number(row.quantity) || 0,
         unit_price: Number(row.unit_price) || 0,
-      }));
+      };
+      // 只发 `unit`、**不发 factor** —— 换算率由后端按 unit 现场解析。
+      // 空串省略该键，让后端走"未指定单位 = 基本单位"的老路径。
+      const unit = String(row.unit ?? '').trim();
+      if (unit) line.unit = unit;
+      return line;
+    });
     if (!form[partyField]) {
       setNotice(`请先选择${partyLabel}。`);
       return;
@@ -5241,6 +5705,11 @@ function App() {
           warehouse_id: Number(form.warehouse_id),
           order_date: form.order_date || null,
           payment_method: form.payment_method || null,
+          // 物流签收：出库单才有意义；采购入库走同一提交函数，多传的键后端忽略
+          logistics_company: form.logistics_company || null,
+          logistics_no: form.logistics_no || null,
+          signed_by: form.signed_by || null,
+          signed_at: form.signed_at || null,
           note: form.note || null,
         }),
       });
@@ -5284,17 +5753,39 @@ function App() {
     label: '销售出库单',
   });
 
-  const makeSubmitOrder = ({ endpoint, form, setForm, emptyForm, listSetter, partyField, label }) => async (event) => {
+  const makeSubmitOrder = ({ endpoint, form, setForm, emptyForm, listSetter, partyField, partyLabel, label }) => async (event) => {
     event.preventDefault();
     setNotice('');
 
-    const lines = form.items
-      .filter((row) => row.product_id)
-      .map((row) => ({
+    // 往来对象必选：客户/供应商换成了 ErpSearchSelect（可搜索，但没有原生 select 的
+    // required 拦截），不挡的话 `Number('') === 0` 会把脏值发给后端。
+    if (!form[partyField]) {
+      setNotice(`请先选择${partyLabel}再提交。`);
+      return;
+    }
+
+    // 明细行先体检：半填行红字拦截、空行静默丢弃 —— 半填的一行都不许发给后端
+    const check = inspectItemRows(form.items);
+    if (check.issues.length > 0) {
+      setNotice(
+        check.issues.length === 1
+          ? check.issues[0].message
+          : `有 ${check.issues.length} 行明细不完整：${check.issues[0].message}（其余 ${check.issues.length - 1} 行同理）`,
+      );
+      return;
+    }
+    const lines = check.usable.map((row) => {
+      const line = {
         product_id: Number(row.product_id),
         quantity: Number(row.quantity) || 0,
         unit_price: Number(row.unit_price) || 0,
-      }));
+      };
+      // 只发 `unit`、**不发 factor** —— 换算率由后端按 unit 现场解析。
+      // 空串省略该键，让后端走"未指定单位 = 基本单位"的老路径。
+      const unit = String(row.unit ?? '').trim();
+      if (unit) line.unit = unit;
+      return line;
+    });
     if (!form[partyField]) {
       setNotice(`请先选择${label === '采购订单' ? '供应商' : '客户'}。`);
       return;
@@ -5320,6 +5811,10 @@ function App() {
           project_id: num(form.project_id),
           delivery_date: form.delivery_date || null,
           payment_method: form.payment_method || null,
+          // 选客带出的三项快照：落库后对账单/送货单不必再回查档案
+          contact: form.contact || null,
+          contact_phone: form.contact_phone || null,
+          address: form.address || null,
           note: form.note || null,
         }),
       });
@@ -5343,6 +5838,7 @@ function App() {
     emptyForm: emptyPurchaseOrderForm,
     listSetter: setPurchaseOrderList,
     partyField: 'supplier_id',
+    partyLabel: '供应商',
     label: '采购订单',
   });
 
@@ -5353,6 +5849,7 @@ function App() {
     emptyForm: emptySalesOrderForm,
     listSetter: setSalesOrderList,
     partyField: 'customer_id',
+    partyLabel: '客户',
     label: '销售订单',
   });
 
@@ -5394,6 +5891,163 @@ function App() {
       setNotice(`销售订单 ${row.order_no} 已转开单 ${outbound.order_no}，库存与应收已自动登记。`);
     } catch (err) {
       setNotice(err.message || '转单失败');
+    }
+  };
+
+  // —— 审核（单步：制单 → 审核）2026-10-18 ——
+  // 状态的合法性**只由后端判定**（app/core/doc_status.py）：前端发 approved，
+  // 非法流转/未知状态一律 409/400，把 detail 原样显示给你看。
+  // 采购/销售共用一份实现，差异只有 endpoint 与两个列表 setter。
+  const approveOrderRow = async (kind, row) => {
+    if (!row) return;
+    setNotice('');
+    const prefix = kind === 'purchase' ? 'purchase-orders' : 'sales-orders';
+    const label = kind === 'purchase' ? '采购订单' : '销售订单';
+    try {
+      const response = await fetch(`${API_BASE}/${prefix}/${row.id}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({ status: 'approved' }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '审核失败' }));
+        // FastAPI 422 的 detail 是数组，直接拼进 Error 会变成 [object Object]
+        throw new Error(typeof errorData.detail === 'string' ? errorData.detail : '审核失败');
+      }
+      const updated = await response.json();
+      const listSetter = kind === 'purchase' ? setPurchaseOrderList : setSalesOrderList;
+      listSetter((prev) =>
+        prev.map((item) => (item.id === row.id ? { ...item, ...updated } : item)),
+      );
+      setNotice(
+        `${label} ${row.order_no} 已审核通过，现在可以${kind === 'purchase' ? '转入库单' : '转开单'}。`,
+      );
+    } catch (err) {
+      setNotice(err.message || '审核失败');
+    }
+  };
+
+  const approvePurchaseOrder = (row) => approveOrderRow('purchase', row);
+  const approveSalesOrder = (row) => approveOrderRow('sales', row);
+
+  // —— 收款 / 付款（2026-10-18 接上真弹窗）——
+  // 改造前：`POST /finance/receipt|payment`（erp_finance.py:271/278）逻辑完整但**前端零调用**
+  // → financial_transactions 里从来没有 receipt/payment → 对账单「本期已收」永远是 0。
+  // 现在：订单行点「收款/付款」→ 弹窗 → 落一笔流水并冲减本单欠款（后端还会重算欠款链）。
+  const openOrderPayment = (row, kind) => {
+    if (!row) return;
+    setOrderPayError('');
+    setOrderPayResult(null);
+    setOrderPayInvoice(null);
+    setOrderPayDialog({ kind: kind === 'purchase' ? 'purchase' : 'sales', row });
+    // 采购：先问后端"这单还有多少没票"（口径与完结闸一致，不在这里自己算）。
+    // 拿不到也不拦人 —— 提醒是加分项，不能因为一个只读接口挂了就付不了款；
+    // 但 loading 期间「确认付款」是禁用的，避免闸门在数据没到的那半秒被绕过。
+    if (kind === 'purchase') {
+      setOrderPayInvoiceLoading(true);
+      fetch(`${API_BASE}/orders/purchase/${row.id}/invoice-status`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data) => setOrderPayInvoice(data))
+        .catch(() => setOrderPayInvoice(null))
+        .finally(() => setOrderPayInvoiceLoading(false));
+    }
+  };
+
+  const closeOrderPayment = () => {
+    // 登记中不给关，避免"钱收了但不知道结果"。
+    // ⚠️ 但**已经拿到结果**时必须放行：成功面板是在 await 刷新列表**之前**渲染的，
+    //    那段时间 busy 还是 true，早先版本 `if (busy) return` 会把「完成」按钮按死，
+    //    表现为"点了没反应、弹窗关不掉"（E2E F12 抓到）。
+    if (orderPayBusy && !orderPayResult) return;
+    setOrderPayDialog(null);
+    setOrderPayResult(null);
+    setOrderPayError('');
+  };
+
+  // 弹窗里点「确认收款/付款」：POST 一次，成功后立刻重拉列表（金额变了）。
+  // `estimate` / `no_invoice` 来自无票闸门的两个出口（只有采购付款会有）：
+  // 后端据此在流水备注打【暂估】/【无票付款】，并在流水上记 invoice_id（如果挂了票）。
+  const submitOrderPayment = async ({ amount, occurred_at, method, note, estimate, no_invoice }) => {
+    const current = orderPayDialog;
+    if (!current?.row) return;
+    const isSales = current.kind !== 'purchase';
+    const row = current.row;
+    const partyId = isSales ? row.customer_id : row.supplier_id;
+    if (!partyId) {
+      setOrderPayError(
+        `该订单没有关联${isSales ? '客户' : '供应商'}，无法登记${isSales ? '收款' : '付款'}。请先编辑订单补上往来单位。`,
+      );
+      return;
+    }
+
+    setOrderPayBusy(true);
+    setOrderPayError('');
+    try {
+      const verb = isSales ? '收款' : '付款';
+      // 后端没有"方式"列（financial_transactions / _write_finance 都没有这个入参），
+      // 所以方式拼进备注 —— 先把信息留住，不丢；将来加列只改这一行。
+      const partyName =
+        (isSales
+          ? customers.find((item) => item.id === partyId)?.name
+          : suppliers.find((item) => item.id === partyId)?.name) || '';
+      const composedNote = [
+        `${verb}登记：${partyName || row.order_no || ''}`,
+        method ? `方式：${method}` : '',
+        note || '',
+      ]
+        .filter(Boolean)
+        .join('｜');
+
+      const response = await fetch(`${API_BASE}/finance/${isSales ? 'receipt' : 'payment'}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({
+          party_id: partyId,
+          order_id: row.id,
+          amount,
+          occurred_at,
+          note: composedNote,
+          doc_no: row.order_no || '',
+          // 无票闸门的选择：null = 正常付款（有票或没提醒）
+          estimate: Boolean(estimate),
+          no_invoice: Boolean(no_invoice),
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '登记失败' }));
+        // FastAPI 422 的 detail 是数组，直接拼进 Error 会变成 [object Object]
+        const detail =
+          typeof errorData.detail === 'string'
+            ? errorData.detail
+            : Array.isArray(errorData.detail)
+              ? errorData.detail.map((item) => item?.msg || item).join('；')
+              : '登记失败';
+        throw new Error(detail);
+      }
+
+      const result = await response.json();
+      setOrderPayResult(result);
+      // 金额/欠款链都变了：重拉列表，不能只改这一行（后面的单据欠款也被重算过）
+      if (isSales) await refreshSalesOrderList();
+      else await refreshPurchaseOrderList();
+      setNotice(
+        `${verb} ¥${Number(result.amount || 0).toFixed(2)} 已登记（冲本单 ¥${Number(
+          result.applied_amount || 0,
+        ).toFixed(2)}${Number(result.prepaid_amount || 0) > 0 ? `，预收/预付 ¥${Number(result.prepaid_amount).toFixed(2)}` : ''}）。`,
+      );
+    } catch (err) {
+      setOrderPayError(err.message || '登记失败');
+    } finally {
+      setOrderPayBusy(false);
     }
   };
 
@@ -5457,8 +6111,8 @@ function App() {
     });
   };
 
-  const handleContractItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleContractItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setContractForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -5492,6 +6146,13 @@ function App() {
     event.preventDefault();
     setNotice('');
 
+    // 合同相对方必选：下拉换成 ErpSearchSelect 后原生 required 失效，这里补守卫。
+    // ⚠️ `Number('') === 0` 会让空值变成合法 id 0，必须在提交前挡掉。
+    if (!contractForm.party_id) {
+      setNotice(contractForm.contract_type === 'sales' ? '请先选择客户再提交。' : '请先选择供应商再提交。');
+      return;
+    }
+
     const lines = contractForm.items
       .filter((row) => row.product_id)
       .map((row) => ({
@@ -5517,6 +6178,8 @@ function App() {
           contract_type: contractForm.contract_type,
           party_type: contractForm.contract_type === 'sales' ? 'customer' : 'supplier',
           party_id: num(contractForm.party_id),
+          // 模板库里选中的模板（NULL = 系统内置《工矿产品购销合同》范本）
+          template_id: num(contractForm.template_id),
           warehouse_id: num(contractForm.warehouse_id),
           own_name: contractForm.own_name || null,
           own_tax_no: contractForm.own_tax_no || null,
@@ -5715,8 +6378,8 @@ function App() {
     });
   };
 
-  const handleQuotationItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleQuotationItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setQuotationForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -5856,8 +6519,8 @@ function App() {
     });
   };
 
-  const handlePurchaseReturnItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handlePurchaseReturnItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setPurchaseReturnForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -5976,8 +6639,8 @@ function App() {
     });
   };
 
-  const handleSalesReturnItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleSalesReturnItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setSalesReturnForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -6028,41 +6691,160 @@ function App() {
     }
 
     const num = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
+    const editingId = salesReturnEditingId;
+    const payload = {
+      customer_id: Number(salesReturnForm.customer_id),
+      warehouse_id: num(salesReturnForm.warehouse_id),
+      businesser: salesReturnForm.businesser || null,
+      return_date: salesReturnForm.return_date || null,
+      return_reason: salesReturnForm.return_reason || null,
+      payment_method: salesReturnForm.payment_method || null,
+      note: salesReturnForm.note || null,
+      source_order_id: num(salesReturnForm.source_order_id),
+      source_order_no: salesReturnForm.source_order_no || null,
+      items: lines,
+    };
 
     try {
-      const response = await fetch(`${API_BASE}/sales-returns`, {
+      // 编辑走 PATCH：后端按「草稿不碰账 / 已落账先冲后落」四路径收口
+      const response = await fetch(
+        editingId ? `${API_BASE}/sales-returns/${editingId}` : `${API_BASE}/sales-returns`,
+        {
+          method: editingId ? 'PATCH' : 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          },
+          body: JSON.stringify(payload),
+        },
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: editingId ? '保存退货单失败' : '创建销售退货单失败' }));
+        throw new Error(parseApiDetail(errorData.detail) || (editingId ? '保存退货单失败' : '创建销售退货单失败'));
+      }
+
+      const saved = await response.json();
+      setSalesReturnEditingId(null);
+      setSalesReturnForm({ ...emptySalesReturnForm, items: [{ product_id: '', quantity: '1', unit_price: '0' }] });
+      if (editingId) {
+        setSalesReturns((prev) => prev.map((item) => (item.id === saved.id ? saved : item)));
+        setNotice(`退货单 ${saved.return_no} 已保存修改（${saved.amount_chinese}）。草稿状态下库存与应收没有变动。`);
+      } else {
+        setSalesReturns((prev) => [saved, ...prev]);
+        setNotice(`销售退货单 ${saved.return_no} 已生成（${saved.amount_chinese}），库存与应收已自动冲减。`);
+      }
+    } catch (err) {
+      setNotice(err.message || (editingId ? '保存退货单失败' : '销售退货单新增失败'));
+    }
+  };
+
+  /** 销售退货「编辑」：把单据载回上方表单。
+   *
+   * 只允许编辑**草稿**：已退货的单据改明细会触发后端「先冲后落」，
+   * 对账期间动它风险太大 —— 要改就先反审核退回草稿（那条路账一分不动）。
+   */
+  function startEditSalesReturn(row) {
+    if (row.status !== 'draft') {
+      setNotice('只有草稿状态的退货单可以编辑。要改已退货的单，请先点「反审核」把它退回草稿。');
+      return;
+    }
+    setSalesReturnEditingId(row.id);
+    setSalesReturnForm({
+      ...emptySalesReturnForm,
+      customer_id: row.customer_id ?? '',
+      warehouse_id: row.warehouse_id ?? '',
+      businesser: row.businesser || '',
+      return_date: row.return_date || '',
+      return_reason: row.return_reason || '',
+      payment_method: row.payment_method || '',
+      note: row.note || '',
+      source_order_no: row.source_order_no || '',
+      contact: row.contact || '',
+      contact_phone: row.contact_phone || '',
+      address: row.address || '',
+      items: (row.items && row.items.length ? row.items : [{ product_id: '', quantity: '1', unit_price: '0' }]).map(
+        (item) => ({
+          product_id: item.product_id ?? '',
+          quantity: String(item.quantity ?? '1'),
+          unit_price: String(item.unit_price ?? '0'),
+          batch_no: item.batch_no || '',
+        }),
+      ),
+    });
+    setNotice(`正在编辑退货单 ${row.return_no}（改完点「保存修改」）。`);
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function cancelEditSalesReturn() {
+    setSalesReturnEditingId(null);
+    setSalesReturnForm({ ...emptySalesReturnForm, items: [{ product_id: '', quantity: '1', unit_price: '0' }] });
+    setNotice('已取消编辑。');
+  }
+
+  /** 销售退货「反审核」：只把状态退回草稿，**账一个字都不动**。
+   *
+   * 为什么文案要专门说「账没变」：用户点反审核的本意是「退回去改一下」，
+   * 而不是「作废」。早先这两件事被塞进同一段逻辑，改两次就出入两次库存、
+   * 冲减两次应收，且全程无提示（2026-10-20 已拆分，见 erp_sales.py 的
+   * `_sales_return_apply_ledger` / `_sales_return_red_flush`）。
+   */
+  async function reverseSalesReturn(row) {
+    try {
+      const response = await fetch(`${API_BASE}/sales-returns/${row.id}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({ status: 'draft' }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '反审核失败' }));
+        throw new Error(parseApiDetail(errorData.detail) || '反审核失败');
+      }
+      const updated = await response.json();
+      setSalesReturns((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      setNotice(`退货单 ${row.return_no} 已退回草稿，库存与应收没有变动（审核时会按新明细重算）。`);
+    } catch (err) {
+      setNotice(err.message || '反审核失败');
+    }
+  }
+
+  /** 销售退货「作废」：唯一会反向冲账的入口 —— 撤库存、撤应收、留痕。
+   *
+   * 必须二次确认（`confirmDanger` 宿主未挂载时返回 `{ok:false}`，即拒绝），
+   * 而且必须填原因：事后对账要有人可问。
+   */
+  async function voidSalesReturn(row) {
+    const label = `销售退货单 ${row.return_no}`;
+    const decision = await confirmDanger({
+      title: '作废（红冲）退货单',
+      name: label,
+      hint: '会撤回这张单加过的库存、冲回的应收，并把单据落为「已取消」。此动作不可撤销。',
+      requireReason: true,
+    });
+    if (!decision.ok) return;
+    try {
+      const response = await fetch(`${API_BASE}/sales-returns/${row.id}/void`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
-        body: JSON.stringify({
-          customer_id: Number(salesReturnForm.customer_id),
-          warehouse_id: num(salesReturnForm.warehouse_id),
-          businesser: salesReturnForm.businesser || null,
-          return_date: salesReturnForm.return_date || null,
-          return_reason: salesReturnForm.return_reason || null,
-          payment_method: salesReturnForm.payment_method || null,
-          note: salesReturnForm.note || null,
-          source_order_id: num(salesReturnForm.source_order_id),
-          source_order_no: salesReturnForm.source_order_no || null,
-          items: lines,
-        }),
+        body: JSON.stringify({ reason: decision.reason || '' }),
       });
-
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: '创建销售退货单失败' }));
-        throw new Error(errorData.detail ?? '创建销售退货单失败');
+        const errorData = await response.json().catch(() => ({ detail: '作废失败' }));
+        throw new Error(parseApiDetail(errorData.detail) || '作废失败');
       }
-
-      const created = await response.json();
-      setSalesReturns((prev) => [created, ...prev]);
-      setSalesReturnForm({ ...emptySalesReturnForm, items: [{ product_id: '', quantity: '1', unit_price: '0' }] });
-      setNotice(`销售退货单 ${created.return_no} 已生成（${created.amount_chinese}），库存与应收已自动冲减。`);
+      const updated = await response.json();
+      setSalesReturns((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      setNotice(`${label} 已作废，库存与应收已红冲撤回。`);
     } catch (err) {
-      setNotice(err.message || '销售退货单新增失败');
+      setNotice(err.message || '作废失败');
     }
-  };
+  }
 
   // —— 库存调拨（对齐浩技云「库存管理 → 调拨管理」）——
   async function refreshTransfers(keyword) {
@@ -6091,8 +6873,8 @@ function App() {
     });
   };
 
-  const handleTransferItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleTransferItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setTransferForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -6212,8 +6994,8 @@ function App() {
     if (field === 'warehouse_id') setStocktakingPlanHint('');
   };
 
-  const handleStocktakingItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleStocktakingItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setStocktakingForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => (i === index ? { ...row, [field]: value } : row)),
@@ -6395,8 +7177,8 @@ function App() {
     setAdjustmentForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleAdjustmentItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleAdjustmentItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setAdjustmentForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -6508,8 +7290,8 @@ function App() {
     setProductionPlanForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handlePlanItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handlePlanItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setProductionPlanForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -6596,8 +7378,8 @@ function App() {
     setMrpForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleMrpItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleMrpItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setMrpForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => (i === index ? { ...row, [field]: value } : row)),
@@ -6683,8 +7465,8 @@ function App() {
     setMaterialIssueForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleIssueItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleIssueItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setMaterialIssueForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -6821,8 +7603,8 @@ function App() {
     setMaterialReturnForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleReturnItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleReturnItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setMaterialReturnForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -6920,8 +7702,8 @@ function App() {
     setFinishedGoodsForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleFinishedGoodsItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleFinishedGoodsItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setFinishedGoodsForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -7039,7 +7821,10 @@ function App() {
       // 登录落地页来自系统参数 system.default_page（后端已确保它在该用户可见菜单内）。
       // 只有登录/首次加载才跳，见函数上方关于 applyLanding 的说明。
       const landing = data?.ui?.default_page;
-      if (applyLanding && landing) setSelectedTab(landing);
+      // ⚠️ 必须带 userNavigatedRef 判断：这个请求是异步的，用户很可能在它返回之前
+      // 就已经点了菜单。少了这个条件，用户刚点开的页面会被这里**顶回落地页**
+      // （历史 Bug：点「库存预警」闪回「运营概览」，详见 userNavigatedRef 声明处的说明）。
+      if (applyLanding && landing && !userNavigatedRef.current) setSelectedTab(landing);
     } catch {
       // 拉不到就放开全部菜单（UI 层的诚实降级，接口本身另有 admin 鉴权兜底）
       setMyPermissions(null);
@@ -8148,6 +8933,17 @@ function App() {
     }
   }
 
+  // 财务流水列表（/finance）—— 只有登录时拉过一次，之后谁改了账都不会自动更新。
+  // 财务流水页进入时调它，避免刚收的钱在这一页看不到。
+  async function refreshFinance() {
+    try {
+      const response = await fetch(`${API_BASE}/finance?limit=500`, { headers: authHeaders() });
+      if (response.ok) setFinance(await response.json());
+    } catch {
+      // 拉取失败保留上一次数据
+    }
+  }
+
   async function refreshFinanceEntries() {
     try {
       const params = new URLSearchParams();
@@ -8245,13 +9041,13 @@ function App() {
     }
   }
 
-  const handleAssemblyFormChange = (field) => (event) => {
-    const value = event.target.value;
+  const handleAssemblyFormChange = (field) => (input) => {
+    const value = readChangeValue(input);
     setAssemblyForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleAssemblyItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleAssemblyItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setAssemblyItems((prev) => prev.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
   };
 
@@ -8289,6 +9085,11 @@ function App() {
 
   async function submitAssemblyOrder(event) {
     event.preventDefault();
+    // 成品下拉换成 ErpSearchSelect 后原生 required 失效，这里补守卫
+    if (!assemblyForm.product_id) {
+      setNotice('请先选择成品。');
+      return;
+    }
     setSystemBusy(true);
     try {
       const response = await fetch(`${API_BASE}/assembly-orders`, {
@@ -8479,8 +9280,13 @@ function App() {
     }
   }
 
-  const handleOpeningDraftChange = (field) => (event) => {
-    const value = event.target.value;
+  // 期初录入行的通用 setter。
+  // 兼容两种入参：原生控件给的 event（`event.target.value`），
+  // 以及 ErpSearchSelect / 自定义组件直接回传的原始值。
+  // 与 makeOrderItemHandler 里的 `readChangeValue` 同一口径 —— 商品那格已经
+  // 换成可搜索下拉，它回传的是字符串 id，没有 target。
+  const handleOpeningDraftChange = (field) => (input) => {
+    const value = readChangeValue(input);
     setOpeningDraft((prev) => ({ ...prev, [field]: value }));
   };
 
@@ -8530,9 +9336,56 @@ function App() {
       unit_price: String(row.unit_price ?? 0),
       note: row.note || '',
     });
+    // 记住"正在改哪一条"：表单按钮随之从「加入清单」变成「保存修改」，
+    // 点它直接按 (仓库×商品) upsert 落库，不用再走"加入清单 → 保存全部"两步。
+    setOpeningEditingId(row.id);
     setOpeningTab('stock');
-    setNotice('已载入该项，改完数量或单价后点「加入清单」。');
+    setNotice(`已载入「${row.product_name || '该商品'}」的期初，改完点「保存修改」。`);
   };
+
+  /** 放弃编辑，回到"新增一行"的状态 */
+  const cancelOpeningEdit = () => {
+    setOpeningEditingId(null);
+    setOpeningDraft({ warehouse_id: '', product_id: '', quantity: '', unit_price: '', note: '' });
+  };
+
+  /** 把当前草稿按"一条"保存（编辑态专用）：PUT /opening-stock 是幂等 upsert */
+  async function saveOpeningSingle() {
+    const wid = Number(openingDraft.warehouse_id || 0);
+    const pid = Number(openingDraft.product_id || 0);
+    if (!wid || !pid) {
+      setNotice('先选好仓库和商品再保存。');
+      return;
+    }
+    setSystemBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/opening-stock`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          items: [
+            {
+              warehouse_id: wid,
+              product_id: pid,
+              quantity: Number(openingDraft.quantity || 0),
+              unit_price: Number(openingDraft.unit_price || 0),
+              note: openingDraft.note || '',
+            },
+          ],
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(parseApiDetail(data && data.detail, '保存期初失败'));
+      setNotice('期初已更新。');
+      setOpeningEditingId(null);
+      setOpeningDraft({ warehouse_id: '', product_id: '', quantity: '', unit_price: '', note: '' });
+      await refreshOpeningStock();
+    } catch (err) {
+      setNotice(err.message || '保存期初失败');
+    } finally {
+      setSystemBusy(false);
+    }
+  }
 
   const draftAmount = (row) => Number(row.quantity || 0) * Number(row.unit_price || 0);
 
@@ -8963,8 +9816,8 @@ function App() {
   }
 
 
-  const handleOutsourcingChange = (field) => (event) => {
-    const { value } = event.target;
+  const handleOutsourcingChange = (field) => (input) => {
+    const value = readChangeValue(input);
     setOutsourcingForm((prev) => {
       const next = { ...prev, [field]: value };
       if (field === 'product_id') {
@@ -8975,8 +9828,8 @@ function App() {
     });
   };
 
-  const handleOutsourcingItemChange = (index, field) => (event) => {
-    const value = event.target.value;
+  const handleOutsourcingItemChange = (index, field) => (input) => {
+    const value = readChangeValue(input);
     setOutsourcingForm((prev) => ({
       ...prev,
       items: prev.items.map((row, i) => {
@@ -9081,6 +9934,18 @@ function App() {
   const submitInventory = async (event) => {
     event.preventDefault();
     setNotice('');
+
+    // 商品原来靠原生 `required` 拦；换成 ErpSearchSelect 后那条路断了，
+    // 不补守卫就会把 `Number('') === 0` 当合法商品 id 发出去。
+    // 仓库仍是原生 select（第三批才换），这里一并先挡上，换成组件时不用再改。
+    if (!inventoryForm.product_id) {
+      setNotice('请先选择商品。');
+      return;
+    }
+    if (!inventoryForm.warehouse_id) {
+      setNotice('请先选择仓库。');
+      return;
+    }
 
     try {
       const response = await fetch(`${API_BASE}/inventory`, {
@@ -9228,10 +10093,64 @@ function App() {
     }
   };
 
+  /** 智能指令「去修改/去确认」的统一落点（2026-10-23）。
+   *
+   *  两件事必须一起做：**切页面** + **把筛选条件填好**。
+   *  只切页面的话用户还得自己再搜一遍单位，等于没帮他。
+   *
+   *  · 对账单：走 `statementPreset`（scope + party + nonce）。nonce 变化会让
+   *    StatementEditor 重挂载 —— 已经在那一页时也能把新单位带进去。
+   *  · 合同：把关键字写进 `contractKeyword` 并立即按它拉一次列表。
+   */
+  const agentGoto = useCallback((payload) => {
+    if (!payload || !payload.page) return;
+    if (payload.page === 'statements-editor') {
+      setStatementPreset((prev) => ({
+        scope: payload.scope === 'in' ? 'in' : payload.scope === 'all' ? 'all' : 'out',
+        party: payload.party || '',
+        name: payload.party_name || '',
+        nonce: (prev?.nonce || 0) + 1,
+      }));
+      setSelectedTab('statements-editor');
+      setNotice(
+        payload.party_name
+          ? `已跳到增强对账单，并锁定「${payload.party_name}」。`
+          : '已跳到增强对账单。',
+      );
+      return;
+    }
+    if (payload.page === 'contracts') {
+      const keyword = payload.keyword || payload.party_name || '';
+      setContractKeyword(keyword);
+      setSelectedTab('contracts');
+      refreshContracts(keyword);
+      setNotice(keyword ? `已跳到购销合同，并按「${keyword}」筛选。` : '已跳到购销合同。');
+      return;
+    }
+    // 2026-10-24：智能指令下拉的「分类节点」落点 —— "周广平"这类名字常以
+    // 客户/供应商分类存在，点它就该去档案页看这个分类下的档案。
+    if (payload.page === 'customers') {
+      const keyword = payload.keyword || '';
+      setCustomerSearch(keyword);
+      setSelectedTab('customers');
+      setNotice(keyword ? `已跳到客户档案，并按「${keyword}」筛选。` : '已跳到客户档案。');
+      return;
+    }
+    if (payload.page === 'suppliers') {
+      const keyword = payload.keyword || '';
+      setSupplierSearch(keyword);
+      setSelectedTab('suppliers');
+      setNotice(keyword ? `已跳到供应商档案，并按「${keyword}」筛选。` : '已跳到供应商档案。');
+      return;
+    }
+  }, []);
+
   // 点菜单项的统一入口。对账单两个菜单是「往来对账」的预设视图（菜单别名），
   // 点它们要顺手把往来类型锁上并说明一句，免得用户以为跳错了。
   const gotoMenu = useCallback((pageKey, label = '') => {
     if (!pageKey) return;
+    // 用户主动点了菜单 —— 之后异步回来的登录落地页不许再把他顶走（见 userNavigatedRef 声明处）
+    userNavigatedRef.current = true;
     const alias = LEDGER_ALIASES[pageKey];
     if (alias) {
       setLedgerParty((prev) => ({ ...prev, party_type: alias, party_id: '' }));
@@ -9297,15 +10216,11 @@ function App() {
 
   const activeTab = useMemo(() => tabs.find((tab) => tab.key === selectedTab), [selectedTab]);
 
-  // —— 商品类别树：递归渲染 + 拍平取名称（表单 datalist 候选用）——
-  const flattenCategories = (nodes, acc = []) => {
-    (nodes || []).forEach((n) => {
-      acc.push(n.name);
-      if (n.children?.length) flattenCategories(n.children, acc);
-    });
-    return acc;
-  };
-
+  // —— 商品类别：拍平成「带缩进路径」的候选项（类别弹窗的「上级类别」下拉用）——
+  // 这里原本还有一个 flattenCategories（只取 n.name，给表单 datalist 当候选）。
+  // 2026-10-16 把商品弹窗抽成 components/product-edit/ProductEditModal.jsx 之后
+  // 它已无任何调用点（候选改由组件内部的 collectCategoryNames 提供），
+  // 故连同 appCtx 里的导出一起删除。
   const flattenCategoryOptions = (nodes, depth = 0, acc = []) => {
     (nodes || []).forEach((n) => {
       acc.push({ id: n.id, path: '　'.repeat(depth) + n.name });
@@ -9314,27 +10229,36 @@ function App() {
     return acc;
   };
 
-  const renderCategoryNodes = (nodes, depth = 0) => {
-    return (nodes || []).map((n) => (
-      <div key={n.id} className="cat-node" style={{ paddingLeft: depth * 14 }}>
-        <span className={`cat-caret ${n.children?.length ? '' : 'leaf'}`}>{n.children?.length ? '▾' : '·'}</span>
-        <span className="cat-name">{n.name}</span>
-        <span className="cat-actions">
-          <button type="button" className="link-btn" onClick={() => openCategoryModal('create', n)}>+子类</button>
-          <button type="button" className="link-btn" onClick={() => openCategoryModal('edit', n)}>改</button>
-          <button
-            type="button"
-            className="link-btn danger"
-            disabled={productBusy === `cat-del-${n.id}`}
-            onClick={() => removeCategory(n)}
-          >
-            删
-          </button>
-        </span>
-        {n.children?.length > 0 && renderCategoryNodes(n.children, depth + 1)}
-      </div>
-    ));
-  };
+  // —— 左侧类别树：每个类别（含其全部子孙）下的商品数，树上显示角标 ——
+  // "点进去才发现是空的"很烦，有了角标点之前就知道。
+  const categoryCounts = useMemo(
+    () => countProductsByCategory(products, productCategories),
+    [products, productCategories],
+  );
+
+  // 左侧类别树。本体是独立组件 `src/components/product-category/ProductCategoryTree.jsx`
+  // （纯展示，选中态由这里传入 —— 因为右侧列表的过滤发生在本文件，
+  //   选中态要是留在组件里，filteredProducts 就看不到了）。
+  // 这里只做 ctx → props 的转接，保持 ProductsPage 那边一行调用不变。
+  /* 商品分类树：拖拽落点/高亮由 ProductsBoard 现场传入（它才有拖动中的 id 列表），
+     所以这里把 options 透传下去 —— 树本身仍是"受控 + 无状态业务"的。 */
+  const renderCategoryNodes = (options = {}) => (
+    <ProductCategoryTree
+      nodes={productCategories}
+      /* 商品级搜索要用到商品名/SKU（2026-10-23）：与右侧列表同一份数据 */
+      products={products}
+      value={categoryFilter}
+      onChange={setCategoryFilter}
+      counts={categoryCounts}
+      busy={productBusy}
+      onAddChild={(node) => openCategoryModal('create', node)}
+      onEdit={(node) => openCategoryModal('edit', node)}
+      onDelete={removeCategory}
+      // 拖拽排序/改层级：不传 onMove，组件里 canDrag=false —— 手柄和拖拽会整体消失
+      onMove={moveCategory}
+      {...options}
+    />
+  );
 
   // 档案搜索：主界面列表顶部的模糊检索（编码/名称/电话/邮箱）
   const filteredCustomers = useMemo(() => {
@@ -9353,16 +10277,18 @@ function App() {
     );
   }, [suppliers, supplierSearch]);
 
-  // 商品搜索：名称 / 编号 / 条码 / 助记码 / 规格 / 序列号 / 类别 任一命中
+  // 商品过滤：先按左侧类别树的选中项（**含该类别下的全部子孙**），再按搜索词。
+  // 类别那一段是纯函数，放在 ./lib/productCategory.js 里，有 17 条 node --test 守着。
   const filteredProducts = useMemo(() => {
+    const rows = filterProductsByCategory(products, productCategories, categoryFilter);
     const q = productSearch.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter((row) =>
+    if (!q) return rows;
+    return rows.filter((row) =>
       [row.name, row.sku, row.bar_code, row.mnemonic, row.standards, row.serial_no, row.category].some(
         (v) => v != null && String(v).toLowerCase().includes(q),
       ),
     );
-  }, [products, productSearch]);
+  }, [products, productSearch, categoryFilter, productCategories]);
 
   // 顶栏标题 / 分组名：**优先用菜单树里的名字**。
   // 管理员把「客户档案」改成「客户」之后，侧边栏变了顶栏却还写着旧名，
@@ -9520,29 +10446,1131 @@ function App() {
   if (!isAuthenticated) {
     return (
       <div className="auth-shell">
-        <div className="auth-card">
-          <div className="brand">ERP 核心系统</div>
-          <h2>登录后台</h2>
-          <p className="auth-subtitle">使用已注册的 ERP 账号登录后继续管理业务。</p>
+        {/* 左下角版本 + 品牌（2026-10-24）：登录页此前**从来没有**渲染过这个元素
+            （不是被暗黑模式 CSS 覆盖或删除）。补上的目的：
+            远程排查"用户跑的是哪一版"时，不用问、截图里就能看到 vNN。 */}
+        <div className="auth-corner" data-app-version={APP_VERSION_LABEL}>
+          <span className="auth-corner-brand">寨卡 ERP 管理系统</span>
+          <span className="auth-corner-ver">
+            {APP_VERSION_LABEL} · 构建 {APP_BUILD_AT}
+          </span>
+        </div>
+        <div className="auth-stage">
+          <div className="auth-card">
+            <div className="auth-brand">
+              <div className="auth-logo" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2 4 6v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6l-8-4Z" />
+                  <path d="M9 12l2 2 4-4" />
+                </svg>
+              </div>
+              <h1>寨卡 ERP 管理中心</h1>
+              <p className="auth-tagline">安全登录，高效协作</p>
+            </div>
 
-          <form onSubmit={submitLogin} className="erp-form auth-form">
-            <label>
-              用户名
-              <input value={loginForm.username} onChange={handleLoginChange('username')} required />
-            </label>
-            <label>
-              密码
-              <input type="password" value={loginForm.password} onChange={handleLoginChange('password')} required />
-            </label>
-            <button className="primary-btn" type="submit">登录</button>
-          </form>
+            <form onSubmit={submitLogin} className="auth-form">
+              <div className="auth-field">
+                <label htmlFor="auth-account">手机号 / 邮箱</label>
+                <div className="auth-control">
+                  <svg className="auth-lead-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                  </svg>
+                  <input
+                    id="auth-account"
+                    value={loginForm.username}
+                    onChange={handleLoginChange('username')}
+                    placeholder="请输入手机号或邮箱"
+                    autoComplete="username"
+                  />
+                </div>
+              </div>
 
-          {notice && <div className="notice-box">{notice}</div>}
+              <div className="auth-field">
+                <label htmlFor="auth-password">密码</label>
+                <div className="auth-control">
+                  <svg className="auth-lead-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                  <input
+                    id="auth-password"
+                    type={showLoginPassword ? 'text' : 'password'}
+                    value={loginForm.password}
+                    onChange={handleLoginChange('password')}
+                    placeholder="请输入密码"
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    className="auth-eye"
+                    onClick={() => setShowLoginPassword((v) => !v)}
+                    aria-label={showLoginPassword ? '隐藏密码' : '显示密码'}
+                  >
+                    {showLoginPassword ? (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                        <path d="M1 1l22 22" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12Z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="auth-row">
+                <label className="auth-remember">
+                  <input type="checkbox" defaultChecked />
+                  记住我
+                </label>
+                <a className="auth-link" href="#" onClick={(e) => e.preventDefault()}>忘记密码？</a>
+              </div>
+
+              <button className="auth-submit" type="submit" disabled={loginLoading}>
+                {loginLoading && <span className="auth-spinner" aria-hidden="true" />}
+                {loginLoading ? '登录中…' : '登录'}
+              </button>
+
+              {notice && <div className="auth-notice">{notice}</div>}
+            </form>
+
+            <div className="auth-divider">或使用以下方式登录</div>
+
+            <div className="auth-socials">
+              <button type="button" className="auth-social" onClick={() => setNotice('微信登录暂未开通')}>
+                <svg viewBox="0 0 24 24" fill="#22c55e">
+                  <path d="M9.5 4C5.9 4 3 6.4 3 9.4c0 1.7 1 3.2 2.4 4.2l-.6 2 2.3-1.2c.9.3 1.9.4 2.9.4h.5c-.1-.4-.2-.9-.2-1.3 0-3 2.9-5.4 6.5-5.4h.6C16.9 5.7 14.6 4 11.7 4h-2.2z" />
+                  <path d="M21.5 13.6c0-2.4-2.4-4.4-5.3-4.4s-5.3 2-5.3 4.4 2.4 4.4 5.3 4.4c.8 0 1.5-.1 2.2-.4l1.9 1-.5-1.6c1-.8 1.7-2 1.7-3.4z" />
+                </svg>
+                微信登录
+              </button>
+              <button type="button" className="auth-social" onClick={() => setNotice('Google 登录暂未开通')}>
+                <svg viewBox="0 0 24 24">
+                  <path fill="#4285F4" d="M22.5 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.9c-.3 1.4-1 2.5-2.1 3.3v2.7h3.4c2-1.8 3.3-4.5 3.3-7.9z" />
+                  <path fill="#34A853" d="M12 23c2.9 0 5.3-1 7.1-2.6l-3.4-2.7c-1 .6-2.2 1-3.7 1-2.8 0-5.2-1.9-6.1-4.5H2.4v2.8C4.2 20.5 7.8 23 12 23z" />
+                  <path fill="#FBBC05" d="M5.9 14.2c-.2-.6-.4-1.3-.4-2.2s.1-1.5.4-2.2V7H2.4C1.5 8.5 1 10.2 1 12s.5 3.5 1.4 5l3.5-2.8z" />
+                  <path fill="#EA4335" d="M12 5.4c1.6 0 3 .5 4.1 1.6l3-3C17.3 2.2 14.9 1 12 1 7.8 1 4.2 3.5 2.4 7l3.5 2.8C6.8 7.3 9.2 5.4 12 5.4z" />
+                </svg>
+                Google
+              </button>
+            </div>
+
+            <div className="auth-foot">
+              还没有账号？<a className="auth-link" href="#" onClick={(e) => e.preventDefault()}>注册</a>
+              <p className="auth-privacy">登录即表示同意《服务条款》与《隐私政策》</p>
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
+  // 自动注入：打包 App 作用域标识符给页面组件（见 scripts/extract_pages.py）
+  // 自动注入：打包 App 作用域标识符给页面组件（见 scripts/extract_pages.py）
+  const appCtx = {
+  ADJUSTMENT_STATUS_LABEL,
+  ADJUST_TYPE_DIRECTION,
+  ADJUST_TYPE_LABEL,
+  API_BASE,
+  agentGoto,
+  BANK_ACCOUNT_TYPE_LABEL,
+  CONTRACT_STATUS_LABEL,
+  DOC_STATUS_LABELS,
+  DOC_TYPE_LABEL,
+  // 出库看板的状态表：出库单的 completed 是「已发货」，与 DOC_STATUS_LABELS 的「已转单」不同义。
+  // 看板从 ctx 取它，所以必须在这里暴露，否则 AuditBadge 拿到 undefined → labels[status] 报错。
+  OUTBOUND_STATUS_LABELS,
+  FINISHED_GOODS_STATUS_LABEL,
+  Fragment,
+  LEDGER_ALIASES,
+  LOG_STATUS_TONE,
+  LOOKUP_TYPES,
+  MATERIAL_ISSUE_STATUS_LABEL,
+  MATERIAL_RETURN_STATUS_LABEL,
+  MRP_STATUS_LABEL,
+  NAV_THEMES,
+  OPENING_TABS,
+  OUTSOURCING_STATUS_LABEL,
+  PARAM_VALUE_TYPE_LABEL,
+  PLAN_TYPE_LABEL,
+  PRODUCTION_PLAN_STATUS_LABEL,
+  PROJECT_STATUS_LABEL,
+  PROJECT_STATUS_TONE,
+  PURCHASE_RETURN_STATUS_LABEL,
+  QUOTATION_STATUS_LABEL,
+  REPORT_DIMENSION_HEAD,
+  REPORT_SHAPE_LABEL,
+  SALES_RETURN_STATUS_LABEL,
+  STOCKTAKING_STATUS_LABEL,
+  STOCK_STATUS_LABEL,
+  SYSTEM_TABS,
+  TRANSFER_STATUS_LABEL,
+  Tesseract,
+  XLSX,
+  accountLedger,
+  activeCompany,
+  activeDictType,
+  activeEntryLabel,
+  activeMenuEntry,
+  activeTab,
+  activeTemplate,
+  activeTemplateType,
+  addAdjustmentItem,
+  addAssemblyItem,
+  addContractItem,
+  addFinishedGoodsItem,
+  addInboundItem,
+  addIssueItem,
+  addMrpItem,
+  addOpeningDraftRow,
+  addOutboundItem,
+  addOutsourcingItem,
+  addPlanItem,
+  addPurchaseOrderItem,
+  // 2026-10-21 补回：批量选商品 + 复制行（OrderBoard 按命名约定取用）
+  addProductsToPurchaseOrder,
+  addProductsToSalesOrder,
+  addPurchaseReturnItem,
+  addQuotationItem,
+  addReturnItem,
+  addSalesOrderItem,
+  addSalesReturnItem,
+  addStocktakingItem,
+  addTransferItem,
+  adjustTypeLabel,
+  adjustmentForm,
+  adjustmentKeyword,
+  adjustmentStatusLabel,
+  adjustmentTypeFilter,
+  adjustments,
+  agentPrompt,
+  agentResponse,
+  aging,
+  analysisRange,
+  applyCompanySession,
+  applyEntryQuery,
+  applyLogQuery,
+  applyTemplateDraft,
+  approvePurchaseOrder,
+  approveSalesOrder,
+  archiveFocus,
+  assemblyFilter,
+  assemblyForm,
+  assemblyItemAmount,
+  assemblyItems,
+  assemblyKeyword,
+  assemblyMeta,
+  assemblyNewItem,
+  assemblyOrders,
+  assemblyPreview,
+  authHeaders,
+  authToken,
+  balanceDraft,
+  bankAccountForm,
+  bankAccountModalOpen,
+  bankAccounts,
+  bankTransferForm,
+  bankTransferModalOpen,
+  bankTransfers,
+  batchDeleteCustomers,
+  batchDeleteProducts,
+  batchDeleteSuppliers,
+  bomForm,
+  bomTree,
+  cards,
+  categoryFilter,
+  categoryModal,
+  changeInvoiceDirection,
+  chooseNavTheme,
+  classifyInvoiceBatch,
+  clearInventoryFocus,
+  clearOpeningStock,
+  closeInvoicePreview,
+  collapsedGroups,
+  companyForm,
+  companySwitching,
+  confirmDelete,
+  confirmExcelImport,
+  contractForm,
+  contractKeyword,
+  contractMeta,
+  contractStatusLabel,
+  contractToOrder,
+  contracts,
+  // 2026-10-21 补回：复制行（OrderBoard 按命名约定取用）
+  copyPurchaseOrderItem,
+  copySalesOrderItem,
+  convertPurchaseOrder,
+  convertSalesOrder,
+  currentActions,
+  currentGroupLabel,
+  currentMenuNode,
+  currentMenuParent,
+  currentPageLabel,
+  customerForm,
+  customerModalOpen,
+  customerSearch,
+  customers,
+  departmentForm,
+  departmentLabel,
+  departmentOptions,
+  dictForm,
+  dictItemForm,
+  dictItems,
+  dictList,
+  docTypeLabel,
+  financeTypeLabel,
+  downloadBase64File,
+  downloadExcelTemplate,
+  downloadFromApi,
+  downloadInvoiceQr,
+  downloadInvoiceSource,
+  draftAmount,
+  dropTemplatePreview,
+  editingEmployeeId,
+  editingWarehouseId,
+  employeeDeptFilter,
+  employeeForm,
+  employeeKeyword,
+  employeeMeta,
+  employeeModalOpen,
+  employeeStatusFilter,
+  employees,
+  emptyAdjustmentForm,
+  emptyAssemblyForm,
+  emptyBankAccountForm,
+  emptyBankTransferForm,
+  emptyContractForm,
+  emptyCustomerForm,
+  emptyDepartmentForm,
+  emptyDictItemForm,
+  emptyDictionaryForm,
+  emptyEmployeeForm,
+  emptyEntryForm,
+  emptyEntryQuery,
+  emptyFinanceForm,
+  emptyFinishedGoodsForm,
+  emptyInboundForm,
+  emptyInventoryForm,
+  emptyLogQuery,
+  emptyMaterialIssueForm,
+  emptyMaterialReturnForm,
+  emptyMenuForm,
+  emptyOpeningDraft,
+  emptyOrderItem,
+  emptyOutboundForm,
+  emptyOutsourcingForm,
+  emptyParamForm,
+  emptyPermissionDraft,
+  emptyProductForm,
+  emptyProductionPlanForm,
+  emptyPurchaseOrderForm,
+  emptyPurchaseReturnForm,
+  emptyQuotationForm,
+  emptyReportQuery,
+  emptyRoleForm,
+  emptySalesOrderForm,
+  emptySalesReturnForm,
+  emptyStockLogFilter,
+  emptyStocktakingForm,
+  emptySupplierForm,
+  emptySystemUserForm,
+  emptyTemplateDraft,
+  emptyTransferForm,
+  emptyWarehouseForm,
+  entryDraft,
+  entryForm,
+  entryList,
+  entryQuery,
+  error,
+  excelBusy,
+  excelKinds,
+  excelOutcome,
+  excelPending,
+  executiveDashboard,
+  expandedInvoiceIds,
+  exportDailyReport,
+  exportExcelData,
+  exportInvoiceDetailExcel,
+  exportInvoiceDetailPdf,
+  exportInvoiceQrZip,
+  exportInvoiceReport,
+  exportInvoiceReportHtml,
+  exportInvoiceReportXlsx,
+  exportInvoiceSources,
+  exportReport,
+  filteredCustomers,
+  filteredProducts,
+  filteredSuppliers,
+  finance,
+  financeAnalysis,
+  financeBusy,
+  financeDecision,
+  financeForm,
+  findMenuNode,
+  finishedGoodsForm,
+  finishedGoodsKeyword,
+  finishedGoodsList,
+  finishedGoodsStatusLabel,
+  flattenCategoryOptions,
+  flattenDepartments,
+  flattenMenuTree,
+  formatLogTime,
+  formatMonth,
+  getStoredToken,
+  glAccountCode,
+  glAccounts,
+  glBalance,
+  glDetail,
+  glDetailBusy,
+  glEntries,
+  glEntryDetail,
+  glRange,
+  gotoMenu,
+  handleAdjustmentChange,
+  handleAdjustmentItemChange,
+  handleAnalysisRangeChange,
+  handleAssemblyFormChange,
+  handleAssemblyItemChange,
+  handleBalanceDraftChange,
+  handleBankAccountFormChange,
+  handleBankTransferFormChange,
+  handleBomFormChange,
+  handleCompanyChange,
+  handleContractChange,
+  handleContractItemChange,
+  handleCustomerChange,
+  handleDeepSeekInvoiceAnalysis,
+  handleDeleteConfirm,
+  handleDepartmentChange,
+  handleDictItemChange,
+  handleDictionaryChange,
+  handleEmployeeChange,
+  handleEntryDraftChange,
+  handleEntryFormChange,
+  handleExcelFilePicked,
+  handleFinanceChange,
+  handleFinishedGoodsChange,
+  handleFinishedGoodsItemChange,
+  handleInboundFormChange,
+  handleInboundItemChange,
+  handleInventoryChange,
+  handleInvoiceAgentAnalysis,
+  handleInvoiceUpload,
+  handleIssueChange,
+  handleIssueItemChange,
+  handleLogDraftChange,
+  handleLoginChange,
+  handleLogout,
+  handleMenuFormChange,
+  handleMrpChange,
+  handleMrpItemChange,
+  handleOpeningDraftChange,
+  handleOutboundFormChange,
+  handleOutboundItemChange,
+  handleOutsourcingChange,
+  handleOutsourcingItemChange,
+  handleParamDraftChange,
+  handleParamFormChange,
+  handlePlanChange,
+  handlePlanItemChange,
+  handleProductChange,
+  handleProductionChange,
+  handleProjectChange,
+  handlePurchaseOrderFormChange,
+  handlePurchaseOrderItemChange,
+  handlePurchaseReturnChange,
+  handlePurchaseReturnItemChange,
+  handleQuotationChange,
+  handleQuotationItemChange,
+  handleReportQueryChange,
+  handleReturnChange,
+  handleReturnItemChange,
+  handleRoleChange,
+  handleSalesOrderFormChange,
+  handleSalesOrderItemChange,
+  handleSalesReturnChange,
+  handleSalesReturnItemChange,
+  handleSetInvoiceDirection,
+  handleStocktakingChange,
+  handleStocktakingItemChange,
+  handleStocktakingProductPick,
+  handleSupplierChange,
+  handleSyncInvoicesToFinance,
+  handleSystemUserChange,
+  handleTemplateDraftChange,
+  handleToggleDeducted,
+  handleTransferChange,
+  handleTransferItemChange,
+  handleWarehouseChange,
+  inboundForm,
+  inferInvoiceCategory,
+  inventory,
+  inventoryFocus,
+  inventoryForm,
+  inventoryKeyword,
+  invoiceAgentReport,
+  invoiceAggregate,
+  invoiceBusy,
+  invoiceDetail,
+  invoiceDirectionCounts,
+  invoiceEditForm,
+  invoiceExportOpen,
+  invoiceExportTargets,
+  invoiceFiltered,
+  invoiceItems,
+  invoicePage,
+  invoicePageAllSelected,
+  invoicePageCount,
+  invoicePageSize,
+  invoicePageSomeSelected,
+  invoicePaged,
+  invoicePreview,
+  invoiceQr,
+  invoiceQuery,
+  invoiceSafePage,
+  invoiceSummary,
+  isAuthenticated,
+  isTemplateCustomized,
+  issueSuggestionHint,
+  jsQR,
+  jumpToArchive,
+  jumpToStock,
+  leadershipBoard,
+  ledgerAccountId,
+  ledgerData,
+  ledgerParty,
+  ledgerRange,
+  loadAging,
+  loadAssemblyBomPreview,
+  loadCompanySettings,
+  loadContractMeta,
+  loadExcelKinds,
+  loadIssueSuggestion,
+  loadLedger,
+  loadLookups,
+  loadMyPermissions,
+  loadOpeningRowIntoDraft,
+  loadProductCategories,
+  loadQuotationMeta,
+  loadStocktakingPlan,
+  loadSystemMeta,
+  loading,
+  logBusy,
+  logDraft,
+  logPage,
+  logPageNo,
+  logQuery,
+  loginForm,
+  lookupItems,
+  lookupValues,
+  lookups,
+  makeAddItem,
+  makeOrderItemHandler,
+  makeRemoveItem,
+  makeSubmitOrder,
+  makeSubmitStockDoc,
+  materialIssueForm,
+  materialIssueKeyword,
+  materialIssueStatusLabel,
+  materialIssues,
+  materialReturnForm,
+  materialReturnKeyword,
+  materialReturnStatusLabel,
+  materialReturns,
+  menuAdmin,
+  menuForm,
+  menuGroups,
+  menuOpen,
+  menuTree,
+  mobileDashboard,
+  mobileQuickActions,
+  money,
+  mrpBusy,
+  mrpForm,
+  mrpResult,
+  mrpStatusLabel,
+  myCompanies,
+  myPermissions,
+  navTheme,
+  normalizeInvoiceRecord,
+  normalizeInvoiceRows,
+  notice,
+  openCategoryModal,
+  openCustomerEdit,
+  openGlEntry,
+  openInvoiceEdit,
+  openInvoicePreview,
+  openInvoiceQr,
+  openOrderPayment,
+  openProductEdit,
+  openProjectCost,
+  openProjectEdit,
+  openSupplierEdit,
+  openingBalances,
+  openingClearAsk,
+  openingDraft,
+  openingDraftRows,
+  openingRows,
+  openingSummary,
+  openingTab,
+  operationsBoard,
+  outboundForm,
+  outsourcingForm,
+  outsourcingKeyword,
+  outsourcingStatusLabel,
+  outsourcings,
+  overviewTrend,
+  pageActions,
+  paramDraft,
+  paramForm,
+  paramGroups,
+  paramTotal,
+  parseInvoiceText,
+  parseStructuredInvoiceText,
+  passwordDraft,
+  passwordTarget,
+  payables,
+  pdfjsLib,
+  permissionDraft,
+  plain,
+  planTypeLabel,
+  previewPrintTemplate,
+  printParty,
+  printPdf,
+  printPeriodQuery,
+  printTemplates,
+  productBusy,
+  productById,
+  productCategories,
+  productEdit,
+  productForm,
+  productModalOpen,
+  productSearch,
+  productionForm,
+  productionOrders,
+  productionPlanForm,
+  productionPlanKeyword,
+  productionPlanStatusLabel,
+  productionPlanTypeFilter,
+  productionPlans,
+  products,
+  projectBusy,
+  projectCost,
+  projectEdit,
+  projectForm,
+  projectModalOpen,
+  projects,
+  purchaseOrderForm,
+  purchaseOrderList,
+  purchaseOrders,
+  purchaseReturnForm,
+  purchaseReturnKeyword,
+  purchaseReturnStatusLabel,
+  purchaseReturns,
+  quotationForm,
+  quotationKeyword,
+  quotationMeta,
+  quotationStatusLabel,
+  quotationToOrder,
+  quotations,
+  readCompanyFromToken,
+  readImageInvoiceText,
+  readPdfInvoiceText,
+  readQrFromImage,
+  receivables,
+  redetectInvoices,
+  refreshAccountLedger,
+  refreshAdjustments,
+  refreshAssemblyMeta,
+  refreshAssemblyOrders,
+  refreshBankAccounts,
+  refreshBankTransfers,
+  refreshContracts,
+  refreshDictItems,
+  refreshDictionaries,
+  refreshEmployeeMeta,
+  refreshEmployees,
+  refreshFinanceEntries,
+  refreshFinance,
+  refreshFinishedGoods,
+  refreshGlAccounts,
+  refreshGlBalance,
+  refreshGlDetail,
+  refreshGlEntries,
+  refreshInventory,
+  refreshInvoiceAggregate,
+  refreshInvoices,
+  refreshMaterialIssues,
+  refreshMaterialReturns,
+  refreshMenuAdmin,
+  refreshOpeningBalances,
+  refreshOpeningStock,
+  refreshOperationLogs,
+  refreshOutsourcings,
+  refreshParams,
+  refreshPartyBalances,
+  refreshPrintTemplates,
+  refreshProductionPlans,
+  refreshPurchaseInboundList,
+  refreshPurchaseOrderList,
+  refreshPurchaseReturns,
+  refreshQuotations,
+  refreshReportCatalog,
+  refreshReportData,
+  refreshSalesOrderList,
+  refreshSalesOutboundList,
+  refreshSalesReturns,
+  refreshStock,
+  refreshStocktakings,
+  refreshSuppliers,
+  refreshSystemUsers,
+  refreshTransfers,
+  refreshWarehouses,
+  reloadAfterImport,
+  removeAdjustmentItem,
+  removeAssemblyItem,
+  removeCategory,
+  removeContractItem,
+  removeFinishedGoodsItem,
+  removeInboundItem,
+  removeIssueItem,
+  removeMrpItem,
+  removeOpeningDraftRow,
+  removeOutboundItem,
+  removeOutsourcingItem,
+  removePlanItem,
+  removeProject,
+  removePurchaseOrderItem,
+  removePurchaseReturnItem,
+  removeQuotationItem,
+  removeReturnItem,
+  removeSalesOrderItem,
+  removeSalesReturnItem,
+  removeStocktakingItem,
+  removeTransferItem,
+  renderBomTree,
+  renderCategoryNodes,
+  renderGeneralLedgerPage,
+  renderLedgerPage,
+  renderNavNodes,
+  renderPartyBalancePage,
+  renderPartyLink,
+  renderReportBody,
+  renderReportChart,
+  renderStockHint,
+  renderStockLogsPage,
+  renderTransferStockHint,
+  reportBusy,
+  reportCatalog,
+  reportKey,
+  reportQuery,
+  reportResult,
+  reportRowMeta,
+  resetBankAccountForm,
+  resetDepartmentForm,
+  resetEmployeeForm,
+  resetEntryQuery,
+  resetLogQuery,
+  resetMenuForm,
+  resetMenus,
+  resetParamToDefault,
+  resetPrintTemplate,
+  resetRoleForm,
+  resetSystemUserForm,
+  resetWarehouseForm,
+  roleForm,
+  runExcelImport,
+  runMrp,
+  salesOrderForm,
+  // 2026-10-21 补回：出库单详情抽屉的物流/签收保存
+  saveSalesOrderLogistics,
+  salesOrderList,
+  salesOrders,
+  salesReturnForm,
+  salesReturnKeyword,
+  salesReturnStatusLabel,
+  salesReturns,
+  saveCompanyDefaults,
+  saveOpeningBalances,
+  saveOpeningStock,
+  saveParams,
+  savePrintTemplate,
+  selectReport,
+  selectedContract,
+  selectedDeptId,
+  selectedInvoiceIds,
+  selectedPurchaseOrder,
+  selectedQuotation,
+  selectedRecommendation,
+  selectedSalesOrder,
+  selectedTab,
+  serializeProductForm,
+  setAccountLedger,
+  setActiveCompany,
+  setActiveDictType,
+  setActiveMenuEntry,
+  setActiveTemplateType,
+  setAdjustmentForm,
+  setAdjustmentKeyword,
+  setAdjustmentTypeFilter,
+  setAdjustments,
+  setAgentPrompt,
+  setAgentResponse,
+  setAging,
+  setAnalysisRange,
+  setArchiveFocus,
+  setAssemblyFilter,
+  setAssemblyForm,
+  setAssemblyItems,
+  setAssemblyKeyword,
+  setAssemblyMeta,
+  setAssemblyNewItem,
+  setAssemblyOrders,
+  setAssemblyPreview,
+  setAuthToken,
+  setBalanceDraft,
+  setBankAccountForm,
+  setBankAccountModalOpen,
+  setBankAccounts,
+  setBankTransferForm,
+  setBankTransferModalOpen,
+  setBankTransfers,
+  setBomForm,
+  setBomTree,
+  setCategoryModal,
+  setCollapsedGroups,
+  setCompanyForm,
+  setCompanySwitching,
+  setConfirmDelete,
+  setContractForm,
+  setContractKeyword,
+  setContractMeta,
+  setContracts,
+  setCustomerForm,
+  setCustomerModalOpen,
+  setCustomerSearch,
+  setCustomers,
+  setDepartmentForm,
+  setDictForm,
+  setDictItemForm,
+  setDictItems,
+  setDictList,
+  setEditingEmployeeId,
+  setEditingWarehouseId,
+  setEmployeeDeptFilter,
+  setEmployeeForm,
+  setEmployeeKeyword,
+  setEmployeeMeta,
+  setEmployeeModalOpen,
+  setEmployeeStatusFilter,
+  setEmployees,
+  setEntryDraft,
+  setEntryForm,
+  setEntryList,
+  setEntryQuery,
+  setError,
+  setExcelBusy,
+  setExcelKinds,
+  setExcelOutcome,
+  setExcelPending,
+  setExecutiveDashboard,
+  setExpandedInvoiceIds,
+  setFinance,
+  setFinanceAnalysis,
+  setFinanceBusy,
+  setFinanceDecision,
+  setFinanceForm,
+  setFinishedGoodsForm,
+  setFinishedGoodsKeyword,
+  setFinishedGoodsList,
+  setGlAccountCode,
+  setGlAccounts,
+  setGlBalance,
+  setGlDetail,
+  setGlDetailBusy,
+  setGlEntries,
+  setGlEntryDetail,
+  setGlRange,
+  setInboundForm,
+  setInventory,
+  setInventoryFocus,
+  setInventoryForm,
+  setInventoryKeyword,
+  setInvoiceAgentReport,
+  setInvoiceAggregate,
+  setInvoiceBusy,
+  setInvoiceDetail,
+  setInvoiceEditForm,
+  setInvoiceExportOpen,
+  setInvoiceItems,
+  setInvoicePage,
+  setInvoicePageSize,
+  setInvoicePreview,
+  setInvoiceQr,
+  setInvoiceQuery,
+  setIsAuthenticated,
+  setIssueSuggestionHint,
+  setLedgerAccountId,
+  setLedgerData,
+  setLedgerParty,
+  setLedgerRange,
+  setLoading,
+  setLogBusy,
+  setLogDraft,
+  setLogPage,
+  setLogPageNo,
+  setLogQuery,
+  setLoginForm,
+  setLookups,
+  setMaterialIssueForm,
+  setMaterialIssueKeyword,
+  setMaterialIssues,
+  setMaterialReturnForm,
+  setMaterialReturnKeyword,
+  setMaterialReturns,
+  setMenuAdmin,
+  setMenuForm,
+  setMenuOpen,
+  setMenuTree,
+  setMobileDashboard,
+  setMrpBusy,
+  setMrpForm,
+  setMrpResult,
+  setMyCompanies,
+  setMyPermissions,
+  setNavTheme,
+  setNotice,
+  setOpeningBalances,
+  setOpeningClearAsk,
+  setOpeningDraft,
+  setOpeningDraftRows,
+  setOpeningRows,
+  setOpeningSummary,
+  setOpeningTab,
+  setOperationsBoard,
+  setOutboundForm,
+  setOutsourcingForm,
+  setOutsourcingKeyword,
+  setOutsourcings,
+  setParamDraft,
+  setParamForm,
+  setParamGroups,
+  setParamTotal,
+  setPasswordDraft,
+  setPasswordTarget,
+  setPayables,
+  setPermissionDraft,
+  setPrintParty,
+  setPrintTemplates,
+  setProductBusy,
+  setProductCategories,
+  setProductEdit,
+  setProductForm,
+  setProductModalOpen,
+  setProductSearch,
+  setProductionForm,
+  setProductionOrders,
+  setProductionPlanForm,
+  setProductionPlanKeyword,
+  setProductionPlanTypeFilter,
+  setProductionPlans,
+  setProducts,
+  setProjectBusy,
+  setProjectCost,
+  setProjectEdit,
+  setProjectForm,
+  setProjectModalOpen,
+  setProjects,
+  setPurchaseOrderForm,
+  setPurchaseOrderList,
+  setPurchaseOrders,
+  setPurchaseReturnForm,
+  setPurchaseReturnKeyword,
+  setPurchaseReturns,
+  setQuotationForm,
+  setQuotationKeyword,
+  setQuotationMeta,
+  setQuotations,
+  setReceivables,
+  setReportBusy,
+  setReportCatalog,
+  setReportKey,
+  setReportQuery,
+  setReportResult,
+  setRoleForm,
+  setSalesOrderForm,
+  setSalesOrderList,
+  setSalesOrders,
+  setSalesReturnForm,
+  setSalesReturnKeyword,
+  setSalesReturns,
+  setSelectedContract,
+  setSelectedDeptId,
+  setSelectedInvoiceIds,
+  setSelectedPurchaseOrder,
+  setSelectedQuotation,
+  setSelectedRecommendation,
+  setSelectedSalesOrder,
+  setSelectedTab,
+  setStockData,
+  setStockLogFilter,
+  setStocktakingForm,
+  setStocktakingKeyword,
+  setStocktakingPlanHint,
+  setStocktakings,
+  setSummary,
+  setSupplierForm,
+  setSupplierModalOpen,
+  setSupplierSearch,
+  setSuppliers,
+  setSystemBusy,
+  setSystemMeta,
+  setSystemTab,
+  setSystemUserDeptFilter,
+  setSystemUserForm,
+  setSystemUserKeyword,
+  setSystemUserRoleFilter,
+  setSystemUsers,
+  setTemplateDraft,
+  setTemplatePreviewUrl,
+  setTransferForm,
+  setTransferKeyword,
+  setTransfers,
+  setUserProfile,
+  setWarehouseForm,
+  setWarehouseModalOpen,
+  setWarehouses,
+  startEditBankAccount,
+  startEditDepartment,
+  startEditDictItem,
+  startEditEmployee,
+  startEditMenu,
+  startEditRole,
+  startEditSystemUser,
+  startEditWarehouse,
+  stockByProduct,
+  stockByWarehouseProduct,
+  stockData,
+  stockLogFilter,
+  stockStatusLabel,
+  stockWarnEnabled,
+  stocktakingForm,
+  stocktakingKeyword,
+  stocktakingPlanHint,
+  stocktakingStatusLabel,
+  stocktakings,
+  submitAdjustment,
+  submitAgentPrompt,
+  submitAssemblyOrder,
+  submitBankAccount,
+  submitBankTransfer,
+  submitBomNode,
+  submitCategory,
+  submitCompanySettings,
+  submitContract,
+  submitCustomer,
+  submitDepartment,
+  submitDictItem,
+  submitDictionary,
+  submitEmployee,
+  submitFinance,
+  submitFinanceEntry,
+  submitFinishedGoods,
+  submitInboundForm,
+  submitInventory,
+  submitInvoiceEdit,
+  submitLogin,
+  submitMaterialIssue,
+  submitMaterialReturn,
+  submitMenu,
+  submitOutboundForm,
+  submitOutsourcing,
+  submitParam,
+  submitProduct,
+  submitProductEdit,
+  submitProductionOrder,
+  submitProductionPlan,
+  submitProject,
+  submitProjectEdit,
+  submitPurchaseOrderForm,
+  submitPurchaseReturn,
+  submitQuotation,
+  submitResetPassword,
+  submitRole,
+  submitSalesOrderForm,
+  submitSalesReturn,
+  submitStocktaking,
+  submitSupplier,
+  submitSystemUser,
+  submitTransfer,
+  submitWarehouse,
+  summary,
+  supplierForm,
+  supplierModalOpen,
+  supplierSearch,
+  suppliers,
+  switchCompany,
+  systemBusy,
+  systemMeta,
+  systemTab,
+  systemUserDeptFilter,
+  systemUserForm,
+  systemUserKeyword,
+  systemUserRoleFilter,
+  systemUsers,
+  tabs,
+  templateDraft,
+  templatePreviewUrl,
+  toggleDictItem,
+  toggleGroup,
+  toggleInvoiceExpand,
+  toggleInvoiceSelect,
+  toggleMenuEnabled,
+  togglePermissionGroup,
+  togglePermissionMenu,
+  toggleSelectAllInvoices,
+  toggleSystemUser,
+  transferForm,
+  transferKeyword,
+  transferStatusLabel,
+  transfers,
+  updateSalesOrderStatus,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  // 单据明细行「单位」下拉的选项来源（基础单位恒在，辅助单位异步补齐）
+  unitOptionsFor,
+  userProfile,
+  visibleGroups,
+  // 销售退货：反审核只改状态不动账；作废走 /void 红冲（二次确认 + 必填原因）
+  reverseSalesReturn,
+  voidSalesReturn,
+  // 拖拽归档：档案行拖到左侧分类节点上松手 → 批量改 category_id
+  movePartnersToCategory,
+  // 期初建账：编辑态（点「改这一项」后按钮要变「保存修改」）
+  openingEditingId,
+  cancelOpeningEdit,
+  saveOpeningSingle,
+  // 行内编辑（双击格子）
+  patchPartner,
+  patchProduct,
+  // 商品版走 category 名称（见 moveProductsToCategory 注释）
+  moveProductsToCategory,
+  setCategoryFilter,
+  // 草稿可编辑：载回上方表单，提交走 PATCH
+  salesReturnEditingId,
+  startEditSalesReturn,
+  cancelEditSalesReturn,
+  warehouseForm,
+  warehouseModalOpen,
+  warehouses
+  };
   return (
     <div
       className={`app-shell ${menuOpen ? 'menu-open' : ''}`}
@@ -9566,6 +11594,15 @@ function App() {
         <div className="brand sidebar-brand">
           <span className="brand-mark">ERP</span>
           <span className="brand-text">核心系统</span>
+          {/* 版本号（2026-10-18）：构建时由 vite.config.js 注入，每次 build 自动变。
+              鼠标悬停能看到完整构建时间与提交哈希，排查"用户看到旧页面"时很有用。 */}
+          <span
+            className="brand-version"
+            data-app-version={APP_VERSION_LABEL}
+            title={`业务版本 v${APP_VERSION} ｜ 构建代号 ${APP_CACHE} ｜ 构建时间 ${APP_BUILD_AT} ｜ 提交 ${APP_HASH}`}
+          >
+            {APP_VERSION_LABEL}
+          </span>
           <button
             className="sidebar-close"
             type="button"
@@ -9675,911 +11712,80 @@ function App() {
                 <div className="todo-tip">需要优先建设这个模块的话，直接告诉我，我把它排到前面。</div>
               </section>
             )}
-            {selectedTab === 'mobile' && (
-              <section className="mobile-app-shell">
-                <div className="mobile-hero">
-                  <div>
-                    <p className="eyebrow">移动经营视图</p>
-                    <h2>今日经营</h2>
-                  </div>
-                  <span className="status-badge">{mobileDashboard.status === 'healthy' ? '健康' : mobileDashboard.status === 'warning' ? '关注' : '风险'}</span>
-                </div>
+            {selectedTab === 'mobile' && <MobilePage ctx={appCtx} />}
 
-                <div className="mobile-summary-grid">
-                  {mobileDashboard.kpis?.map((item) => (
-                    <div className="mobile-stat-card" key={item.label}>
-                      <span>{item.label}</span>
-                      <strong>{item.unit === 'CNY' ? `¥${Number(item.value || 0).toLocaleString()}` : item.value}</strong>
-                    </div>
-                  )) || []}
-                </div>
+            {selectedTab === 'bom' && <BomPage ctx={appCtx} />}
 
-                <div className="mobile-quick-grid">
-                  {mobileQuickActions.map((action) => (
-                    <button
-                      key={action.label}
-                      type="button"
-                      className={`mobile-action-btn ${action.tone}`}
-                      onClick={() => setSelectedTab(action.target)}
-                    >
-                      {action.label}
-                    </button>
-                  ))}
-                </div>
+            {selectedTab === 'overview' && <OverviewPage ctx={appCtx} />}
 
-                <div className="panel mobile-panel">
-                  <div className="section-header">
-                    <h3>经营提醒</h3>
-                    <span className="status-badge">{mobileDashboard.risk_count ?? 0} 项风险</span>
-                  </div>
-                  <ul className="list">
-                    {(mobileDashboard.recommendations || []).map((item, index) => (
-                      <li key={`${item}-${index}`}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
+            {selectedTab === 'customers' && <CustomersPage ctx={appCtx} />}
 
-                <div className="panel mobile-panel">
-                  <div className="section-header">
-                    <h3>业务概览</h3>
-                    <span className="status-badge">{mobileDashboard.updated_at || '刚刚更新'}</span>
-                  </div>
-                  <div className="report-pill-row">
-                    <div className="report-pill">
-                      <span>销售</span>
-                      <strong>¥{Number(mobileDashboard.summary?.sales_total || 0).toLocaleString()}</strong>
-                    </div>
-                    <div className="report-pill">
-                      <span>采购</span>
-                      <strong>¥{Number(mobileDashboard.summary?.purchase_total || 0).toLocaleString()}</strong>
-                    </div>
-                    <div className="report-pill">
-                      <span>利润</span>
-                      <strong>¥{Number(mobileDashboard.summary?.net_profit || 0).toLocaleString()}</strong>
-                    </div>
-                  </div>
-                </div>
+            {/* —— 新增 / 编辑客户弹窗（UI 在 components/partners/PartnerModal.jsx） —— */}
+            <PartnerModal
+              open={customerModalOpen}
+              kind="customer"
+              mode={editingCustomerId != null ? 'edit' : 'create'}
+              form={customerForm}
+              fieldChange={handleCustomerChange}
+              onSubmit={submitCustomer}
+              onClose={closeCustomerModal}
+              categoryOptions={partnerCategoryOptions.customer}
+              /* 智能识别上传（2026-10-23）：客户开 attach（有 /customers/{id}/files 归档） */
+              smartUpload
+              authHeaders={authHeaders}
+              onSmartFill={applyCustomerSmartFill}
+              onSmartFiles={setCustomerSmartFiles}
+            />
 
-                <div className="mobile-bottom-dock">
-                  <button type="button" className="dock-btn active" onClick={() => setSelectedTab('mobile')}>首页</button>
-                  <button type="button" className="dock-btn" onClick={() => setSelectedTab('sales')}>订单</button>
-                  <button type="button" className="dock-btn" onClick={() => setSelectedTab('finance')}>财务</button>
-                  <button type="button" className="dock-btn" onClick={() => setSelectedTab('agent')}>助手</button>
-                </div>
-              </section>
-            )}
+            {selectedTab === 'suppliers' && <SuppliersPage ctx={appCtx} />}
 
-            {selectedTab === 'bom' && (
-              <section className="bom-shell">
-                <div className="panel">
-                  <div className="section-header">
-                    <h2>BOM 物料清单</h2>
-                    <span className="status-badge">{bomTree.length} 个根节点</span>
-                  </div>
+            {/* —— 新增 / 编辑供应商弹窗（UI 在 components/partners/PartnerModal.jsx） —— */}
+            <PartnerModal
+              open={supplierModalOpen}
+              kind="supplier"
+              mode={editingSupplierId != null ? 'edit' : 'create'}
+              form={supplierForm}
+              fieldChange={handleSupplierChange}
+              onSubmit={submitSupplier}
+              onClose={closeSupplierModal}
+              categoryOptions={partnerCategoryOptions.supplier}
+              /* 智能识别上传：供应商新增/编辑都开（2026-10-23）。
+                 识别目标 = 名称/税号/开户行/账号/联系人/电话，核对后自动填入表单。
+                 附件归档端点只有客户有（/customers/{id}/files），供应商关掉 attach 模式。 */
+              smartUpload
+              smartUploadAllowAttach={false}
+              authHeaders={authHeaders}
+              onSmartFill={applySupplierSmartFill}
+            />
 
-                  <form className="erp-form bom-form" onSubmit={submitBomNode}>
-                    <div className="form-row two-col">
-                      <label>
-                        产品 ID
-                        <input value={bomForm.product_id} onChange={handleBomFormChange('product_id')} required />
-                      </label>
-                      <label>
-                        组件 ID
-                        <input value={bomForm.component_product_id} onChange={handleBomFormChange('component_product_id')} required />
-                      </label>
-                    </div>
+            {/* —— 订单收/付款弹窗（UI 在 components/docs/OrderPaymentDialog.jsx） ——
+                挂在这一层而不是页面里：采购订单页、销售订单页共用同一份，
+                和 PartnerModal 同级的全局弹窗，两个页面都能开。 */}
+            <OrderPaymentDialog
+              open={Boolean(orderPayDialog)}
+              kind={orderPayDialog?.kind || 'sales'}
+              order={orderPayDialog?.row || null}
+              partyName={
+                orderPayDialog
+                  ? (orderPayDialog.kind === 'purchase'
+                      ? suppliers.find((item) => item.id === orderPayDialog.row?.supplier_id)?.name
+                      : customers.find((item) => item.id === orderPayDialog.row?.customer_id)?.name) || ''
+                  : ''
+              }
+              onSubmit={submitOrderPayment}
+              onClose={closeOrderPayment}
+              busy={orderPayBusy}
+              result={orderPayResult}
+              error={orderPayError}
+              invoiceStatus={orderPayInvoice}
+              invoiceLoading={orderPayInvoiceLoading}
+            />
 
-                    <div className="form-row two-col">
-                      <label>
-                        父节点 ID
-                        <input value={bomForm.parent_id} onChange={handleBomFormChange('parent_id')} placeholder="可为空" />
-                      </label>
-                      <label>
-                        节点类型
-                        <select value={bomForm.bom_type} onChange={handleBomFormChange('bom_type')}>
-                          <option value="assembly">装配</option>
-                          <option value="component">组件</option>
-                          <option value="raw_material">原材料</option>
-                        </select>
-                      </label>
-                    </div>
+            {/* 打印二次确认（全局唯一宿主）。UI 见 components/ui/PrintConfirmHost.jsx，
+                调用口见 lib/printConfirm.js —— 任何模块 import 后即可 await confirmPrint()。 */}
+            <PrintConfirmHost />
 
-                    <div className="form-row two-col">
-                      <label>
-                        节点名称
-                        <input value={bomForm.name} onChange={handleBomFormChange('name')} />
-                      </label>
-                      <label>
-                        编码
-                        <input value={bomForm.code} onChange={handleBomFormChange('code')} />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        数量
-                        <input value={bomForm.quantity} onChange={handleBomFormChange('quantity')} type="number" min="1" />
-                      </label>
-                      <label>
-                        单位成本
-                        <input value={bomForm.unit_cost} onChange={handleBomFormChange('unit_cost')} type="number" min="0" step="0.01" />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        层级
-                        <input value={bomForm.level} onChange={handleBomFormChange('level')} type="number" min="0" />
-                      </label>
-                      <label>
-                        备注
-                        <input value={bomForm.description} onChange={handleBomFormChange('description')} />
-                      </label>
-                    </div>
-
-                    <button className="primary-btn" type="submit">新增 BOM 节点</button>
-                  </form>
-                </div>
-
-                <div className="panel">
-                  <div className="section-header">
-                    <h2>树形视图</h2>
-                  </div>
-                  {bomTree.length > 0 ? (
-                    <ul className="bom-tree-root">{renderBomTree(bomTree)}</ul>
-                  ) : (
-                    <div className="empty-state">暂无 BOM 树，请先新增节点。</div>
-                  )}
-                </div>
-              </section>
-            )}
-
-            {selectedTab === 'overview' && (
-              <>
-                {/* 顶部问候横幅 */}
-                <section className="welcome-banner">
-                  <div className="welcome-text">
-                    <p className="welcome-date">{new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}</p>
-                    <h2 className="welcome-title">{(() => { const h = new Date().getHours(); return h < 6 ? '凌晨好' : h < 12 ? '早上好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好'; })()}，欢迎回来 👋</h2>
-                    <p className="welcome-sub">
-                      今日销售 ¥{Number(summary?.sales_total ?? 0).toLocaleString()}，采购 ¥{Number(summary?.purchase_total ?? 0).toLocaleString()}，
-                      {executiveDashboard.status?.health === 'healthy' ? '经营整体健康。' : '有需要关注的经营事项。'}
-                    </p>
-                  </div>
-                  <div className="welcome-actions">
-                    <button type="button" className="welcome-btn ghost" onClick={() => setSelectedTab('sales')}>开销售单</button>
-                    <button type="button" className="welcome-btn ghost" onClick={() => setSelectedTab('purchase')}>录入库单</button>
-                    <button type="button" className="welcome-btn solid" onClick={() => setSelectedTab('quotation')}>新建报价</button>
-                  </div>
-                </section>
-
-                {/* KPI 卡片组：运营指标（对齐参考图的运营展板，不再是档案统计） */}
-                <section className="kpi-grid">
-                  {(() => {
-                    const kpiMeta = {
-                      '销售额': { icon: '💰', tone: 'blue', sub: '累计销售额' },
-                      '采购额': { icon: '🛒', tone: 'cyan', sub: '累计采购额' },
-                      '净利润': { icon: '📈', tone: 'teal', sub: '销售 − 采购' },
-                      '生产订单': { icon: '🏭', tone: 'green', sub: '在产订单' },
-                      '库存预警': { icon: '⚠️', tone: 'sky', sub: '需补货 / 关注' },
-                      '付款提醒': { icon: '💳', tone: 'emerald', sub: '待跟进付款' },
-                    };
-                    const kpis = executiveDashboard.kpis?.length
-                      ? executiveDashboard.kpis
-                      : [
-                          { label: '销售额', value: Number(summary?.sales_total ?? 0), unit: 'CNY' },
-                          { label: '采购额', value: Number(summary?.purchase_total ?? 0), unit: 'CNY' },
-                          { label: '净利润', value: Number((summary?.sales_total ?? 0) - (summary?.purchase_total ?? 0)), unit: 'CNY' },
-                          { label: '商品数', value: Number(summary?.products ?? 0), unit: 'items' },
-                          { label: '客户数', value: Number(summary?.customers ?? 0), unit: 'items' },
-                          { label: '供应商数', value: Number(summary?.suppliers ?? 0), unit: 'items' },
-                        ];
-                    return kpis.map((kpi) => {
-                      const meta = kpiMeta[kpi.label] || { icon: '📊', tone: 'blue', sub: '' };
-                      const raw = Number(kpi.value || 0);
-                      const value = kpi.unit === 'CNY' ? `¥${raw.toLocaleString()}` : raw.toLocaleString();
-                      return (
-                        <div className={`kpi-card kpi-${meta.tone}`} key={kpi.label}>
-                          <div className="kpi-icon">{meta.icon}</div>
-                          <div className="kpi-meta">
-                            <span className="kpi-label">{kpi.label}</span>
-                            <strong className="kpi-value">{value}</strong>
-                            <span className="kpi-sub">{meta.sub}</span>
-                          </div>
-                        </div>
-                      );
-                    });
-                  })()}
-                </section>
-
-                {/* 趋势 + 健康度 两栏 */}
-                <div className="dash-grid">
-                  <section className="panel dash-panel">
-                    <div className="section-header">
-                      <h2>经营趋势</h2>
-                      <button type="button" className="secondary-btn small-btn" onClick={exportDailyReport}>导出经营日报</button>
-                    </div>
-                    {overviewTrend.length > 0 ? (
-                      <div className="trend-chart">
-                        {(() => {
-                          const maxValue = Math.max(...overviewTrend.flatMap((item) => [Number(item.income || 0), Number(item.expense || 0)]), 1);
-                          const values = overviewTrend.map((item) => Number(item.income || 0));
-                          const minValue = Math.min(...values, 0);
-                          const range = maxValue - minValue || 1;
-                          const points = values.map((v, i) => {
-                            const x = (i / Math.max(values.length - 1, 1)) * 100;
-                            const y = 100 - ((v - minValue) / range) * 92 - 4;
-                            return `${x},${y}`;
-                          }).join(' ');
-                          const areaPoints = `0,100 ${points} 100,100`;
-                          return (
-                            <svg className="trend-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
-                              <defs>
-                                <linearGradient id="trendArea" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="0%" stopColor="#14b8a6" stopOpacity="0.28" />
-                                  <stop offset="100%" stopColor="#14b8a6" stopOpacity="0" />
-                                </linearGradient>
-                                <linearGradient id="trendLine" x1="0" y1="0" x2="1" y2="0">
-                                  <stop offset="0%" stopColor="#2563eb" />
-                                  <stop offset="100%" stopColor="#14b8a6" />
-                                </linearGradient>
-                              </defs>
-                              <polygon points={areaPoints} fill="url(#trendArea)" />
-                              <polyline points={points} fill="none" stroke="url(#trendLine)" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-                              {values.map((v, i) => {
-                                const x = (i / Math.max(values.length - 1, 1)) * 100;
-                                const y = 100 - ((v - minValue) / range) * 92 - 4;
-                                return <circle key={i} cx={x} cy={y} r="1.6" fill="#14b8a6" vectorEffect="non-scaling-stroke" />;
-                              })}
-                            </svg>
-                          );
-                        })()}
-                        <div className="trend-labels">
-                          {overviewTrend.map((item) => (
-                            <span key={item.label}>{item.label}</span>
-                          ))}
-                        </div>
-                        <div className="trend-legend">
-                          <span className="legend-dot income" />收入
-                          <span className="legend-dot expense" />支出
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="empty-state">暂无经营趋势数据</div>
-                    )}
-                  </section>
-
-                  <section className="panel dash-panel">
-                    <div className="section-header">
-                      <h2>经营健康度</h2>
-                      <span className="status-badge">{executiveDashboard.status?.health === 'healthy' ? '健康' : '关注'}</span>
-                    </div>
-                    <div className="health-list">
-                      {leadershipBoard.cards.map((item) => {
-                        const pct = Math.min(100, Math.max(0, parseInt(item.value, 10) || 0));
-                        return (
-                          <div className="health-row" key={item.label}>
-                            <div className="health-head">
-                              <span>{item.label}</span>
-                              <strong className={item.tone === 'warn' ? 'health-warn' : ''}>{item.value}</strong>
-                            </div>
-                            <div className="health-track">
-                              <div className={`health-fill ${item.tone === 'warn' ? 'fill-warn' : 'fill-good'}`} style={{ width: `${pct}%` }} />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <div className="health-metrics">
-                      <div className="health-metric">
-                        <span className="health-metric-label">毛利率</span>
-                        <strong>{Number(executiveDashboard.status?.margin || 0).toFixed(1)}%</strong>
-                      </div>
-                      <div className="health-metric">
-                        <span className="health-metric-label">生产进度</span>
-                        <strong>{Number(executiveDashboard.status?.production || 0).toFixed(1)}%</strong>
-                      </div>
-                      <div className="health-metric">
-                        <span className="health-metric-label">风险项</span>
-                        <strong>{executiveDashboard.status?.risk_count ?? 0}</strong>
-                      </div>
-                    </div>
-                  </section>
-                </div>
-
-                {/* 经营提醒 + 最近业务 两栏 */}
-                <div className="dash-grid">
-                  <section className="panel dash-panel">
-                    <div className="section-header">
-                      <h2>经营提醒</h2>
-                      <span className="status-badge">{executiveDashboard.alerts?.length ?? 0} 项</span>
-                    </div>
-                    {executiveDashboard.alerts?.length ? (
-                      <div className="alert-list">
-                        {executiveDashboard.alerts.map((alert, index) => (
-                          <div className={`alert-card alert-${alert.severity || 'info'}`} key={`${alert.title}-${index}`}>
-                            <span className="alert-dot" />
-                            <div className="alert-body">
-                              <strong>{alert.title}</strong>
-                              <p>{alert.message}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="empty-state">暂无经营提醒</div>
-                    )}
-
-                    <div className="section-header" style={{ marginTop: '22px' }}>
-                      <h3>管理建议</h3>
-                    </div>
-                    <ul className="advice-list">
-                      {leadershipBoard.actions.map((item, index) => (
-                        <li key={`${item}-${index}`}><span className="advice-num">{index + 1}</span>{item}</li>
-                      ))}
-                    </ul>
-                  </section>
-
-                  <section className="panel dash-panel">
-                    <div className="section-header">
-                      <h2>关键动态</h2>
-                      <span className="status-badge">实时</span>
-                    </div>
-                    <div className="activity-timeline">
-                      {[
-                        { icon: '🧾', text: '客户订单已同步到 ERP', time: '刚刚' },
-                        { icon: '🛒', text: '采购单待审核', time: '10 分钟前' },
-                        { icon: '⚠️', text: `库存预警 ${executiveDashboard.status?.risk_count ?? 0} 项待处理`, time: '1 小时前' },
-                        { icon: '💰', text: '财务流水已归档', time: '今天' },
-                        { icon: '📦', text: `${operationsBoard.production_orders?.length ?? 0} 个生产单在排期`, time: '进行中' },
-                      ].map((item, index) => (
-                        <div className="timeline-item" key={index}>
-                          <div className="timeline-icon">{item.icon}</div>
-                          <div className="timeline-body">
-                            <p>{item.text}</p>
-                            <span>{item.time}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                </div>
-
-                {/* 常用报表快捷入口（对齐参考图的报表导航） */}
-                <section className="panel dash-panel">
-                  <div className="section-header">
-                    <h2>常用报表</h2>
-                    <button type="button" className="link-btn" onClick={() => setSelectedTab('reports')}>报表中心 →</button>
-                  </div>
-                  <div className="quick-report-grid">
-                    {[
-                      { label: '销售订单执行表', icon: '🧾', tone: 'blue' },
-                      { label: '采购订单执行表', icon: '🛒', tone: 'cyan' },
-                      { label: '库存余额表', icon: '📦', tone: 'teal' },
-                      { label: '应收应付明细表', icon: '💰', tone: 'green' },
-                      { label: '生产工单进度表', icon: '🏭', tone: 'sky' },
-                      { label: '经营日报', icon: '📊', tone: 'emerald' },
-                    ].map((report) => (
-                      <button
-                        key={report.label}
-                        type="button"
-                        className={`quick-report-card qr-${report.tone}`}
-                        onClick={() => setSelectedTab('reports')}
-                      >
-                        <span className="qr-icon">{report.icon}</span>
-                        <span className="qr-label">{report.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </section>
-
-                {/* 运营数据速览 */}
-                <section className="panel dash-panel">
-                  <div className="section-header">
-                    <h2>运营速览</h2>
-                    <span className="status-badge">{operationsBoard.production_orders.length} 个生产单</span>
-                  </div>
-                  <div className="report-summary-grid">
-                    <div className="metric-card"><span>在产单</span><strong>{operationsBoard.status_breakdown.in_progress ?? 0}</strong></div>
-                    <div className="metric-card"><span>项目推进</span><strong>{operationsBoard.project_summary.avg_progress ?? 0}%</strong></div>
-                    <div className="metric-card"><span>高优先级</span><strong>{operationsBoard.high_priority_orders.length}</strong></div>
-                    <div className="metric-card"><span>项目预算</span><strong>¥{Number(operationsBoard.project_summary.budget_total ?? 0).toLocaleString()}</strong></div>
-                    <div className="metric-card"><span>材料成本</span><strong>¥{Number(operationsBoard.cost_summary.material_cost ?? 0).toLocaleString()}</strong></div>
-                    <div className="metric-card"><span>人工成本</span><strong>¥{Number(operationsBoard.cost_summary.labor_cost ?? 0).toLocaleString()}</strong></div>
-                    <div className="metric-card"><span>总成本</span><strong>¥{Number(operationsBoard.cost_summary.total_cost ?? 0).toLocaleString()}</strong></div>
-                    <div className="metric-card"><span>里程碑</span><strong>{operationsBoard.milestones.length}</strong></div>
-                  </div>
-                </section>
-              </>
-            )}
-
-            {selectedTab === 'customers' && (
-              <div className="management-grid">
-                {archiveFocus?.tab === 'customers' && (
-                  <div className="focus-banner">
-                    <span className="focus-banner-tag">从单据跳转</span>
-                    <span className="focus-banner-text">
-                      已定位到客户 <strong>{customers.find((c) => c.id === archiveFocus.id)?.name || archiveFocus.id}</strong>
-                    </span>
-                    <button type="button" className="link-btn" onClick={() => setArchiveFocus(null)}>取消定位</button>
-                  </div>
-                )}
-                <section className="panel table-panel" style={{ gridColumn: '1 / -1' }}>
-                  <div className="section-header">
-                    <h2>客户列表</h2>
-                    <span className="status-badge">{filteredCustomers.length} / {customers.length} 人</span>
-                    <button type="button" className="primary-btn small-btn" onClick={() => setCustomerModalOpen(true)}>新增客户</button>
-                  </div>
-
-                  <div className="toolbar-row">
-                    <input
-                      className="search-input"
-                      placeholder="搜索 编码 / 名称 / 电话 / 邮箱…"
-                      value={customerSearch}
-                      onChange={(event) => setCustomerSearch(event.target.value)}
-                    />
-                  </div>
-
-                  {filteredCustomers.length === 0 ? (
-                    <div className="empty-state">{customers.length === 0 ? '暂无客户数据' : '没有匹配的客户'}</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>编码</th>
-                          <th>名称</th>
-                          <th>电话</th>
-                          <th>邮箱</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredCustomers.map((row) => (
-                          <tr
-                            key={row.id}
-                            className={archiveFocus?.tab === 'customers' && archiveFocus.id === row.id ? 'focus-row' : undefined}
-                          >
-                            <td>{row.code}</td>
-                            <td>{row.name}</td>
-                            <td>{row.phone || '—'}</td>
-                            <td>{row.email || '—'}</td>
-                            <td>
-                              <button
-                                type="button"
-                                className="danger-btn"
-                                onClick={() =>
-                                  setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/customers/${row.id}`,
-                                    label: `客户 ${row.name}`,
-                                    kind: 'customer',
-                                  })
-                                }
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {/* —— 新增客户弹窗 —— */}
-            {customerModalOpen && (
-              <div className="modal-backdrop" onClick={() => setCustomerModalOpen(false)}>
-                <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-                  <div className="modal-header">
-                    <h3>新增客户</h3>
-                    <button type="button" className="close-btn" onClick={() => setCustomerModalOpen(false)}>×</button>
-                  </div>
-                  <form onSubmit={submitCustomer} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        客户编码
-                        <input value={customerForm.code} onChange={handleCustomerChange('code')} required />
-                      </label>
-                      <label>
-                        客户名称
-                        <input value={customerForm.name} onChange={handleCustomerChange('name')} required />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        联系电话
-                        <input value={customerForm.phone} onChange={handleCustomerChange('phone')} />
-                      </label>
-                      <label>
-                        邮箱
-                        <input type="email" value={customerForm.email} onChange={handleCustomerChange('email')} />
-                      </label>
-                    </div>
-                    <label>
-                      地址
-                      <textarea value={customerForm.address} onChange={handleCustomerChange('address')} rows="3" />
-                    </label>
-                    <div className="form-actions">
-                      <button type="submit" className="primary-btn">保存客户</button>
-                      <button type="button" className="secondary-btn" onClick={() => setCustomerModalOpen(false)}>取消</button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-            )}
-
-            {selectedTab === 'suppliers' && (
-              <div className="management-grid">
-                {archiveFocus?.tab === 'suppliers' && (
-                  <div className="focus-banner">
-                    <span className="focus-banner-tag">从单据跳转</span>
-                    <span className="focus-banner-text">
-                      已定位到供应商 <strong>{suppliers.find((s) => s.id === archiveFocus.id)?.name || archiveFocus.id}</strong>
-                    </span>
-                    <button type="button" className="link-btn" onClick={() => setArchiveFocus(null)}>取消定位</button>
-                  </div>
-                )}
-                <section className="panel table-panel" style={{ gridColumn: '1 / -1' }}>
-                  <div className="section-header">
-                    <h2>供应商列表</h2>
-                    <span className="status-badge">{filteredSuppliers.length} / {suppliers.length} 家</span>
-                    <button type="button" className="primary-btn small-btn" onClick={() => setSupplierModalOpen(true)}>新增供应商</button>
-                  </div>
-
-                  <div className="toolbar-row">
-                    <input
-                      className="search-input"
-                      placeholder="搜索 编码 / 名称 / 电话 / 邮箱…"
-                      value={supplierSearch}
-                      onChange={(event) => setSupplierSearch(event.target.value)}
-                    />
-                  </div>
-
-                  {filteredSuppliers.length === 0 ? (
-                    <div className="empty-state">{suppliers.length === 0 ? '暂无供应商数据' : '没有匹配的供应商'}</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>编码</th>
-                          <th>名称</th>
-                          <th>电话</th>
-                          <th>邮箱</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredSuppliers.map((row) => (
-                          <tr
-                            key={row.id}
-                            className={archiveFocus?.tab === 'suppliers' && archiveFocus.id === row.id ? 'focus-row' : undefined}
-                          >
-                            <td>{row.code}</td>
-                            <td>{row.name}</td>
-                            <td>{row.phone || '—'}</td>
-                            <td>{row.email || '—'}</td>
-                            <td>
-                              <button
-                                type="button"
-                                className="danger-btn"
-                                onClick={() =>
-                                  setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/suppliers/${row.id}`,
-                                    label: `供应商 ${row.name}`,
-                                    kind: 'supplier',
-                                  })
-                                }
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {/* —— 新增供应商弹窗 —— */}
-            {supplierModalOpen && (
-              <div className="modal-backdrop" onClick={() => setSupplierModalOpen(false)}>
-                <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-                  <div className="modal-header">
-                    <h3>新增供应商</h3>
-                    <button type="button" className="close-btn" onClick={() => setSupplierModalOpen(false)}>×</button>
-                  </div>
-                  <form onSubmit={submitSupplier} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        供应商编码
-                        <input value={supplierForm.code} onChange={handleSupplierChange('code')} required />
-                      </label>
-                      <label>
-                        供应商名称
-                        <input value={supplierForm.name} onChange={handleSupplierChange('name')} required />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        联系电话
-                        <input value={supplierForm.phone} onChange={handleSupplierChange('phone')} />
-                      </label>
-                      <label>
-                        邮箱
-                        <input type="email" value={supplierForm.email} onChange={handleSupplierChange('email')} />
-                      </label>
-                    </div>
-                    <label>
-                      地址
-                      <textarea value={supplierForm.address} onChange={handleSupplierChange('address')} rows="3" />
-                    </label>
-                    <div className="form-actions">
-                      <button type="submit" className="primary-btn">保存供应商</button>
-                      <button type="button" className="secondary-btn" onClick={() => setSupplierModalOpen(false)}>取消</button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-            )}
-
-            {selectedTab === 'bank' && (
-              <div className="system-stack">
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>资金账户</h2>
-                    <div className="param-toolbar">
-                      <span className="status-badge">共 {bankAccounts.length} 个</span>
-                      <span className="status-badge ok">
-                        合计 {money(bankAccounts.reduce((sum, row) => sum + Number(row.current_balance || 0), 0))}
-                      </span>
-                      <button
-                        type="button"
-                        className="primary-btn small-btn"
-                        onClick={() => { resetBankAccountForm(); setBankAccountModalOpen(true); }}
-                      >
-                        新增账户
-                      </button>
-                    </div>
-                  </div>
-
-                  <p className="settings-hint">
-                    余额 = <strong>期初余额 + 资金流水</strong>。只有真正动了钱的流水才算：
-                    日常收支、收付款、账户转账。
-                    <strong>应收应付、成本结转、报损报溢不进余额</strong> —— 那些是账务或数量口径，钱还没动。
-                  </p>
-
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>编码</th>
-                          <th>账户名称</th>
-                          <th>类型</th>
-                          <th>开户行 / 账号</th>
-                          <th>期初余额</th>
-                          <th>当前余额</th>
-                          <th>流水</th>
-                          <th>状态</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {bankAccounts.length === 0 && (
-                          <tr><td colSpan="9" className="table-empty">还没有资金账户，请在下面先建一个（比如「库存现金」和「银行基本户」）。</td></tr>
-                        )}
-                        {bankAccounts.map((row) => (
-                          <tr key={row.id}>
-                            <td className="mono">{row.code}</td>
-                            <td>{row.name}</td>
-                            <td>
-                              <span className={`status-badge ${row.account_type === 'cash' ? 'warn' : 'muted'}`}>
-                                {BANK_ACCOUNT_TYPE_LABEL[row.account_type] || row.account_type}
-                              </span>
-                            </td>
-                            <td className="cell-sub">
-                              {row.bank_name || '—'}
-                              {row.account_no ? <div className="cell-sub mono">{row.account_no}</div> : null}
-                            </td>
-                            <td className="num">{money(row.init_balance)}</td>
-                            <td className="num"><strong>{money(row.current_balance)}</strong></td>
-                            <td className="num cell-sub">{row.flow_count}</td>
-                            <td>
-                              <span className={`status-badge ${row.is_active ? 'ok' : 'muted'}`}>
-                                {row.is_active ? '启用' : '已停用'}
-                              </span>
-                            </td>
-                            <td className="row-actions">
-                              <button type="button" className="link-btn" onClick={() => startEditBankAccount(row)}>编辑</button>
-                              <button
-                                type="button"
-                                className="link-btn"
-                                onClick={() => {
-                                  setLedgerAccountId(String(row.id));
-                                  refreshAccountLedger(String(row.id));
-                                }}
-                              >
-                                流水
-                              </button>
-                              <button
-                                type="button"
-                                className="link-btn danger"
-                                onClick={() => setConfirmDelete({
-                                  id: row.id,
-                                  endpoint: `/bank-accounts/${row.id}`,
-                                  label: `资金账户「${row.name}」`,
-                                  kind: 'bank-account',
-                                })}
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>转账记录</h2>
-                    <span className="status-badge">{bankTransfers.length} 笔</span>
-                    <button type="button" className="primary-btn small-btn" onClick={() => setBankTransferModalOpen(true)}>账户转账</button>
-                  </div>
-
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>单号</th>
-                          <th>转出 → 转入</th>
-                          <th>金额</th>
-                          <th>日期</th>
-                          <th>经办人</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {bankTransfers.length === 0 && (
-                          <tr><td colSpan="6" className="table-empty">还没有转账记录。</td></tr>
-                        )}
-                        {bankTransfers.map((row) => (
-                          <tr key={row.id}>
-                            <td className="mono">{row.transfer_no}</td>
-                            <td className="cell-sub">{row.from_account_name} → {row.to_account_name}</td>
-                            <td className="num">{money(row.amount)}</td>
-                            <td className="cell-sub">{row.transfer_date || '—'}</td>
-                            <td className="cell-sub">{row.handler || '—'}</td>
-                            <td className="row-actions">
-                              <button
-                                type="button"
-                                className="link-btn danger"
-                                onClick={() => setConfirmDelete({
-                                  id: row.id,
-                                  endpoint: `/bank-transfers/${row.id}`,
-                                  label: `转账 ${row.transfer_no}`,
-                                  kind: 'bank-transfer',
-                                })}
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>账户流水账</h2>
-                    <div className="param-toolbar">
-                      <select
-                        className="compact-select"
-                        value={ledgerAccountId}
-                        onChange={(event) => {
-                          setLedgerAccountId(event.target.value);
-                          refreshAccountLedger(event.target.value);
-                        }}
-                      >
-                        <option value="">— 选择账户 —</option>
-                        {bankAccounts.map((row) => (
-                          <option key={row.id} value={row.id}>{row.name}</option>
-                        ))}
-                      </select>
-                      <input
-                        type="date"
-                        className="compact-select"
-                        value={ledgerRange.from}
-                        onChange={(event) => setLedgerRange((prev) => ({ ...prev, from: event.target.value }))}
-                      />
-                      <input
-                        type="date"
-                        className="compact-select"
-                        value={ledgerRange.to}
-                        onChange={(event) => setLedgerRange((prev) => ({ ...prev, to: event.target.value }))}
-                      />
-                      <button type="button" className="primary-btn small-btn" onClick={() => refreshAccountLedger()}>查询</button>
-                      <button
-                        type="button"
-                        className="secondary-btn small-btn"
-                        onClick={() => {
-                          const cleared = { from: '', to: '' };
-                          setLedgerRange(cleared);
-                          refreshAccountLedger(ledgerAccountId, cleared);
-                        }}
-                      >
-                        全部期间
-                      </button>
-                    </div>
-                  </div>
-
-                  {!accountLedger && <div className="empty-state">选一个账户看它的期初、逐笔与期末。</div>}
-
-                  {accountLedger && (
-                    <>
-                      <div className="stat-row">
-                        <div className="stat-card">
-                          <span className="stat-label">期初余额</span>
-                          <strong className="stat-value">{money(accountLedger.summary?.opening_balance || 0)}</strong>
-                        </div>
-                        <div className="stat-card">
-                          <span className="stat-label">本期流入</span>
-                          <strong className="stat-value">{money(accountLedger.summary?.increase || 0)}</strong>
-                        </div>
-                        <div className="stat-card">
-                          <span className="stat-label">本期流出</span>
-                          <strong className="stat-value">{money(accountLedger.summary?.decrease || 0)}</strong>
-                        </div>
-                        <div className="stat-card">
-                          <span className="stat-label">期末余额</span>
-                          <strong className="stat-value">{money(accountLedger.summary?.closing_balance || 0)}</strong>
-                        </div>
-                      </div>
-
-                      <div className="table-wrap">
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>日期</th>
-                              <th>摘要</th>
-                              <th>类别</th>
-                              <th>单号</th>
-                              <th>经手人</th>
-                              <th className="num">流入</th>
-                              <th className="num">流出</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(accountLedger.rows || []).length === 0 && (
-                              <tr><td colSpan="7" className="table-empty">该期间没有资金流水。</td></tr>
-                            )}
-                            {(accountLedger.rows || []).map((row) => (
-                              <tr key={row.id}>
-                                <td className="cell-sub">{row.occurred_at || '—'}</td>
-                                <td>{row.note || row.type_label || '—'}</td>
-                                <td className="cell-sub">{row.category || '—'}</td>
-                                <td className="mono cell-sub">{row.doc_no || '—'}</td>
-                                <td className="cell-sub">{row.handler || '—'}</td>
-                                <td className="num">{row.delta > 0 ? money(row.delta) : ''}</td>
-                                <td className="num">{row.delta < 0 ? money(-row.delta) : ''}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </>
-                  )}
-                </section>
-              </div>
-            )}
+            {selectedTab === 'bank' && <BankPage ctx={appCtx} />}
 
             {/* —— 新增/编辑账户弹窗 —— */}
             {bankAccountModalOpen && (
@@ -10611,7 +11817,7 @@ function App() {
                       </label>
                       <label>
                         期初余额
-                        <input type="number" step="0.01" value={bankAccountForm.init_balance} onChange={handleBankAccountFormChange('init_balance')} />
+                        <input type="number" step="any" value={bankAccountForm.init_balance} onChange={handleBankAccountFormChange('init_balance')} />
                       </label>
                     </div>
                     <div className="form-row two-col">
@@ -10681,7 +11887,7 @@ function App() {
                     <div className="form-row two-col">
                       <label>
                         转账金额
-                        <input type="number" step="0.01" value={bankTransferForm.amount} onChange={handleBankTransferFormChange('amount')} required />
+                        <input type="number" step="any" value={bankTransferForm.amount} onChange={handleBankTransferFormChange('amount')} required />
                       </label>
                       <label>
                         转账日期
@@ -10709,844 +11915,13 @@ function App() {
               </div>
             )}
 
-            {selectedTab === 'income-expense' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>登记日常收支</h2>
-                    <span className="status-badge">{entryForm.transaction_type === 'income' ? '收入' : '支出'}</span>
-                  </div>
+            {selectedTab === 'income-expense' && <IncomeExpensePage ctx={appCtx} />}
 
-                  <p className="settings-hint">
-                    这里录的是<strong>日常经营收支</strong>（办公费、运费、利息收入……），
-                    与单据自动生成的应收应付、成本分开。挂了资金账户才会进现金银行的余额。
-                  </p>
+            {selectedTab === 'assembly' && <AssemblyPage ctx={appCtx} />}
 
-                  <form className="erp-form" onSubmit={submitFinanceEntry}>
-                    <div className="form-row two-col">
-                      <label>
-                        类型
-                        <select value={entryForm.transaction_type} onChange={handleEntryFormChange('transaction_type')}>
-                          <option value="expense">支出</option>
-                          <option value="income">收入</option>
-                        </select>
-                      </label>
-                      <label>
-                        金额
-                        <input type="number" step="0.01" value={entryForm.amount} onChange={handleEntryFormChange('amount')} required />
-                      </label>
-                    </div>
+            {selectedTab === 'staff' && <StaffPage ctx={appCtx} />}
 
-                    <div className="form-row two-col">
-                      <label>
-                        类别
-                        <input
-                          value={entryForm.category}
-                          onChange={handleEntryFormChange('category')}
-                          list={entryForm.transaction_type === 'income' ? 'lookup-income_category' : 'lookup-expense_category'}
-                          placeholder="可从候选里选，也可自由填写"
-                        />
-                      </label>
-                      <label>
-                        资金账户
-                        <select value={entryForm.bank_account_id} onChange={handleEntryFormChange('bank_account_id')}>
-                          <option value="">不挂账户（只记账不动钱）</option>
-                          {bankAccounts.filter((row) => row.is_active).map((row) => (
-                            <option key={row.id} value={row.id}>{row.name}（{money(row.current_balance)}）</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        发生日期
-                        <input type="date" value={entryForm.occurred_at} onChange={handleEntryFormChange('occurred_at')} />
-                      </label>
-                      <label>
-                        经手人
-                        <input value={entryForm.handler} onChange={handleEntryFormChange('handler')} />
-                      </label>
-                    </div>
-
-                    <label>
-                      备注
-                      <input value={entryForm.note} onChange={handleEntryFormChange('note')} placeholder="如：8 月办公用品" />
-                    </label>
-
-                    <div className="form-actions">
-                      <button className="primary-btn" type="submit" disabled={systemBusy}>
-                        保存登记
-                      </button>
-                      <button type="button" className="secondary-btn" onClick={() => setEntryForm(emptyEntryForm)}>清空</button>
-                    </div>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>收支明细</h2>
-                    <div className="param-toolbar">
-                      <span className="status-badge ok">收入 {money(entryList.summary?.total_income || 0)}</span>
-                      <span className="status-badge warn">支出 {money(entryList.summary?.total_expense || 0)}</span>
-                      <span className="status-badge">净额 {money(entryList.summary?.net || 0)}</span>
-                    </div>
-                  </div>
-
-                  <form className="log-filters" onSubmit={applyEntryQuery}>
-                    <select value={entryDraft.entry_type} onChange={handleEntryDraftChange('entry_type')}>
-                      <option value="">全部类型</option>
-                      <option value="income">收入</option>
-                      <option value="expense">支出</option>
-                    </select>
-                    <select value={entryDraft.bank_account_id} onChange={handleEntryDraftChange('bank_account_id')}>
-                      <option value="">全部账户</option>
-                      {bankAccounts.map((row) => (
-                        <option key={row.id} value={row.id}>{row.name}</option>
-                      ))}
-                    </select>
-                    <input type="date" value={entryDraft.from} onChange={handleEntryDraftChange('from')} title="起始日期" />
-                    <input type="date" value={entryDraft.to} onChange={handleEntryDraftChange('to')} title="截止日期（含当天）" />
-                    <input value={entryDraft.keyword} onChange={handleEntryDraftChange('keyword')} placeholder="搜类别 / 经手人 / 备注" />
-                    <button className="primary-btn small-btn" type="submit">查询</button>
-                    <button type="button" className="secondary-btn small-btn" onClick={resetEntryQuery}>重置</button>
-                  </form>
-
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>日期</th>
-                          <th>类型</th>
-                          <th>类别</th>
-                          <th className="num">金额</th>
-                          <th>资金账户</th>
-                          <th>经手人</th>
-                          <th>备注</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(entryList.items || []).length === 0 && (
-                          <tr><td colSpan="8" className="table-empty">没有符合条件的收支记录。</td></tr>
-                        )}
-                        {(entryList.items || []).map((row) => (
-                          <tr key={row.id}>
-                            <td className="cell-sub">{row.occurred_at || '—'}</td>
-                            <td>
-                              <span className={`status-badge ${row.transaction_type === 'income' ? 'ok' : 'warn'}`}>
-                                {row.transaction_type === 'income' ? '收入' : '支出'}
-                              </span>
-                            </td>
-                            <td className="cell-sub">{row.category || '—'}</td>
-                            <td className="num">{money(row.amount)}</td>
-                            <td className="cell-sub">{row.bank_account_name || '未挂账户'}</td>
-                            <td className="cell-sub">{row.handler || '—'}</td>
-                            <td className="cell-sub">
-                              {row.note || '—'}
-                              {/* 自动生成的流水标出来源：用户才知道该去哪儿改它 */}
-                              {row.related_type && (
-                                <div className="cell-sub">
-                                  <span className="status-badge muted">由{row.related_type_label || row.related_type}生成</span>
-                                </div>
-                              )}
-                            </td>
-                            <td className="row-actions">
-                              {/* 单据自动写的流水**不给删除按钮**：后端本来就拒绝
-                                  （要跟着单据走），摆一个点了必然报错的按钮只会让人困惑。
-                                  只对人工登记的收支给删除入口。 */}
-                              {row.related_type ? (
-                                <span
-                                  className="cell-sub"
-                                  title={`由「${row.related_type_label || row.related_type}」自动生成，请到对应单据上删除`}
-                                >
-                                  请到单据上删
-                                </span>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className="link-btn danger"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/finance/entries/${row.id}`,
-                                    label: `${row.transaction_type === 'income' ? '收入' : '支出'} ${money(row.amount)}`,
-                                    kind: 'finance-entry',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <p className="settings-hint settings-hint-foot">
-                    只有<strong>人工登记</strong>的收支能在这里删除；单据自动生成的流水请到对应单据上删。
-                  </p>
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'assembly' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>开组合 / 拆卸单</h2>
-                    <span className="status-badge">库存形态转换</span>
-                  </div>
-
-                  <p className="settings-hint">
-                    组合：<strong>子件出库、成品入库</strong>；拆卸：<strong>成品出库、子件入库</strong>。
-                    配方直接读「BOM 清单」，选了成品就自动带出子件；改动上面的套数会按配方<strong>重算</strong>子件用量。
-                  </p>
-
-                  <form className="erp-form" onSubmit={submitAssemblyOrder}>
-                    <div className="form-row two-col">
-                      <label>
-                        单据类型
-                        <select value={assemblyForm.doc_type} onChange={handleAssemblyFormChange('doc_type')}>
-                          {(assemblyMeta.doc_types || []).map((item) => (
-                            <option key={item.value} value={item.value}>{item.label}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        仓库
-                        <select value={assemblyForm.warehouse_id} onChange={handleAssemblyFormChange('warehouse_id')} required>
-                          <option value="">— 请选择 —</option>
-                          {warehouses.map((wh) => (
-                            <option key={wh.id} value={wh.id}>{wh.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        {assemblyForm.doc_type === 'combo' ? '成品（组合出来的）' : '成品（要拆开的）'}
-                        <select value={assemblyForm.product_id} onChange={handleAssemblyFormChange('product_id')} required>
-                          <option value="">— 请选择 —</option>
-                          {products.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}（{item.sku}）</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        成品数量
-                        <input
-                          type="number"
-                          min="1"
-                          value={assemblyForm.quantity}
-                          onChange={handleAssemblyFormChange('quantity')}
-                          required
-                        />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        单据日期
-                        <input type="date" value={assemblyForm.order_date} onChange={handleAssemblyFormChange('order_date')} />
-                      </label>
-                      <label>
-                        经办人
-                        <input value={assemblyForm.handler} onChange={handleAssemblyFormChange('handler')} />
-                      </label>
-                    </div>
-
-                    <label>
-                      备注
-                      <input value={assemblyForm.note} onChange={handleAssemblyFormChange('note')} />
-                    </label>
-
-                    {assemblyPreview && !assemblyPreview.has_bom && (
-                      <div className="assembly-warn">
-                        该成品在「BOM 清单」里还没有配方 —— 下面的子件清单是空的，请先去配置 BOM，或在下面手工补行。
-                      </div>
-                    )}
-                    {assemblyPreview && assemblyPreview.has_bom && (
-                      <p className="settings-hint">
-                        成品「{assemblyPreview.product?.name}」在「{assemblyPreview.warehouse_name || '所选仓库'}」现存量
-                        <strong> {assemblyPreview.product?.on_hand} </strong>
-                        {assemblyForm.doc_type === 'combo' ? '（组合后增加）' : '（拆卸后减少）'}
-                      </p>
-                    )}
-                    {(assemblyPreview?.warnings || []).length > 0 && (
-                      <div className="assembly-warn">
-                        {(assemblyPreview.warnings || []).map((text) => (
-                          <div key={text}>{text}</div>
-                        ))}
-                        <div className="cell-sub">库存不足不拦单（允许负库存，先开单后补货），但请确认这是你要的。</div>
-                      </div>
-                    )}
-
-                    <div className="table-wrap">
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>子件</th>
-                            <th>规格</th>
-                            <th>单位</th>
-                            <th>单位用量</th>
-                            <th>总用量</th>
-                            <th>现存量</th>
-                            <th>金额</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {assemblyItems.length === 0 && (
-                            <tr>
-                              <td colSpan="8" className="table-empty">
-                                还没有子件。上面选好成品与套数会自动带出配方，也可以在下面手工补行。
-                              </td>
-                            </tr>
-                          )}
-                          {assemblyItems.map((row, index) => (
-                            <tr key={`${row.product_id}-${index}`}>
-                              <td>{row.product_name}</td>
-                              <td className="cell-sub">{row.standards || '—'}</td>
-                              <td className="cell-sub">{row.unit || '—'}</td>
-                              <td className="cell-sub">{row.per_unit == null ? '手工' : row.per_unit}</td>
-                              <td>
-                                <input
-                                  className="cell-input"
-                                  type="number"
-                                  value={row.quantity}
-                                  onChange={handleAssemblyItemChange(index, 'quantity')}
-                                />
-                              </td>
-                              <td className={`num ${row.on_hand != null && Number(row.quantity) > row.on_hand ? 'short' : ''}`}>
-                                {row.on_hand == null ? '—' : row.on_hand}
-                              </td>
-                              <td className="num">{money(assemblyItemAmount(row))}</td>
-                              <td className="row-actions">
-                                <button type="button" className="link-btn danger" onClick={() => removeAssemblyItem(index)}>
-                                  移除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    <div className="opening-entry">
-                      <label>
-                        补一行子件
-                        <select
-                          value={assemblyNewItem.product_id}
-                          onChange={(event) => setAssemblyNewItem((prev) => ({ ...prev, product_id: event.target.value }))}
-                        >
-                          <option value="">— 请选择 —</option>
-                          {products.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}（{item.sku}）</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        用量
-                        <input
-                          type="number"
-                          value={assemblyNewItem.quantity}
-                          onChange={(event) => setAssemblyNewItem((prev) => ({ ...prev, quantity: event.target.value }))}
-                          placeholder="1"
-                        />
-                      </label>
-                      <button type="button" className="secondary-btn" onClick={addAssemblyItem}>加一行</button>
-                    </div>
-
-                    <div className="form-actions">
-                      <button className="primary-btn" type="submit" disabled={systemBusy}>
-                        {assemblyForm.doc_type === 'combo' ? '保存并组合' : '保存并拆卸'}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={() => {
-                          setAssemblyForm((prev) => ({ ...emptyAssemblyForm, warehouse_id: prev.warehouse_id }));
-                          setAssemblyItems([]);
-                          setAssemblyPreview(null);
-                        }}
-                      >
-                        清空
-                      </button>
-                    </div>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>组合拆卸单</h2>
-                    <div className="param-toolbar">
-                      <span className="status-badge">共 {assemblyOrders.length} 张</span>
-                      <select
-                        value={assemblyFilter}
-                        onChange={(event) => setAssemblyFilter(event.target.value)}
-                        className="compact-select"
-                      >
-                        <option value="">全部类型</option>
-                        {(assemblyMeta.doc_types || []).map((item) => (
-                          <option key={item.value} value={item.value}>{item.label}单</option>
-                        ))}
-                      </select>
-                      <input
-                        value={assemblyKeyword}
-                        onChange={(event) => setAssemblyKeyword(event.target.value)}
-                        placeholder="搜单号 / 成品"
-                        className="compact-input"
-                      />
-                      <button type="button" className="primary-btn small-btn" onClick={refreshAssemblyOrders}>查询</button>
-                    </div>
-                  </div>
-
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>单号</th>
-                          <th>类型</th>
-                          <th>成品</th>
-                          <th>数量</th>
-                          <th>仓库</th>
-                          <th>日期</th>
-                          <th>子件</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {assemblyOrders.length === 0 && (
-                          <tr><td colSpan="8" className="table-empty">还没有组合拆卸单。</td></tr>
-                        )}
-                        {assemblyOrders.map((row) => (
-                          <tr key={row.id}>
-                            <td className="mono">{row.order_no}</td>
-                            <td>
-                              <span className={`status-badge ${row.doc_type === 'combo' ? 'ok' : 'warn'}`}>
-                                {row.doc_type_label}
-                              </span>
-                            </td>
-                            <td>{row.product_name}</td>
-                            <td className="num">{row.quantity}</td>
-                            <td className="cell-sub">{row.warehouse_name || '—'}</td>
-                            <td className="cell-sub">{row.order_date || '—'}</td>
-                            <td className="cell-sub">
-                              {(row.items || []).map((item) => `${item.product_name}×${item.quantity}`).join('、') || '—'}
-                            </td>
-                            <td className="row-actions">
-                              <button
-                                type="button"
-                                className="link-btn"
-                                onClick={() => printPdf(`/print/assembly/${row.id}`, `${row.order_no}_${row.doc_type_label}单.pdf`)}
-                              >
-                                打印
-                              </button>
-                              <button
-                                type="button"
-                                className="link-btn danger"
-                                onClick={() => setConfirmDelete({
-                                  id: row.id,
-                                  endpoint: `/assembly-orders/${row.id}`,
-                                  label: `${row.doc_type_label}单 ${row.order_no}`,
-                                  kind: 'assembly-order',
-                                })}
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'staff' && (
-              <div className="management-grid">
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>员工名册</h2>
-                    <span className="status-badge">共 {employees.length} 人</span>
-                    <button type="button" className="primary-btn small-btn" onClick={() => { resetEmployeeForm(); setEmployeeModalOpen(true); }}>新增员工</button>
-                  </div>
-
-                  <div className="table-toolbar">
-                    <input
-                      value={employeeKeyword}
-                      onChange={(event) => setEmployeeKeyword(event.target.value)}
-                      placeholder="搜工号 / 姓名 / 手机 / 岗位"
-                    />
-                    <select value={employeeDeptFilter} onChange={(event) => setEmployeeDeptFilter(event.target.value)}>
-                      <option value="">全部部门</option>
-                      {(employeeMeta.departments || []).map((dept) => (
-                        <option key={dept.id} value={dept.id}>{dept.label}</option>
-                      ))}
-                    </select>
-                    <select value={employeeStatusFilter} onChange={(event) => setEmployeeStatusFilter(event.target.value)}>
-                      <option value="">全部状态</option>
-                      {(employeeMeta.statuses || []).map((item) => (
-                        <option key={item.value} value={item.value}>{item.label}</option>
-                      ))}
-                    </select>
-                    <button type="button" className="primary-btn small-btn" onClick={refreshEmployees}>查询</button>
-                  </div>
-
-                  {employees.length === 0 ? (
-                    <div className="empty-state">暂无员工，请先在左侧新增。</div>
-                  ) : (
-                    <div className="table-wrap">
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>工号</th>
-                            <th>姓名</th>
-                            <th>性别</th>
-                            <th>部门</th>
-                            <th>岗位</th>
-                            <th>手机</th>
-                            <th>入职</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {employees.map((row) => (
-                            <tr key={row.id}>
-                              <td className="mono">{row.code}</td>
-                              <td>{row.name}</td>
-                              <td className="cell-sub">{row.gender || '—'}</td>
-                              <td className="cell-sub">{row.department_name || departmentLabel(row.department_id)}</td>
-                              <td className="cell-sub">{row.position || '—'}</td>
-                              <td className="cell-sub">{row.phone || '—'}</td>
-                              <td className="cell-sub">{row.hire_date || '—'}</td>
-                              <td>
-                                <span className={`status-badge ${row.status === 'active' ? 'ok' : 'muted'}`}>
-                                  {row.status === 'active' ? '在职' : '离职'}
-                                </span>
-                              </td>
-                              <td className="row-actions">
-                                <button type="button" className="link-btn" onClick={() => startEditEmployee(row)}>编辑</button>
-                                <button
-                                  type="button"
-                                  className="link-btn danger"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/employees/${row.id}`,
-                                    label: `员工 ${row.name}（${row.code}）`,
-                                    kind: 'system-employee',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  <p className="settings-hint settings-hint-foot">
-                    员工档案可以用「导入导出」页的「员工档案」类别批量导入 —— 模板里的「部门」填部门名称即可。
-                  </p>
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'opening-stock' && (
-              <div className="system-stack">
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>期初建账</h2>
-                    <div className="system-tabs">
-                      {OPENING_TABS.map((tab) => (
-                        <button
-                          key={tab.key}
-                          type="button"
-                          className={`system-tab ${openingTab === tab.key ? 'active' : ''}`}
-                          onClick={() => setOpeningTab(tab.key)}
-                        >
-                          {tab.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <p className="settings-hint">
-                    建账是<strong>一次性</strong>动作：把启用系统那一刻的库存与往来余额录进来，
-                    之后所有数字都从这里往后滚。期初库存直接计入现存量，
-                    所以已经开过单的仓库 × 商品再改期初，等于凭空挪动历史起点 —— 表格里会标出来。
-                  </p>
-                </section>
-
-                {openingTab === 'stock' && (
-                  <>
-                    <section className="panel">
-                      <div className="section-header">
-                        <h2>库存期初</h2>
-                        <div className="param-toolbar">
-                          <button
-                            type="button"
-                            className="danger-outline-btn small-btn"
-                            onClick={() => setOpeningClearAsk(true)}
-                            disabled={systemBusy || openingSummary.lines === 0}
-                          >
-                            清空全部期初
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="stat-row">
-                        <div className="stat-card">
-                          <span className="stat-label">期初行数</span>
-                          <strong className="stat-value">{openingSummary.lines || 0}</strong>
-                        </div>
-                        <div className="stat-card">
-                          <span className="stat-label">期初总数量</span>
-                          <strong className="stat-value">{openingSummary.total_quantity || 0}</strong>
-                        </div>
-                        <div className="stat-card">
-                          <span className="stat-label">期初总金额</span>
-                          <strong className="stat-value">{money(openingSummary.total_amount || 0)}</strong>
-                        </div>
-                        <div className="stat-card">
-                          <span className="stat-label">已发生业务</span>
-                          <strong className="stat-value">{openingSummary.business_lines || 0}</strong>
-                        </div>
-                      </div>
-
-                      <div className="opening-entry">
-                        <label>
-                          仓库
-                          <select value={openingDraft.warehouse_id} onChange={handleOpeningDraftChange('warehouse_id')}>
-                            <option value="">请选择</option>
-                            {warehouses.map((wh) => (
-                              <option key={wh.id} value={wh.id}>{wh.name}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          商品
-                          <select value={openingDraft.product_id} onChange={handleOpeningDraftChange('product_id')}>
-                            <option value="">请选择</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}（{item.sku}）</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          期初数量
-                          <input type="number" value={openingDraft.quantity} onChange={handleOpeningDraftChange('quantity')} placeholder="0" />
-                        </label>
-                        <label>
-                          成本单价
-                          <input type="number" value={openingDraft.unit_price} onChange={handleOpeningDraftChange('unit_price')} placeholder="0" />
-                        </label>
-                        <label>
-                          备注
-                          <input value={openingDraft.note} onChange={handleOpeningDraftChange('note')} placeholder="选填" />
-                        </label>
-                        <button type="button" className="secondary-btn" onClick={addOpeningDraftRow}>加入清单</button>
-                      </div>
-
-                      <div className="table-wrap">
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>仓库</th>
-                              <th>商品</th>
-                              <th>数量</th>
-                              <th>单价</th>
-                              <th>金额</th>
-                              <th>备注</th>
-                              <th>操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {openingDraftRows.length === 0 && (
-                              <tr><td colSpan="7" className="table-empty">待保存清单为空：在上面选好仓库与商品，点「加入清单」。</td></tr>
-                            )}
-                            {openingDraftRows.map((row, index) => {
-                              const wh = warehouses.find((w) => String(w.id) === row.warehouse_id);
-                              const pd = products.find((p) => String(p.id) === row.product_id);
-                              return (
-                                <tr key={`${row.warehouse_id}-${row.product_id}`}>
-                                  <td>{wh ? wh.name : row.warehouse_id}</td>
-                                  <td>{pd ? `${pd.name}（${pd.sku}）` : row.product_id}</td>
-                                  <td className="num">{row.quantity}</td>
-                                  <td className="num">{row.unit_price}</td>
-                                  <td className="num">{money(draftAmount(row))}</td>
-                                  <td className="cell-sub">{row.note || '—'}</td>
-                                  <td className="row-actions">
-                                    <button type="button" className="link-btn danger" onClick={() => removeOpeningDraftRow(index)}>移除</button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      <div className="form-actions">
-                        <button type="button" className="primary-btn" onClick={saveOpeningStock} disabled={systemBusy || openingDraftRows.length === 0}>
-                          保存全部（{openingDraftRows.length} 项）
-                        </button>
-                        <button type="button" className="secondary-btn" onClick={() => setOpeningDraftRows([])} disabled={openingDraftRows.length === 0}>
-                          清空清单
-                        </button>
-                      </div>
-                    </section>
-
-                    <section className="panel table-panel">
-                      <div className="section-header">
-                        <h2>已建账期初</h2>
-                        <div className="param-toolbar">
-                          <span className="status-badge">共 {openingRows.length} 项</span>
-                          <button type="button" className="secondary-btn small-btn" onClick={refreshOpeningStock}>重新载入</button>
-                        </div>
-                      </div>
-
-                      <div className="table-wrap">
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>仓库</th>
-                              <th>商品</th>
-                              <th>期初数量</th>
-                              <th>成本单价</th>
-                              <th>期初金额</th>
-                              <th>现存量</th>
-                              <th>状态</th>
-                              <th>备注</th>
-                              <th>操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {openingRows.length === 0 && (
-                              <tr><td colSpan="9" className="table-empty">还没有期初数据。也可以到「导入导出」页用「期初库存」类别批量导入。</td></tr>
-                            )}
-                            {openingRows.map((row) => (
-                              <tr key={row.id}>
-                                <td>{row.warehouse_name}</td>
-                                <td>
-                                  <div className="cell-stack">
-                                    <span>{row.product_name}</span>
-                                    <span className="cell-sub mono">{row.sku}</span>
-                                  </div>
-                                </td>
-                                <td className="num">{row.quantity}</td>
-                                <td className="num">{plain(row.unit_price)}</td>
-                                <td className="num">{money(row.amount)}</td>
-                                <td className="num">{row.current_stock}</td>
-                                <td>
-                                  {row.has_business
-                                    ? <span className="status-badge warn" title="该仓库×商品已经发生过出入库，改期初会让现存量跟着跳">已发生业务</span>
-                                    : <span className="status-badge ok">未发生业务</span>}
-                                </td>
-                                <td className="cell-sub">{row.note || '—'}</td>
-                                <td className="row-actions">
-                                  <button type="button" className="link-btn" onClick={() => loadOpeningRowIntoDraft(row)}>改这一项</button>
-                                  <button
-                                    type="button"
-                                    className="link-btn danger"
-                                    onClick={() => setConfirmDelete({
-                                      id: row.id,
-                                      endpoint: `/opening-stock/${row.id}`,
-                                      label: `${row.warehouse_name} / ${row.product_name} 的期初`,
-                                      kind: 'opening-line',
-                                    })}
-                                  >
-                                    删除
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </section>
-                  </>
-                )}
-
-                {(openingTab === 'receivable' || openingTab === 'payable') && (
-                  <section className="panel table-panel">
-                    <div className="section-header">
-                      <h2>{openingTab === 'receivable' ? '期初应收' : '期初应付'}</h2>
-                      <div className="param-toolbar">
-                        <span className="status-badge">
-                          合计 {money(openingTab === 'receivable'
-                            ? (openingBalances.summary?.receivable_total || 0)
-                            : (openingBalances.summary?.payable_total || 0))}
-                        </span>
-                        <button type="button" className="primary-btn small-btn" onClick={saveOpeningBalances} disabled={systemBusy}>
-                          保存全部
-                        </button>
-                        <button type="button" className="secondary-btn small-btn" onClick={refreshOpeningBalances}>重新载入</button>
-                      </div>
-                    </div>
-
-                    <p className="settings-hint">
-                      这里只改<strong>期初金额</strong>，不动档案的其它字段。允许填负数 ——
-                      {openingTab === 'receivable' ? '客户的预收款，期初就是负的。' : '给供应商的预付款，期初就是负的。'}
-                      改动只影响「当前余额」的起点，已经发生的单据金额不动。
-                    </p>
-
-                    <div className="table-wrap">
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>编码</th>
-                            <th>名称</th>
-                            <th>{openingTab === 'receivable' ? '期初应收' : '期初应付'}</th>
-                            <th>期初欠票</th>
-                            <th>期间发生额</th>
-                            <th>当前余额</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {((openingTab === 'receivable' ? openingBalances.receivables : openingBalances.payables) || []).length === 0 && (
-                            <tr><td colSpan="6" className="table-empty">还没有{openingTab === 'receivable' ? '客户' : '供应商'}档案。</td></tr>
-                          )}
-                          {((openingTab === 'receivable' ? openingBalances.receivables : openingBalances.payables) || []).map((row) => {
-                            const entity = openingTab === 'receivable' ? 'customer' : 'supplier';
-                            const draft = balanceDraft[`${entity}-${row.id}`] || {};
-                            return (
-                              <tr key={row.id}>
-                                <td className="mono">{row.code}</td>
-                                <td>{row.name}</td>
-                                <td>
-                                  <input
-                                    className="cell-input"
-                                    type="number"
-                                    value={draft.init_amount ?? ''}
-                                    onChange={handleBalanceDraftChange(entity, row.id, 'init_amount')}
-                                  />
-                                </td>
-                                <td>
-                                  <input
-                                    className="cell-input"
-                                    type="number"
-                                    value={draft.init_invoice_debt ?? ''}
-                                    onChange={handleBalanceDraftChange(entity, row.id, 'init_invoice_debt')}
-                                  />
-                                </td>
-                                <td className="num cell-sub">{plain(row.occurred_amount)}</td>
-                                <td className="num">{money(row.current_balance)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
-                )}
-              </div>
-            )}
+            {selectedTab === 'opening-stock' && <OpeningStockPage ctx={appCtx} />}
 
             {/* —— 新增/编辑员工弹窗 —— */}
             {employeeModalOpen && (
@@ -11662,76 +12037,7 @@ function App() {
               </div>
             )}
 
-            {selectedTab === 'warehouses' && (
-              <div className="management-grid">
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>仓库列表</h2>
-                    <span className="status-badge">{warehouses.length} 个</span>
-                    <button type="button" className="primary-btn small-btn" onClick={() => { resetWarehouseForm(); setWarehouseModalOpen(true); }}>新增仓库</button>
-                  </div>
-
-                  {warehouses.length === 0 ? (
-                    <div className="empty-state">暂无仓库数据，请先在左侧新增仓库</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>编码</th>
-                          <th>名称</th>
-                          <th>货位</th>
-                          <th>负责人</th>
-                          <th>电话</th>
-                          <th>状态</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {warehouses.map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.code}</td>
-                            <td>{row.name}</td>
-                            <td>{row.location || '—'}</td>
-                            <td>{row.manager || '—'}</td>
-                            <td>{row.phone || '—'}</td>
-                            <td>
-                              <span className={`stock-tag ${row.is_active ? 'tag-on' : 'tag-off'}`}>
-                                {row.is_active ? '启用' : '停用'}
-                              </span>
-                            </td>
-                            <td>
-                              <div className="contract-item-actions">
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() => startEditWarehouse(row)}
-                                >
-                                  编辑
-                                </button>
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() =>
-                                    setConfirmDelete({
-                                      id: row.id,
-                                      endpoint: `/warehouses/${row.id}`,
-                                      label: `仓库 ${row.name}`,
-                                      kind: 'warehouse',
-                                    })
-                                  }
-                                >
-                                  删除
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
-            )}
+            {selectedTab === 'warehouses' && <WarehousesPage ctx={appCtx} />}
 
             {/* —— 新增/编辑仓库弹窗 —— */}
             {warehouseModalOpen && (
@@ -11787,341 +12093,57 @@ function App() {
               </div>
             )}
 
-            {selectedTab === 'products' && (
-              <div className="management-grid">
-                {/* 左：树形类别 + 新增产品 */}
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>商品类别</h2>
-                    <button type="button" className="link-btn" onClick={() => openCategoryModal('create')}>+ 新增顶级</button>
-                  </div>
-                  <div className="category-tree">
-                    {productCategories.length === 0 ? (
-                      <div className="empty-state">暂无类别，点「+ 新增顶级」建立分类</div>
-                    ) : (
-                      renderCategoryNodes(productCategories, 0)
-                    )}
-                  </div>
+            {selectedTab === 'products' && <ProductsPage ctx={appCtx} />}
 
-                </section>
-
-                {/* 右：搜索 + 产品列表 */}
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>产品列表</h2>
-                    <span className="status-badge">{filteredProducts.length} / {products.length} 件</span>
-                    <button type="button" className="primary-btn small-btn" onClick={() => setProductModalOpen(true)}>新增产品</button>
-                  </div>
-                  <div className="toolbar-row">
-                    <input
-                      className="search-input"
-                      placeholder="搜索 名称 / 编号 / 条码 / 助记码 / 规格…"
-                      value={productSearch}
-                      onChange={(event) => setProductSearch(event.target.value)}
-                    />
-                  </div>
-
-                  {filteredProducts.length === 0 ? (
-                    <div className="empty-state">{products.length === 0 ? '暂无产品数据' : '没有匹配的产品'}</div>
-                  ) : (
-                    <table className="data-table product-table">
-                      <thead>
-                        <tr>
-                          <th>编号</th>
-                          <th>名称</th>
-                          <th>类别</th>
-                          <th>条码</th>
-                          <th>助记码</th>
-                          <th>规格</th>
-                          <th>单位</th>
-                          <th className="num">成本价</th>
-                          <th className="num">零售价</th>
-                          <th>颜色</th>
-                          <th>尺码</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredProducts.map((row) => (
-                          <tr key={row.id}>
-                            <td className="mono">{row.sku}</td>
-                            <td>{row.name}</td>
-                            <td>{row.category || '—'}</td>
-                            <td className="mono">{row.bar_code || '—'}</td>
-                            <td className="mono">{row.mnemonic || '—'}</td>
-                            <td>{row.standards || '—'}</td>
-                            <td>{row.unit || '—'}</td>
-                            <td className="num">¥{Number(row.purchase_price || 0).toLocaleString()}</td>
-                            <td className="num">¥{Number(row.sale_price || 0).toLocaleString()}</td>
-                            <td>{row.color || '—'}</td>
-                            <td>{row.size || '—'}</td>
-                            <td className="row-actions nowrap">
-                              <button type="button" className="link-btn" onClick={() => openProductEdit(row)}>编辑</button>
-                              <button
-                                type="button"
-                                className="link-btn danger"
-                                onClick={() =>
-                                  setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/products/${row.id}`,
-                                    label: `商品 ${row.name}`,
-                                    kind: 'product',
-                                  })
-                                }
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {/* —— 新增产品弹窗 —— */}
+            {/* —— 商品弹窗（新增 / 编辑）——
+                弹窗本体已抽成独立组件 src/components/product-edit/ProductEditModal.jsx。
+                这里原来是两段近 240 行的内联 JSX（新增一段、编辑一段），字段几乎相同却各写
+                一遍，于是长期不同步 —— 实测后果：编辑弹窗既没有图片字段，它写的
+                list="lookup-product-category" 也指不到只在新增弹窗里定义过的那个 datalist。
+                现在两态只差 mode 一个参数，字段要改只有一处落点。 */}
             {productModalOpen && (
-              <div className="modal-backdrop" onClick={() => setProductModalOpen(false)}>
-                <div className="modal-card modal-wide" onClick={(event) => event.stopPropagation()}>
-                  <div className="modal-header">
-                    <h3>新增产品</h3>
-                    <button type="button" className="close-btn" onClick={() => setProductModalOpen(false)}>×</button>
-                  </div>
-                  <form onSubmit={submitProduct} className="erp-form">
-                    <datalist id="lookup-product-category">
-                      {flattenCategories(productCategories).map((name) => (
-                        <option key={name} value={name} />
-                      ))}
-                    </datalist>
-                    <div className="form-row two-col">
-                      <label>
-                        产品编号（SKU）
-                        <input value={productForm.sku} onChange={handleProductChange('sku')} required />
-                      </label>
-                      <label>
-                        产品名称
-                        <input value={productForm.name} onChange={handleProductChange('name')} required />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        类别
-                        <input list="lookup-product-category" value={productForm.category} onChange={handleProductChange('category')} placeholder="从类别树选，或手填" />
-                      </label>
-                      <label>
-                        单位
-                        <input list="lookup-product-unit" value={productForm.unit} onChange={handleProductChange('unit')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        采购价（成本价）
-                        <input type="number" step="0.01" value={productForm.purchase_price} onChange={handleProductChange('purchase_price')} />
-                      </label>
-                      <label>
-                        销售价（零售价）
-                        <input type="number" step="0.01" value={productForm.sale_price} onChange={handleProductChange('sale_price')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        默认税率（%）
-                        <input type="number" step="0.01" list="lookup-tax-rate" placeholder="如 13，留空则开单时手填" value={productForm.tax_rate} onChange={handleProductChange('tax_rate')} />
-                      </label>
-                      <label>
-                        条码
-                        <input value={productForm.bar_code} onChange={handleProductChange('bar_code')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        助记码
-                        <input value={productForm.mnemonic} onChange={handleProductChange('mnemonic')} />
-                      </label>
-                      <label>
-                        序列号
-                        <input value={productForm.serial_no} onChange={handleProductChange('serial_no')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        规格
-                        <input value={productForm.standards} onChange={handleProductChange('standards')} />
-                      </label>
-                      <label>
-                        型号
-                        <input value={productForm.brand} onChange={handleProductChange('brand')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        颜色
-                        <input value={productForm.color} onChange={handleProductChange('color')} />
-                      </label>
-                      <label>
-                        尺码
-                        <input value={productForm.size} onChange={handleProductChange('size')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        生产商
-                        <input value={productForm.manufacturer} onChange={handleProductChange('manufacturer')} />
-                      </label>
-                      <label>
-                        单位重量
-                        <input type="number" step="0.01" value={productForm.unit_weight} onChange={handleProductChange('unit_weight')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        库存上限
-                        <input type="number" value={productForm.stock_upper} onChange={handleProductChange('stock_upper')} />
-                      </label>
-                      <label>
-                        库存下限
-                        <input type="number" value={productForm.stock_lower} onChange={handleProductChange('stock_lower')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        包装数
-                        <input type="number" value={productForm.pack_qty} onChange={handleProductChange('pack_qty')} />
-                      </label>
-                      <label>
-                        保质期（天）
-                        <input type="number" value={productForm.shelf_life} onChange={handleProductChange('shelf_life')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        预警天数
-                        <input type="number" value={productForm.warn_days} onChange={handleProductChange('warn_days')} />
-                      </label>
-                      <label>
-                        图片链接
-                        <input value={productForm.image_url} onChange={handleProductChange('image_url')} />
-                      </label>
-                    </div>
-                    <div className="form-row">
-                      <label>
-                        备注
-                        <input value={productForm.note} onChange={handleProductChange('note')} />
-                      </label>
-                    </div>
-                    <div className="form-actions">
-                      <button className="primary-btn" type="submit">保存产品</button>
-                      <button type="button" className="secondary-btn" onClick={() => setProductModalOpen(false)}>取消</button>
-                    </div>
-                  </form>
-                </div>
-              </div>
+              <ProductEditModal
+                mode="create"
+                /* 智能识别上传：报价单/产品资料 → 商品字段；报价单明细可一键批量入库（2026-10-23） */
+                smartUpload
+                onSmartFill={applyProductSmartFill}
+                onSmartBulkItems={applyProductBulkItems}
+                form={productForm}
+                onChange={handleProductChange}
+                onSubmit={submitProduct}
+                onCancel={() => setProductModalOpen(false)}
+                busy={productBusy}
+                categories={productCategories}
+                suppliers={suppliers}
+                apiBase={API_BASE}
+                authHeaders={authHeaders}
+                onError={setNotice}
+              />
             )}
 
-            {/* —— 编辑商品（弹窗）：之前商品只能新增/删除，录错的条码助记码只能删了重建 —— */}
+            {/* —— 编辑商品（弹窗）——
+                历史：商品原本只有「新增 + 删除」，录错的条码/助记码只能删了重建；
+                所以才有这个编辑弹窗。现在它与新增共用同一个组件，只传 mode="edit"。
+                状态是 productEdit（不是 productForm），因此回调走 handleProductEditChange。 */}
             {productEdit && (
-              <div className="modal-backdrop" onClick={() => setProductEdit(null)}>
-                <div className="modal-card modal-wide" onClick={(event) => event.stopPropagation()}>
-                  <div className="modal-header">
-                    <h3>编辑商品 · {productEdit.sku}</h3>
-                    <button type="button" className="close-btn" onClick={() => setProductEdit(null)}>×</button>
-                  </div>
-                  <form className="invoice-edit-form" onSubmit={submitProductEdit}>
-                    <label>
-                      <span>产品名称</span>
-                      <input value={productEdit.name} required onChange={(e) => setProductEdit((prev) => ({ ...prev, name: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>类别</span>
-                      <input list="lookup-product-category" value={productEdit.category} onChange={(e) => setProductEdit((prev) => ({ ...prev, category: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>单位</span>
-                      <input list="lookup-product-unit" value={productEdit.unit} onChange={(e) => setProductEdit((prev) => ({ ...prev, unit: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>采购价</span>
-                      <input type="number" step="0.01" value={productEdit.purchase_price} onChange={(e) => setProductEdit((prev) => ({ ...prev, purchase_price: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>销售价</span>
-                      <input type="number" step="0.01" value={productEdit.sale_price} onChange={(e) => setProductEdit((prev) => ({ ...prev, sale_price: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>税率 %</span>
-                      <input type="number" step="0.01" value={productEdit.tax_rate} onChange={(e) => setProductEdit((prev) => ({ ...prev, tax_rate: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>条码</span>
-                      <input value={productEdit.bar_code} onChange={(e) => setProductEdit((prev) => ({ ...prev, bar_code: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>助记码</span>
-                      <input value={productEdit.mnemonic} onChange={(e) => setProductEdit((prev) => ({ ...prev, mnemonic: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>序列号</span>
-                      <input value={productEdit.serial_no} onChange={(e) => setProductEdit((prev) => ({ ...prev, serial_no: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>规格</span>
-                      <input value={productEdit.standards} onChange={(e) => setProductEdit((prev) => ({ ...prev, standards: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>型号</span>
-                      <input value={productEdit.brand} onChange={(e) => setProductEdit((prev) => ({ ...prev, brand: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>颜色</span>
-                      <input value={productEdit.color} onChange={(e) => setProductEdit((prev) => ({ ...prev, color: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>尺码</span>
-                      <input value={productEdit.size} onChange={(e) => setProductEdit((prev) => ({ ...prev, size: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>生产商</span>
-                      <input value={productEdit.manufacturer} onChange={(e) => setProductEdit((prev) => ({ ...prev, manufacturer: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>单位重量</span>
-                      <input type="number" step="0.01" value={productEdit.unit_weight} onChange={(e) => setProductEdit((prev) => ({ ...prev, unit_weight: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>库存上限</span>
-                      <input type="number" value={productEdit.stock_upper} onChange={(e) => setProductEdit((prev) => ({ ...prev, stock_upper: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>库存下限</span>
-                      <input type="number" value={productEdit.stock_lower} onChange={(e) => setProductEdit((prev) => ({ ...prev, stock_lower: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>包装数</span>
-                      <input type="number" value={productEdit.pack_qty} onChange={(e) => setProductEdit((prev) => ({ ...prev, pack_qty: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>保质期（天）</span>
-                      <input type="number" value={productEdit.shelf_life} onChange={(e) => setProductEdit((prev) => ({ ...prev, shelf_life: e.target.value }))} />
-                    </label>
-                    <label>
-                      <span>预警天数</span>
-                      <input type="number" value={productEdit.warn_days} onChange={(e) => setProductEdit((prev) => ({ ...prev, warn_days: e.target.value }))} />
-                    </label>
-                    <label className="span-2">
-                      <span>备注</span>
-                      <input value={productEdit.note} onChange={(e) => setProductEdit((prev) => ({ ...prev, note: e.target.value }))} />
-                    </label>
-                    <div className="form-actions span-2">
-                      <button type="submit" className="primary-btn" disabled={productBusy === 'edit'}>
-                        {productBusy === 'edit' ? '保存中…' : '保存'}
-                      </button>
-                      <button type="button" className="secondary-btn" onClick={() => setProductEdit(null)}>取消</button>
-                    </div>
-                  </form>
-                </div>
-              </div>
+              <ProductEditModal
+                mode="edit"
+                /* 编辑商品也开智能识别（2026-10-23）：识别值经核对框逐项确认后才合并，
+                   只覆盖认出的字段；报价单明细同样可以一键批量生成新商品。 */
+                smartUpload
+                onSmartFill={applyProductEditSmartFill}
+                onSmartBulkItems={applyProductBulkItems}
+                form={productEdit}
+                onChange={handleProductEditChange}
+                onSubmit={submitProductEdit}
+                onCancel={() => setProductEdit(null)}
+                busy={productBusy}
+                categories={productCategories}
+                suppliers={suppliers}
+                apiBase={API_BASE}
+                authHeaders={authHeaders}
+                onError={setNotice}
+              />
             )}
 
             {/* —— 类别新增 / 编辑（弹窗）—— */}
@@ -12144,19 +12166,19 @@ function App() {
                     </label>
                     <label>
                       上级类别
-                      <select
-                        name="parent_id"
-                        defaultValue={
-                          categoryModal.mode === 'edit'
-                            ? (categoryModal.node?.parent_id ?? '')
-                            : (categoryModal.node ? String(categoryModal.node.id) : '')
-                        }
-                      >
-                        <option value="">（无 —— 作为顶级类别）</option>
-                        {flattenCategoryOptions(productCategories).map((c) => (
-                          <option key={c.id} value={String(c.id)}>{c.path}</option>
-                        ))}
-                      </select>
+                      {/* 类别树会越攒越多：改可搜索。`path` 自带全角空格缩进，原样当 label 即可。
+                          值是 string（'' = 顶级）：原来靠 `<option value="">（无…）</option>`，
+                          现在靠右侧 × 清空回顶级，所以 placeholder 要把这件事说清。 */}
+                      <ErpSearchSelect
+                        options={flattenCategoryOptions(productCategories)}
+                        value={String(categoryParentDraft ?? '')}
+                        onChange={(value) => setCategoryParentDraft(value)}
+                        placeholder="搜索类别；留空即顶级类别"
+                        emptyText="没有匹配的类别"
+                        getOptionValue={(c) => String(c.id)}
+                        getOptionLabel={(c) => c.path}
+                        getSearchText={(c) => c.path}
+                      />
                     </label>
                     <label>
                       备注
@@ -12173,2639 +12195,83 @@ function App() {
               </div>
             )}
 
-            {selectedTab === 'dataio' && (
-              <div className="management-grid">
-                <section className="panel table-panel" style={{ gridColumn: '1 / -1' }}>
-                  <div className="section-header">
-                    <h2>Excel 导入导出</h2>
-                    <span className="status-badge">批量建账 / 数据迁移</span>
+            {/* 名称防呆：检测到相似名称时的黄色确认框（2026-10-22） */}
+            {nameGuard && (
+              <div className="modal-backdrop">
+                <div className="modal-card name-guard-modal">
+                  <div className="modal-header">
+                    <h3>检测到相似名称</h3>
                   </div>
-                  <p className="io-hint">
-                    下载模板 → 填好数据 → 上传导入。上传后会先做一次<strong>预检</strong>（不写库），确认无误再点「确认导入」。
-                    已存在的编码默认<strong>更新</strong>，不会重复新增；单行出错不影响其他行。
+                  <p className="name-guard-lead">
+                    你要新建的{nameGuard.label}「<strong>{nameGuard.name}</strong>」，与库里这些记录很像：
                   </p>
-
-                  <div className="io-grid">
-                    {excelKinds.map((item) => (
-                      <div className="io-card" key={item.kind}>
-                        <div className="io-card-head">
-                          <h3>{item.label}</h3>
-                          {item.key_fields.length > 0 && (
-                            <span className="io-keys">按 {item.key_fields.join(' + ')} 识别</span>
-                          )}
-                        </div>
-                        <div className="io-card-meta">
-                          <span>{item.column_count} 列</span>
-                          {item.required_fields.length > 0 && (
-                            <span className="io-required">必填：{item.required_fields.join('、')}</span>
-                          )}
-                        </div>
-                        <div className="io-card-actions">
-                          <button
-                            type="button"
-                            className="secondary-btn small-btn"
-                            disabled={excelBusy === `template-${item.kind}`}
-                            onClick={() => downloadExcelTemplate(item.kind, item.label)}
-                          >
-                            下载模板
-                          </button>
-                          <label className="secondary-btn small-btn io-file-btn">
-                            {excelBusy === `import-${item.kind}` ? '处理中…' : '选择文件导入'}
-                            <input
-                              type="file"
-                              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                              hidden
-                              onChange={handleExcelFilePicked(item.kind, item.label)}
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            className="secondary-btn small-btn"
-                            disabled={excelBusy === `export-${item.kind}`}
-                            onClick={() => exportExcelData(item.kind, item.label)}
-                          >
-                            导出数据
-                          </button>
-                        </div>
-                      </div>
+                  <ul className="name-guard-list">
+                    {nameGuard.similar.map((hit) => (
+                      <li key={hit.row.id}>
+                        <strong>{hit.row.name}</strong>
+                        {hit.row.code ? <span className="mono">（{hit.row.code}）</span> : null}
+                        <span className="name-guard-reason">{hit.reason}</span>
+                      </li>
                     ))}
-                    {excelKinds.length === 0 && <div className="empty-state">暂无可导入的数据类别</div>}
-                  </div>
-                </section>
-
-                {excelPending && (
-                  <section className="panel table-panel" style={{ gridColumn: '1 / -1' }}>
-                    <div className="section-header">
-                      <h2>导入预检 · {excelPending.label}</h2>
-                      <span className="status-badge">未写入数据库</span>
-                    </div>
-                    <p className="io-hint">
-                      文件：<strong>{excelPending.fileName}</strong> —— 下面是预检结果，确认后才会真正写入。
-                    </p>
-                    <div className="io-stats">
-                      <span className="io-stat ok">新增 {excelPending.preview.created}</span>
-                      <span className="io-stat warn">更新 {excelPending.preview.updated}</span>
-                      <span className="io-stat muted">跳过 {excelPending.preview.skipped}</span>
-                      <span className={`io-stat ${excelPending.preview.failed ? 'bad' : 'muted'}`}>
-                        失败 {excelPending.preview.failed}
-                      </span>
-                    </div>
-                    {excelPending.preview.errors.length > 0 && (
-                      <div className="io-errors">
-                        <h4>需要处理的行</h4>
-                        <table className="data-table">
-                          <thead>
-                            <tr><th>行号</th><th>原因</th></tr>
-                          </thead>
-                          <tbody>
-                            {excelPending.preview.errors.map((err, idx) => (
-                              <tr key={`${err.row}-${idx}`}>
-                                <td>第 {err.row} 行</td>
-                                <td>{err.message}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                    <div className="io-actions">
-                      <button type="button" className="secondary-btn" onClick={() => setExcelPending(null)}>取消</button>
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        disabled={excelBusy === `import-${excelPending.kind}`}
-                        onClick={confirmExcelImport}
-                      >
-                        {excelBusy === `import-${excelPending.kind}` ? '导入中…' : '确认导入'}
-                      </button>
-                    </div>
-                  </section>
-                )}
-
-                {excelOutcome && (
-                  <section className="panel table-panel" style={{ gridColumn: '1 / -1' }}>
-                    <div className="section-header">
-                      <h2>导入结果 · {excelOutcome.label}</h2>
-                      <span className="status-badge">已写入</span>
-                    </div>
-                    <div className="io-stats">
-                      <span className="io-stat ok">新增 {excelOutcome.result.created}</span>
-                      <span className="io-stat warn">更新 {excelOutcome.result.updated}</span>
-                      <span className="io-stat muted">跳过 {excelOutcome.result.skipped}</span>
-                      <span className={`io-stat ${excelOutcome.result.failed ? 'bad' : 'muted'}`}>
-                        失败 {excelOutcome.result.failed}
-                      </span>
-                    </div>
-                    {excelOutcome.result.errors.length > 0 && (
-                      <div className="io-errors">
-                        <h4>未导入的行</h4>
-                        <table className="data-table">
-                          <thead>
-                            <tr><th>行号</th><th>原因</th></tr>
-                          </thead>
-                          <tbody>
-                            {excelOutcome.result.errors.map((err, idx) => (
-                              <tr key={`${err.row}-${idx}`}>
-                                <td>第 {err.row} 行</td>
-                                <td>{err.message}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                    <div className="io-actions">
-                      <button type="button" className="secondary-btn" onClick={() => setExcelOutcome(null)}>关闭</button>
-                    </div>
-                  </section>
-                )}
-              </div>
-            )}
-
-            {selectedTab === 'purchase-order' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增采购订单</h2>
-                    <span className="status-badge">只订货 · 不动库存</span>
-                  </div>
-
-                  <form onSubmit={submitPurchaseOrderForm} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        供应商
-                        <select value={purchaseOrderForm.supplier_id} onChange={handlePurchaseOrderFormChange('supplier_id')} required>
-                          <option value="">请选择供应商</option>
-                          {suppliers.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}（{item.code}）</option>
-                          ))}
-                        </select>
-                        {renderPartyLink('suppliers', purchaseOrderForm.supplier_id, '供应商')}
-                      </label>
-                      <label>
-                        进货仓库（转单时生效）
-                        <select value={purchaseOrderForm.warehouse_id} onChange={handlePurchaseOrderFormChange('warehouse_id')}>
-                          <option value="">转单时再选</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        归属项目（可空）
-                        <select value={purchaseOrderForm.project_id} onChange={handlePurchaseOrderFormChange('project_id')}>
-                          <option value="">不归集到项目</option>
-                          {projects.map((item) => (
-                            <option key={item.id} value={item.id}>{item.code} {item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        送货日期
-                        <input type="date" value={purchaseOrderForm.delivery_date} onChange={handlePurchaseOrderFormChange('delivery_date')} />
-                      </label>
-                      <label>
-                        付款方式
-                        <input list="lookup-payment-method" value={purchaseOrderForm.payment_method} onChange={handlePurchaseOrderFormChange('payment_method')} placeholder="如：银行转账 / 月结30天" />
-                      </label>
-                    </div>
-
-                    <label>
-                      备注
-                      <input value={purchaseOrderForm.note} onChange={handlePurchaseOrderFormChange('note')} />
-                    </label>
-
-                    <div className="section-header">
-                      <h3>商品明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addPurchaseOrderItem}>+ 添加一行</button>
-                    </div>
-                    {purchaseOrderForm.items.map((row, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          商品
-                          <select value={row.product_id} onChange={handlePurchaseOrderItemChange(index, 'product_id')}>
-                            <option value="">请选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(row.product_id)}
-                        </label>
-                        <label>
-                          数量
-                          <input type="number" min="1" value={row.quantity} onChange={handlePurchaseOrderItemChange(index, 'quantity')} />
-                        </label>
-                        <label>
-                          单价
-                          <input type="number" step="0.01" value={row.unit_price} onChange={handlePurchaseOrderItemChange(index, 'unit_price')} />
-                        </label>
-                      </div>
-                    ))}
-                    <div className="order-items-summary">
-                      共 {purchaseOrderForm.items.filter((row) => row.product_id).length} 行 ·
-                      合计 ¥{purchaseOrderForm.items
-                        .reduce((sum, row) => sum + (Number(row.quantity) || 0) * (Number(row.unit_price) || 0), 0)
-                        .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </div>
-
-                    <button className="primary-btn" type="submit">保存采购订单</button>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>采购订单列表</h2>
-                    <span className="status-badge">{purchaseOrderList.length} 张</span>
-                  </div>
-
-                  {purchaseOrderList.length === 0 ? (
-                    <div className="empty-state">暂无采购订单。订单只确认订货意向，转入库单后才登记库存与应付。</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>订单号</th>
-                          <th>供应商</th>
-                          <th>行数</th>
-                          <th>金额</th>
-                          <th>送货日期</th>
-                          <th>状态</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {purchaseOrderList.map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.order_no}</td>
-                            <td>{suppliers.find((s) => s.id === row.supplier_id)?.name || row.supplier_id}</td>
-                            <td>{row.items.length}</td>
-                            <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
-                            <td>{row.delivery_date || '—'}</td>
-                            <td><span className="status-badge">{DOC_STATUS_LABELS[row.status] || row.status}</span></td>
-                            <td className="row-actions">
-                              <button type="button" className="secondary-btn small-btn" onClick={() => printPdf(`/print/purchase-order/${row.id}`, `采购订单_${row.order_no}.pdf`)}>打印</button>{' '}
-                              {row.status !== 'completed' && (
-                                <>
-                                  <button type="button" className="secondary-btn small-btn" onClick={() => convertPurchaseOrder(row)}>转入库单</button>{' '}
-                                  <button
-                                    type="button"
-                                    className="danger-btn"
-                                    onClick={() => setConfirmDelete({
-                                      id: row.id,
-                                      endpoint: `/purchase-orders/${row.id}`,
-                                      label: `采购订单 ${row.order_no}`,
-                                      kind: 'purchase-order',
-                                    })}
-                                  >
-                                    删除
-                                  </button>
-                                </>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'purchase' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增采购入库单</h2>
-                    <span className="status-badge">真实入库 · 写库存与应付</span>
-                  </div>
-
-                  <form onSubmit={submitInboundForm} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        供应商
-                        <select value={inboundForm.supplier_id} onChange={handleInboundFormChange('supplier_id')} required>
-                          <option value="">请选择供应商</option>
-                          {suppliers.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}（{item.code}）</option>
-                          ))}
-                        </select>
-                        {renderPartyLink('suppliers', inboundForm.supplier_id, '供应商')}
-                      </label>
-                      <label>
-                        入库仓库
-                        <select value={inboundForm.warehouse_id} onChange={handleInboundFormChange('warehouse_id')} required>
-                          <option value="">请选择仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        单据日期
-                        <input type="date" value={inboundForm.order_date} onChange={handleInboundFormChange('order_date')} />
-                      </label>
-                      <label>
-                        付款方式
-                        <input list="lookup-payment-method" value={inboundForm.payment_method} onChange={handleInboundFormChange('payment_method')} placeholder="如：银行转账 / 月结30天" />
-                      </label>
-                    </div>
-
-                    <label>
-                      备注
-                      <input value={inboundForm.note} onChange={handleInboundFormChange('note')} placeholder="如：随货同行单号、验收情况" />
-                    </label>
-
-                    <div className="section-header">
-                      <h3>商品明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addInboundItem}>+ 添加一行</button>
-                    </div>
-                    {inboundForm.items.map((row, index) => (
-                      <div className="form-row four-col" key={index}>
-                        <label>
-                          商品
-                          <select value={row.product_id} onChange={handleInboundItemChange(index, 'product_id')}>
-                            <option value="">请选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(row.product_id)}
-                        </label>
-                        <label>
-                          数量
-                          <input type="number" min="1" value={row.quantity} onChange={handleInboundItemChange(index, 'quantity')} />
-                        </label>
-                        <label>
-                          单价
-                          <input type="number" step="0.01" value={row.unit_price} onChange={handleInboundItemChange(index, 'unit_price')} />
-                        </label>
-                        <button
-                          type="button"
-                          className="danger-btn small-btn row-remove-btn"
-                          onClick={() => removeInboundItem(index)}
-                          disabled={inboundForm.items.length <= 1}
-                          title={inboundForm.items.length <= 1 ? '至少保留一行' : '删除此行'}
-                        >
-                          删行
-                        </button>
-                      </div>
-                    ))}
-                    <div className="order-items-summary">
-                      共 {inboundForm.items.filter((row) => row.product_id).length} 行 ·
-                      合计 ¥{inboundForm.items
-                        .reduce((sum, row) => sum + (Number(row.quantity) || 0) * (Number(row.unit_price) || 0), 0)
-                        .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </div>
-
-                    <button className="primary-btn" type="submit">保存并入库</button>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>采购入库单列表</h2>
-                    <span className="status-badge">{purchaseOrders.length} 张</span>
-                  </div>
-
-                  {purchaseOrders.length === 0 ? (
-                    <div className="empty-state">
-                      暂无入库单。这里登记的是真实入库（库存 + 应付），与「采购订单」的订货意向分开管理。
-                    </div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>入库单号</th>
-                            <th>供应商</th>
-                            <th>仓库</th>
-                            <th>行数</th>
-                            <th>金额</th>
-                            <th>日期</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {purchaseOrders.map((row) => (
-                            <tr key={row.id}>
-                              <td>{row.order_no}</td>
-                              <td>{suppliers.find((s) => s.id === row.supplier_id)?.name || row.supplier_id}</td>
-                              <td>{warehouses.find((w) => w.id === row.warehouse_id)?.name || '—'}</td>
-                              <td>{row.items?.length ?? 0}</td>
-                              <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
-                              <td>{row.order_date || row.delivery_date || '—'}</td>
-                              <td><span className="status-badge">{DOC_STATUS_LABELS[row.status] || row.status}</span></td>
-                              <td className="row-actions">
-                                <button type="button" className="secondary-btn small-btn" onClick={() => printPdf(`/print/purchase-inbound/${row.id}`, `入库单_${row.order_no}.pdf`)}>打印</button>{' '}
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/purchase-orders/${row.id}`,
-                                    label: `采购入库单 ${row.order_no}`,
-                                    kind: 'purchase-inbound',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'sales-order' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增销售订单</h2>
-                    <span className="status-badge">只订货 · 不动库存</span>
-                  </div>
-
-                  <form onSubmit={submitSalesOrderForm} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        客户
-                        <select value={salesOrderForm.customer_id} onChange={handleSalesOrderFormChange('customer_id')} required>
-                          <option value="">请选择客户</option>
-                          {customers.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}（{item.code}）</option>
-                          ))}
-                        </select>
-                        {renderPartyLink('customers', salesOrderForm.customer_id, '客户')}
-                      </label>
-                      <label>
-                        出货仓库（转单时生效）
-                        <select value={salesOrderForm.warehouse_id} onChange={handleSalesOrderFormChange('warehouse_id')}>
-                          <option value="">转单时再选</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        归属项目（可空）
-                        <select value={salesOrderForm.project_id} onChange={handleSalesOrderFormChange('project_id')}>
-                          <option value="">不归集到项目</option>
-                          {projects.map((item) => (
-                            <option key={item.id} value={item.id}>{item.code} {item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        送货日期
-                        <input type="date" value={salesOrderForm.delivery_date} onChange={handleSalesOrderFormChange('delivery_date')} />
-                      </label>
-                      <label>
-                        付款方式
-                        <input list="lookup-payment-method" value={salesOrderForm.payment_method} onChange={handleSalesOrderFormChange('payment_method')} placeholder="如：银行转账 / 月结30天" />
-                      </label>
-                    </div>
-
-                    <label>
-                      备注
-                      <input value={salesOrderForm.note} onChange={handleSalesOrderFormChange('note')} />
-                    </label>
-
-                    <div className="section-header">
-                      <h3>商品明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addSalesOrderItem}>+ 添加一行</button>
-                    </div>
-                    {salesOrderForm.items.map((row, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          商品
-                          <select value={row.product_id} onChange={handleSalesOrderItemChange(index, 'product_id')}>
-                            <option value="">请选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(row.product_id)}
-                        </label>
-                        <label>
-                          数量
-                          <input type="number" min="1" value={row.quantity} onChange={handleSalesOrderItemChange(index, 'quantity')} />
-                        </label>
-                        <label>
-                          单价
-                          <input type="number" step="0.01" value={row.unit_price} onChange={handleSalesOrderItemChange(index, 'unit_price')} />
-                        </label>
-                      </div>
-                    ))}
-                    <div className="order-items-summary">
-                      共 {salesOrderForm.items.filter((row) => row.product_id).length} 行 ·
-                      合计 ¥{salesOrderForm.items
-                        .reduce((sum, row) => sum + (Number(row.quantity) || 0) * (Number(row.unit_price) || 0), 0)
-                        .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </div>
-
-                    <button className="primary-btn" type="submit">保存销售订单</button>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>销售订单列表</h2>
-                    <span className="status-badge">{salesOrderList.length} 张</span>
-                  </div>
-
-                  {salesOrderList.length === 0 ? (
-                    <div className="empty-state">暂无销售订单。订单只确认订货意向，转开单后才扣库存、记应收。</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>订单号</th>
-                          <th>客户</th>
-                          <th>行数</th>
-                          <th>金额</th>
-                          <th>送货日期</th>
-                          <th>状态</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {salesOrderList.map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.order_no}</td>
-                            <td>{customers.find((c) => c.id === row.customer_id)?.name || row.customer_id}</td>
-                            <td>{row.items.length}</td>
-                            <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
-                            <td>{row.delivery_date || '—'}</td>
-                            <td><span className="status-badge">{DOC_STATUS_LABELS[row.status] || row.status}</span></td>
-                            <td className="row-actions">
-                              <button type="button" className="secondary-btn small-btn" onClick={() => printPdf(`/print/sales-order/${row.id}`, `销售订单_${row.order_no}.pdf`)}>打印</button>{' '}
-                              {row.status !== 'completed' && (
-                                <>
-                                  <button type="button" className="secondary-btn small-btn" onClick={() => convertSalesOrder(row)}>转开单</button>{' '}
-                                  <button
-                                    type="button"
-                                    className="danger-btn"
-                                    onClick={() => setConfirmDelete({
-                                      id: row.id,
-                                      endpoint: `/sales-orders/${row.id}`,
-                                      label: `销售订单 ${row.order_no}`,
-                                      kind: 'sales-order',
-                                    })}
-                                  >
-                                    删除
-                                  </button>
-                                </>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'sales' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增销售出库单</h2>
-                    <span className="status-badge">真实出库 · 写库存与应收</span>
-                  </div>
-
-                  <form onSubmit={submitOutboundForm} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        客户
-                        <select value={outboundForm.customer_id} onChange={handleOutboundFormChange('customer_id')} required>
-                          <option value="">请选择客户</option>
-                          {customers.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}（{item.code}）</option>
-                          ))}
-                        </select>
-                        {renderPartyLink('customers', outboundForm.customer_id, '客户')}
-                      </label>
-                      <label>
-                        出库仓库
-                        <select value={outboundForm.warehouse_id} onChange={handleOutboundFormChange('warehouse_id')} required>
-                          <option value="">请选择仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        单据日期
-                        <input type="date" value={outboundForm.order_date} onChange={handleOutboundFormChange('order_date')} />
-                      </label>
-                      <label>
-                        收款方式
-                        <input list="lookup-payment-method" value={outboundForm.payment_method} onChange={handleOutboundFormChange('payment_method')} placeholder="如：现金 / 微信 / 月结30天" />
-                      </label>
-                    </div>
-
-                    <label>
-                      备注
-                      <input value={outboundForm.note} onChange={handleOutboundFormChange('note')} placeholder="如：送货地址、客户要求" />
-                    </label>
-
-                    <div className="section-header">
-                      <h3>商品明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addOutboundItem}>+ 添加一行</button>
-                    </div>
-                    {outboundForm.items.map((row, index) => (
-                      <div className="form-row four-col" key={index}>
-                        <label>
-                          商品
-                          <select value={row.product_id} onChange={handleOutboundItemChange(index, 'product_id')}>
-                            <option value="">请选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(row.product_id)}
-                        </label>
-                        <label>
-                          数量
-                          <input type="number" min="1" value={row.quantity} onChange={handleOutboundItemChange(index, 'quantity')} />
-                        </label>
-                        <label>
-                          单价
-                          <input type="number" step="0.01" value={row.unit_price} onChange={handleOutboundItemChange(index, 'unit_price')} />
-                        </label>
-                        <button
-                          type="button"
-                          className="danger-btn small-btn row-remove-btn"
-                          onClick={() => removeOutboundItem(index)}
-                          disabled={outboundForm.items.length <= 1}
-                          title={outboundForm.items.length <= 1 ? '至少保留一行' : '删除此行'}
-                        >
-                          删行
-                        </button>
-                      </div>
-                    ))}
-                    <div className="order-items-summary">
-                      共 {outboundForm.items.filter((row) => row.product_id).length} 行 ·
-                      合计 ¥{outboundForm.items
-                        .reduce((sum, row) => sum + (Number(row.quantity) || 0) * (Number(row.unit_price) || 0), 0)
-                        .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </div>
-
-                    <button className="primary-btn" type="submit">保存并出库</button>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>销售出库单列表</h2>
-                    <span className="status-badge">{salesOrders.length} 张</span>
-                  </div>
-
-                  {salesOrders.length === 0 ? (
-                    <div className="empty-state">
-                      暂无出库单。这里登记的是真实出库（库存 + 应收），与「销售订单」的订货意向分开管理。
-                    </div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>出库单号</th>
-                          <th>客户</th>
-                          <th>仓库</th>
-                          <th>状态</th>
-                          <th>金额</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {salesOrders.map((row) => (
-                          <tr
-                            key={row.id}
-                            onClick={() => setSelectedSalesOrder(row)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault();
-                                setSelectedSalesOrder(row);
-                              }
-                            }}
-                            tabIndex={0}
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <td>{row.order_no}</td>
-                            <td>{customers.find((c) => c.id === row.customer_id)?.name || row.customer_id}</td>
-                            <td>{warehouses.find((w) => w.id === row.warehouse_id)?.name || '—'}</td>
-                            <td><span className="status-badge">{DOC_STATUS_LABELS[row.status] || row.status}</span></td>
-                            <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
-                            <td>
-                              <button
-                                type="button"
-                                className="secondary-btn small-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  printPdf(`/print/sales-order/${row.id}`, `${row.order_no}.pdf`);
-                                }}
-                              >
-                                打印
-                              </button>{' '}
-                              <button
-                                type="button"
-                                className="secondary-btn small-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  printPdf(`/print/delivery-note/${row.id}`, `送货单_${row.order_no}.pdf`);
-                                }}
-                              >
-                                送货单
-                              </button>{' '}
-                              <button
-                                type="button"
-                                className="danger-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/sales-orders/${row.id}`,
-                                    label: `销售出库单 ${row.order_no}`,
-                                    kind: 'sales-order',
-                                  });
-                                }}
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-
-                {selectedSalesOrder && (
-                  <div className="modal-overlay" onClick={() => setSelectedSalesOrder(null)}>
-                    <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-                      <div className="modal-header">
-                        <h3>销售订单详情</h3>
-                        <button type="button" className="secondary-btn small-btn" onClick={() => setSelectedSalesOrder(null)}>关闭</button>
-                      </div>
-
-                      <div className="modal-body">
-                        <p><strong>单号：</strong> {selectedSalesOrder.order_no}</p>
-                        <p><strong>客户：</strong> {selectedSalesOrder.customer_id}</p>
-                        <p><strong>状态：</strong> {selectedSalesOrder.status}</p>
-                        <p><strong>金额：</strong> ¥{Number(selectedSalesOrder.total_amount || 0).toLocaleString()}</p>
-                      </div>
-
-                      <div className="modal-actions">
-                        <button
-                          type="button"
-                          className="primary-btn"
-                          onClick={async () => {
-                            const success = await updateSalesOrderStatus(selectedSalesOrder.id, 'completed');
-                            if (success) {
-                              setSelectedSalesOrder(null);
-                            }
-                          }}
-                        >
-                          标记为已完结
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {selectedTab === 'production' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增生产单</h2>
-                    <span className="status-badge">车间计划</span>
-                  </div>
-
-                  <form onSubmit={submitProductionOrder} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        生产单号
-                        <input value={productionForm.order_no} onChange={handleProductionChange('order_no')} required />
-                      </label>
-                      <label>
-                        产品 ID
-                        <input type="number" value={productionForm.product_id} onChange={handleProductionChange('product_id')} required />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        数量
-                        <input type="number" min="1" value={productionForm.quantity} onChange={handleProductionChange('quantity')} required />
-                      </label>
-                      <label>
-                        优先级
-                        <select value={productionForm.priority} onChange={handleProductionChange('priority')}>
-                          <option value="low">低</option>
-                          <option value="normal">正常</option>
-                          <option value="high">高</option>
-                        </select>
-                      </label>
-                    </div>
-
-                    <label>
-                      状态
-                      <select value={productionForm.status} onChange={handleProductionChange('status')}>
-                        <option value="planned">计划中</option>
-                        <option value="in_progress">生产中</option>
-                        <option value="completed">已完成</option>
-                      </select>
-                    </label>
-
-                    <label>
-                      备注
-                      <textarea value={productionForm.note} onChange={handleProductionChange('note')} rows="3" />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存生产单</button>
-                  </form>
-                </section>
-
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>生产流程状态</h2>
-                    <span className="status-badge">{operationsBoard.production_flow.length} 条流程</span>
-                  </div>
-
-                  {operationsBoard.production_flow.length === 0 ? (
-                    <div className="empty-state">暂无生产流程状态</div>
-                  ) : (
-                    <div className="flow-list">
-                      {operationsBoard.production_flow.map((flow) => (
-                        <div key={flow.order_no} className="flow-card">
-                          <div className="flow-header">
-                            <strong>{flow.order_no}</strong>
-                            <span className="status-badge">{flow.status}</span>
-                          </div>
-                          <div className="flow-steps">
-                            {flow.steps.map((step, index) => (
-                              <div key={`${flow.order_no}-${step.name}-${index}`} className={`flow-step ${step.status}`}>
-                                <span>{index + 1}</span>
-                                <small>{step.name}</small>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>工单 / 排程 / 产线看板</h2>
-                    <span className="status-badge">{operationsBoard.work_orders.length} 个工单</span>
-                  </div>
-
-                  <div className="operations-grid">
-                    <div className="mini-panel">
-                      <h3>工单执行</h3>
-                      {(operationsBoard.work_orders || []).length === 0 ? (
-                        <div className="empty-state">暂无工单</div>
-                      ) : (
-                        <ul className="mini-list">
-                          {operationsBoard.work_orders.map((workOrder) => (
-                            <li key={workOrder.id}>
-                              <div>
-                                <strong>{workOrder.order_no}</strong>
-                                <small>{workOrder.line_name} · {workOrder.product_id}</small>
-                              </div>
-                              <span>{workOrder.status}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div className="mini-panel">
-                      <h3>排程</h3>
-                      {(operationsBoard.production_schedule || []).length === 0 ? (
-                        <div className="empty-state">暂无排程</div>
-                      ) : (
-                        <ul className="mini-list">
-                          {operationsBoard.production_schedule.map((item, index) => (
-                            <li key={`${item.order_no}-${index}`}>
-                              <div>
-                                <strong>{item.order_no}</strong>
-                                <small>{item.line_name} · {item.date}</small>
-                              </div>
-                              <span>{item.status}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div className="mini-panel">
-                      <h3>BOM 缺料预警</h3>
-                      {(operationsBoard.bom_alerts || []).length === 0 ? (
-                        <div className="empty-state">暂无预警</div>
-                      ) : (
-                        <ul className="mini-list">
-                          {operationsBoard.bom_alerts.map((alert, index) => (
-                            <li key={`${alert.product_id}-${alert.component_id}-${index}`}>
-                              <div>
-                                <strong>{alert.message}</strong>
-                                <small>组件 {alert.component_id} · 用量 {alert.quantity}</small>
-                              </div>
-                              <span>{alert.level}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div className="mini-panel">
-                      <h3>自动排程</h3>
-                      {(operationsBoard.auto_schedule || []).length === 0 ? (
-                        <div className="empty-state">暂无排程结果</div>
-                      ) : (
-                        <ul className="mini-list">
-                          {operationsBoard.auto_schedule.map((item, index) => (
-                            <li key={`${item.order_no}-${index}`}>
-                              <div>
-                                <strong>{item.order_no}</strong>
-                                <small>{item.line_name} · {item.start_date}</small>
-                              </div>
-                              <span>{item.load_rate}%</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div className="mini-panel">
-                      <h3>工单报工</h3>
-                      <div className="report-pill-row">
-                        <div className="report-pill">
-                          <span>已完成</span>
-                          <strong>{operationsBoard.work_report_summary?.completed_today ?? 0}</strong>
-                        </div>
-                        <div className="report-pill">
-                          <span>进度</span>
-                          <strong>{operationsBoard.work_report_summary?.progress_rate ?? 0}%</strong>
-                        </div>
-                        <div className="report-pill">
-                          <span>OEE</span>
-                          <strong>{operationsBoard.work_report_summary?.oee ?? 0}%</strong>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mini-panel">
-                      <h3>产线看板</h3>
-                      {(operationsBoard.line_board || []).length === 0 ? (
-                        <div className="empty-state">暂无产线数据</div>
-                      ) : (
-                        <ul className="mini-list">
-                          {operationsBoard.line_board.map((line) => (
-                            <li key={line.line_name}>
-                              <div>
-                                <strong>{line.line_name}</strong>
-                                <small>产量 {line.output} · 利用率 {line.utilization}%</small>
-                              </div>
-                              <span>{line.status}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div className="mini-panel">
-                      <h3>库存预警</h3>
-                      {(operationsBoard.inventory_alerts || []).length === 0 ? (
-                        <div className="empty-state">库存正常</div>
-                      ) : (
-                        <ul className="mini-list">
-                          {operationsBoard.inventory_alerts.map((alert) => (
-                            <li key={`${alert.product_id}-${alert.warehouse_id}`}>
-                              <div>
-                                <strong>{alert.product_name}</strong>
-                                <small>仓库 {alert.warehouse_id} · 可用 {alert.available_quantity}</small>
-                              </div>
-                              <span>{alert.status === 'low_stock' ? '低库存' : '关注'}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div className="mini-panel">
-                      <h3>采购补货建议</h3>
-                      {(operationsBoard.purchase_recommendations || []).length === 0 ? (
-                        <div className="empty-state">暂无补货建议</div>
-                      ) : (
-                        <ul className="mini-list">
-                          {operationsBoard.purchase_recommendations.map((item, index) => (
-                            <li key={`${item.product_id}-${index}`}>
-                              <div>
-                                <strong>{item.product_name}</strong>
-                                <small>{item.reason}</small>
-                              </div>
-                              <span>{item.priority === 'high' ? '重点' : '建议'} {item.recommended_quantity}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  </div>
-                </section>
-
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>BOM 关联建议</h2>
-                    <span className="status-badge">{operationsBoard.bom_summary.total_items} 个 BOM</span>
-                  </div>
-
-                  <div className="recommendation-list">
-                    {(operationsBoard.recommendations || []).map((recommendation) => (
-                      <button
-                        key={recommendation.title}
-                        type="button"
-                        className={`recommendation-item ${selectedRecommendation === recommendation.title ? 'selected' : ''}`}
-                        onClick={() => setSelectedRecommendation(recommendation.title)}
-                      >
-                        <div className="recommendation-topline">
-                          <strong>{recommendation.title}</strong>
-                          <span className={`priority-tag ${recommendation.priority}`}>{recommendation.priority}</span>
-                        </div>
-                        <small>{recommendation.description}</small>
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="selected-recommendation-box">
-                    {selectedRecommendation
-                      ? `已选择：${selectedRecommendation}`
-                      : '请选择一条建议，作为当前生产决策参考。'}
-                  </div>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>生产计划列表</h2>
-                    <span className="status-badge">{productionOrders.length} 张</span>
-                  </div>
-
-                  {productionOrders.length === 0 ? (
-                    <div className="empty-state">暂无生产计划</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>单号</th>
-                          <th>产品</th>
-                          <th>数量</th>
-                          <th>状态</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {productionOrders.slice(0, 8).map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.order_no}</td>
-                            <td>{row.product_id}</td>
-                            <td>{row.quantity}</td>
-                            <td>{row.status}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {productionOrders.length > 8 && (
-                    <div className="table-hint">共 {productionOrders.length} 条，仅显示最近 8 条</div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'projects' && (
-              <div className="management-grid">
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>项目列表</h2>
-                    <span className="status-badge">{projects.length} 个</span>
-                    <button type="button" className="primary-btn small-btn" onClick={() => setProjectModalOpen(true)}>新增项目</button>
-                  </div>
-
-                  {projects.length === 0 ? (
-                    <div className="empty-state">暂无项目数据</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>编码</th>
-                          <th>名称</th>
-                          <th>负责人</th>
-                          <th>状态</th>
-                          <th>进度</th>
-                          <th className="num">预算</th>
-                          <th>截止</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {projects.slice(0, 8).map((row) => (
-                          <tr key={row.id}>
-                            <td className="mono">{row.code}</td>
-                            <td>{row.name}</td>
-                            <td>{row.manager || '—'}</td>
-                            <td>
-                              <span className={`status-badge ${PROJECT_STATUS_TONE[row.status] || 'muted'}`}>
-                                {PROJECT_STATUS_LABEL[row.status] || row.status}
-                              </span>
-                            </td>
-                            <td>{row.progress}%</td>
-                            <td className="num">{money(row.budget)}</td>
-                            <td className="cell-sub">{row.deadline || '—'}</td>
-                            <td className="row-actions nowrap">
-                              <button
-                                type="button"
-                                className="link-btn"
-                                disabled={projectBusy === `cost-${row.id}`}
-                                onClick={() => openProjectCost(row)}
-                              >
-                                成本归集
-                              </button>
-                              <button type="button" className="link-btn" onClick={() => openProjectEdit(row)}>
-                                编辑
-                              </button>
-                              <button
-                                type="button"
-                                className="link-btn danger"
-                                disabled={projectBusy === `del-${row.id}`}
-                                onClick={() => removeProject(row)}
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {projects.length > 8 && (
-                    <div className="table-hint">共 {projects.length} 条，仅显示最近 8 条</div>
-                  )}
-
-                  {/* ——— 项目成本归集：一个项目赚不赚钱，只能从这里看 ——— */}
-                  {projectCost && (
-                    <div className="modal-backdrop" onClick={() => setProjectCost(null)}>
-                      <div className="modal-card modal-wide" onClick={(event) => event.stopPropagation()}>
-                        <div className="modal-header">
-                          <h3>项目成本归集 · {projectCost.project.name}</h3>
-                          <button type="button" className="close-btn" onClick={() => setProjectCost(null)}>×</button>
-                        </div>
-                        <p className="settings-hint">
-                          数字全部来自**单据自动写的财务流水**，不需要在这个项目上再录一遍。
-                          挂项目的方式：销售单 / 采购单选这个项目，或日常支出登记时指定项目。
-                        </p>
-                        <div className="invoice-summary-row">
-                          <div className="metric-card">
-                            <span>项目收入</span>
-                            <strong className="green-text">{money(projectCost.summary.income)}</strong>
-                          </div>
-                          <div className="metric-card">
-                            <span>采购成本</span>
-                            <strong>{money(projectCost.summary.cost)}</strong>
-                          </div>
-                          <div className="metric-card">
-                            <span>费用</span>
-                            <strong>{money(projectCost.summary.expense)}</strong>
-                          </div>
-                          <div className="metric-card">
-                            <span>毛利</span>
-                            <strong className={Number(projectCost.summary.gross_profit) >= 0 ? 'red-text' : 'green-text'}>
-                              {money(projectCost.summary.gross_profit)}
-                            </strong>
-                          </div>
-                        </div>
-                        <div className="invoice-summary-row">
-                          <div className="metric-card">
-                            <span>毛利率</span>
-                            <strong>
-                              {projectCost.summary.gross_margin_rate == null
-                                ? '—（还没有收入）'
-                                : `${projectCost.summary.gross_margin_rate}%`}
-                            </strong>
-                          </div>
-                          <div className="metric-card">
-                            <span>预算 / 已用</span>
-                            <strong>
-                              {money(projectCost.project.budget)} / {money(projectCost.summary.budget_used)}
-                            </strong>
-                          </div>
-                          <div className="metric-card">
-                            <span>预算执行率</span>
-                            <strong>
-                              {projectCost.summary.budget_usage_rate == null
-                                ? '—（没设预算）'
-                                : `${projectCost.summary.budget_usage_rate}%`}
-                            </strong>
-                          </div>
-                          <div className="metric-card">
-                            <span>流水条数</span>
-                            <strong>{projectCost.summary.flow_count}</strong>
-                          </div>
-                        </div>
-
-                        <div className="table-wrap">
-                          <table className="data-table">
-                            <thead>
-                              <tr><th>来源</th><th className="num">条数</th><th className="num">金额</th></tr>
-                            </thead>
-                            <tbody>
-                              {projectCost.by_source.length === 0 && (
-                                <tr><td colSpan="3" className="table-empty">这个项目上还没有挂任何单据或流水。</td></tr>
-                              )}
-                              {projectCost.by_source.map((row) => (
-                                <tr key={row.related_type}>
-                                  <td>{row.label}</td>
-                                  <td className="num">{row.count}</td>
-                                  <td className="num">{money(row.amount)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-
-                        <details className="raw-text-box">
-                          <summary>明细流水（{projectCost.flows.length} 条）</summary>
-                          <table className="detail-table">
-                            <thead>
-                              <tr><th>日期</th><th>来源</th><th>单号</th><th className="num">金额</th><th>说明</th></tr>
-                            </thead>
-                            <tbody>
-                              {projectCost.flows.map((row) => (
-                                <tr key={row.id}>
-                                  <td>{row.occurred_at || '—'}</td>
-                                  <td>{row.related_type_label || row.transaction_type}</td>
-                                  <td className="mono">{row.doc_no || '—'}</td>
-                                  <td className="num">{money(row.amount)}</td>
-                                  <td>{row.note || '—'}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </details>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ——— 新增项目弹窗 ——— */}
-                  {projectModalOpen && (
-                    <div className="modal-backdrop" onClick={() => setProjectModalOpen(false)}>
-                      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-                        <div className="modal-header">
-                          <h3>新增项目</h3>
-                          <button type="button" className="close-btn" onClick={() => setProjectModalOpen(false)}>×</button>
-                        </div>
-                        <form onSubmit={submitProject} className="erp-form">
-                          <div className="form-row two-col">
-                            <label>
-                              项目编码
-                              <input value={projectForm.code} onChange={handleProjectChange('code')} required />
-                            </label>
-                            <label>
-                              项目名称
-                              <input value={projectForm.name} onChange={handleProjectChange('name')} required />
-                            </label>
-                          </div>
-                          <div className="form-row two-col">
-                            <label>
-                              负责人
-                              <input value={projectForm.manager} onChange={handleProjectChange('manager')} />
-                            </label>
-                            <label>
-                              状态
-                              <select value={projectForm.status} onChange={handleProjectChange('status')}>
-                                {Object.entries(PROJECT_STATUS_LABEL).map(([value, label]) => (
-                                  <option key={value} value={value}>{label}</option>
-                                ))}
-                              </select>
-                            </label>
-                          </div>
-                          <div className="form-row two-col">
-                            <label>
-                              进度 %
-                              <input type="number" min="0" max="100" value={projectForm.progress} onChange={handleProjectChange('progress')} />
-                            </label>
-                            <label>
-                              预算
-                              <input type="number" step="0.01" value={projectForm.budget} onChange={handleProjectChange('budget')} />
-                            </label>
-                          </div>
-                          <label>
-                            截止日期
-                            <input type="date" value={projectForm.deadline} onChange={handleProjectChange('deadline')} />
-                          </label>
-                          <label>
-                            备注
-                            <textarea value={projectForm.note} onChange={handleProjectChange('note')} rows="3" />
-                          </label>
-                          <div className="form-actions">
-                            <button className="primary-btn" type="submit">保存项目</button>
-                            <button type="button" className="secondary-btn" onClick={() => setProjectModalOpen(false)}>取消</button>
-                          </div>
-                        </form>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ——— 编辑项目 ——— */}
-                  {projectEdit && (
-                    <div className="modal-backdrop" onClick={() => setProjectEdit(null)}>
-                      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-                        <div className="modal-header">
-                          <h3>编辑项目 · {projectEdit.code}</h3>
-                          <button type="button" className="close-btn" onClick={() => setProjectEdit(null)}>×</button>
-                        </div>
-                        <form className="invoice-edit-form" onSubmit={submitProjectEdit}>
-                          <label className="span-2">
-                            <span>项目名称</span>
-                            <input
-                              value={projectEdit.name}
-                              required
-                              onChange={(event) => setProjectEdit((prev) => ({ ...prev, name: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>负责人</span>
-                            <input
-                              value={projectEdit.manager}
-                              onChange={(event) => setProjectEdit((prev) => ({ ...prev, manager: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>状态</span>
-                            <select
-                              value={projectEdit.status}
-                              onChange={(event) => setProjectEdit((prev) => ({ ...prev, status: event.target.value }))}
-                            >
-                              {Object.entries(PROJECT_STATUS_LABEL).map(([value, label]) => (
-                                <option key={value} value={value}>{label}</option>
-                              ))}
-                            </select>
-                          </label>
-                          <label>
-                            <span>进度 %</span>
-                            <input
-                              type="number" min="0" max="100"
-                              value={projectEdit.progress}
-                              onChange={(event) => setProjectEdit((prev) => ({ ...prev, progress: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>预算</span>
-                            <input
-                              type="number" step="0.01"
-                              value={projectEdit.budget}
-                              onChange={(event) => setProjectEdit((prev) => ({ ...prev, budget: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>截止日期</span>
-                            <input
-                              type="date"
-                              value={projectEdit.deadline || ''}
-                              onChange={(event) => setProjectEdit((prev) => ({ ...prev, deadline: event.target.value }))}
-                            />
-                          </label>
-                          <label className="span-2">
-                            <span>备注</span>
-                            <input
-                              value={projectEdit.note}
-                              onChange={(event) => setProjectEdit((prev) => ({ ...prev, note: event.target.value }))}
-                            />
-                          </label>
-                          <div className="form-actions span-2">
-                            <button type="submit" className="primary-btn" disabled={projectBusy === 'edit'}>
-                              {projectBusy === 'edit' ? '保存中…' : '保存'}
-                            </button>
-                            <button type="button" className="secondary-btn" onClick={() => setProjectEdit(null)}>
-                              取消
-                            </button>
-                          </div>
-                        </form>
-                      </div>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'reports' && (
-              <div className="report-center">
-                {/* 左：报表目录（后端 /reports/catalog 下发，前端不写死） */}
-                <aside className="report-nav">
-                  <div className="report-nav-head">
-                    <h2>报表中心</h2>
-                    <span className="status-badge">{reportCatalog.total || 0} 张</span>
-                  </div>
-                  {(reportCatalog.groups || []).map((group) => (
-                    <div className="report-nav-group" key={group.group}>
-                      <div className="report-nav-title">{group.group}</div>
-                      {(group.reports || []).map((item) => (
-                        <button
-                          type="button"
-                          key={item.key}
-                          className={`report-nav-item ${reportKey === item.key ? 'active' : ''}`}
-                          onClick={() => selectReport(item.key)}
-                          title={item.desc}
-                        >
-                          <span>{item.name}</span>
-                          <em>{REPORT_SHAPE_LABEL[item.shape] || item.shape}</em>
-                        </button>
-                      ))}
-                    </div>
-                  ))}
-                </aside>
-
-                {/* 右：报表本体（四种形态共用一个渲染入口） */}
-                <section className="panel report-body">
-                  <div className="section-header report-header">
-                    <div>
-                      <h2>{reportResult?.report?.name || '报表'}</h2>
-                      <p className="table-hint">{reportResult?.report?.desc || '从左侧目录选择一张报表。'}</p>
-                    </div>
-                    <div className="report-toolbar">
-                      <label className="report-field">
-                        起
-                        <input type="date" value={reportQuery.date_from} onChange={handleReportQueryChange('date_from')} />
-                      </label>
-                      <label className="report-field">
-                        止
-                        <input type="date" value={reportQuery.date_to} onChange={handleReportQueryChange('date_to')} />
-                      </label>
-
-                      {reportResult?.shape === 'crosstab' && (
-                        <>
-                          <select
-                            className="report-select"
-                            value={reportQuery.period || reportResult?.report?.period || ''}
-                            onChange={handleReportQueryChange('period')}
-                          >
-                            {Object.entries(reportCatalog.periods || {}).map(([key, label]) => (
-                              <option key={key} value={key}>{label}</option>
-                            ))}
-                          </select>
-                          <select
-                            className="report-select"
-                            value={reportQuery.dimension || reportResult?.report?.dimension || ''}
-                            onChange={handleReportQueryChange('dimension')}
-                          >
-                            {Object.entries(reportCatalog.dimensions || {}).map(([key, label]) => (
-                              <option key={key} value={key}>按{label}</option>
-                            ))}
-                          </select>
-                        </>
-                      )}
-
-                      <input
-                        className="report-search"
-                        placeholder="筛选名称 / 商品"
-                        value={reportQuery.keyword}
-                        onChange={handleReportQueryChange('keyword')}
-                      />
-                      <button
-                        type="button"
-                        className="secondary-btn small-btn"
-                        onClick={() => refreshReportData()}
-                        disabled={reportBusy}
-                      >
-                        {reportBusy ? '取数中…' : '查询'}
-                      </button>
-                      <button type="button" className="secondary-btn small-btn" onClick={exportReport}>导出 CSV</button>
-                    </div>
-                  </div>
-
-                  <div className="report-range-hint">
-                    数据区间：{reportResult?.range?.date_from || '—'} ~ {reportResult?.range?.date_to || '—'}
-                    {reportResult?.report?.dimension ? ` · 按${reportCatalog.dimensions?.[reportResult.report.dimension] || ''}` : ''}
-                    {reportResult?.report?.period ? ` · ${reportCatalog.periods?.[reportResult.report.period] || ''}粒度` : ''}
-                  </div>
-
-                  {renderReportBody()}
-
-                  {reportResult?.notes?.length ? (
-                    <ul className="report-notes">
-                      {reportResult.notes.map((note) => <li key={note}>{note}</li>)}
-                    </ul>
-                  ) : null}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'invoices' && (
-              <div className="system-stack">
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>发票管理</h2>
-                    <div className="param-toolbar">
-                      <span className="status-badge ok">
-                        进项 {invoiceDirectionCounts.input.count} 张 ¥
-                        {invoiceDirectionCounts.input.amount.toLocaleString()}
-                      </span>
-                      <span className="status-badge warn">
-                        销项 {invoiceDirectionCounts.output.count} 张 ¥
-                        {invoiceDirectionCounts.output.amount.toLocaleString()}
-                      </span>
-                      <span className="status-badge muted">
-                        待判定 {invoiceDirectionCounts.unknown.count} 张
-                      </span>
-                      <button type="button" className="secondary-btn small-btn" onClick={redetectInvoices}>
-                        一键重判
-                      </button>
-                      <label className="upload-btn">
-                        <input type="file" multiple accept=".png,.jpg,.jpeg,.pdf" onChange={handleInvoiceUpload} />
-                        <span>上传发票</span>
-                      </label>
-                      {/* 右上角导出：勾选了导勾选的，没勾选导当前筛选的全部 */}
-                      <div className="export-menu-wrap">
-                        <button
-                          type="button"
-                          className="primary-btn small-btn"
-                          onClick={() => setInvoiceExportOpen((prev) => !prev)}
-                          aria-expanded={invoiceExportOpen}
-                        >
-                          导出 ▾
-                        </button>
-                        {invoiceExportOpen && (
-                          <>
-                            <div className="menu-scrim" onClick={() => setInvoiceExportOpen(false)} />
-                            <div className="export-menu">
-                              <div className="export-menu-head">
-                                {selectedInvoiceIds.length > 0
-                                  ? `导出已勾选的 ${selectedInvoiceIds.length} 张`
-                                  : `导出当前筛选的 ${invoiceFiltered.length} 张`}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setInvoiceExportOpen(false);
-                                  exportInvoiceDetailExcel();
-                                }}
-                              >
-                                <strong>Excel 明细表</strong>
-                                <small>发票清单 + 逐条明细（单价 / 数量 / 金额）</small>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setInvoiceExportOpen(false);
-                                  exportInvoiceDetailPdf();
-                                }}
-                              >
-                                <strong>PDF 清单</strong>
-                                <small>生成打印页，选「另存为 PDF」</small>
-                              </button>
-                              <button
-                                type="button"
-                                disabled={invoiceBusy === 'qr-zip'}
-                                onClick={() => {
-                                  setInvoiceExportOpen(false);
-                                  exportInvoiceQrZip();
-                                }}
-                              >
-                                <strong>二维码</strong>
-                                <small>打包成 ZIP，按进销项分文件夹</small>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setInvoiceExportOpen(false);
-                                  exportInvoiceSources();
-                                }}
-                              >
-                                <strong>发票原件</strong>
-                                <small>导出的就是上传留档的原始 PDF</small>
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <p className="settings-hint">
-                    进销项按<strong>本公司税号</strong>与发票的销售方/购买方自动判定
-                    （我方是购买方 = 进项，我方是销售方 = 销项）。判不出的显示「待判定」——
-                    先在「系统设置 → 公司信息」填上本公司名称与税号，再点<strong>一键重判</strong>即可批量确定。
-                    <br />
-                    <strong>点发票号码</strong>看真实票面，「编辑」可逐字段改，
-                    「二维码」下载的是<strong>原件里那一张</strong>（不是重画的）。
+                  </ul>
+                  <p className="name-guard-tip">
+                    如果确实是另一个{nameGuard.label}，可以继续；如果是重复录入，建议先去列表里改那一张。
                   </p>
-
-                  <div className="log-filters">
-                    {[
-                      ['all', '全部'],
-                      ['input', '进项'],
-                      ['output', '销项'],
-                      ['unknown', '待判定'],
-                    ].map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className={`${invoiceQuery.direction === value ? 'primary-btn' : 'secondary-btn'} small-btn`}
-                        onClick={() => setInvoiceQuery((prev) => ({ ...prev, direction: value }))}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                    <input
-                      value={invoiceQuery.keyword}
-                      onChange={(event) => setInvoiceQuery((prev) => ({ ...prev, keyword: event.target.value }))}
-                      placeholder="搜发票号码 / 抬头 / 税号 / 经手人"
-                    />
-                  </div>
-
-                  {selectedInvoiceIds.length > 0 && (
-                    <div className="batch-delete-bar">
-                      <span>已勾选 {selectedInvoiceIds.length} 张发票</span>
-                      <button
-                        type="button"
-                        className="danger-btn"
-                        onClick={() =>
-                          setConfirmDelete({
-                            ids: selectedInvoiceIds,
-                            endpoint: '/invoices/batch',
-                            label: `已勾选的 ${selectedInvoiceIds.length} 张发票`,
-                            kind: 'invoice-batch',
-                          })
+                  <div className="form-actions">
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      onClick={() => {
+                        const form = pendingFormRef.current;
+                        skipNameGuardRef.current = true;
+                        setNameGuard(null);
+                        pendingFormRef.current = null;
+                        // 重放这次提交：表单还挂在页面上，直接再触发一次 submit
+                        if (form && typeof form.requestSubmit === 'function') {
+                          form.requestSubmit();
                         }
-                      >
-                        批量删除
-                      </button>
-                      <button type="button" className="link-btn" onClick={() => setSelectedInvoiceIds([])}>
-                        取消勾选
-                      </button>
-                    </div>
-                  )}
-
-                  <div className="table-wrap">
-                    <table className="data-table invoice-table">
-                      <thead>
-                        <tr>
-                          <th className="select-col">
-                            <input
-                              type="checkbox"
-                              checked={invoicePageAllSelected}
-                              ref={(node) => {
-                                if (node) node.indeterminate = invoicePageSomeSelected && !invoicePageAllSelected;
-                              }}
-                              onChange={toggleSelectAllInvoices}
-                              aria-label="全选本页发票"
-                            />
-                          </th>
-                          <th className="num">序号</th>
-                          <th>发票日期</th>
-                          <th>发票号码</th>
-                          <th>类型</th>
-                          <th>购买方名称</th>
-                          <th>购买方税号</th>
-                          <th>销售方名称</th>
-                          <th>销售方税号</th>
-                          <th className="num">数量</th>
-                          <th className="num">合计</th>
-                          <th className="num">总价</th>
-                          <th>二维码</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {invoicePaged.length === 0 && (
-                          <tr>
-                            <td colSpan="14" className="table-empty">
-                              没有符合条件的发票。点右上角「上传发票」批量识别，或调整筛选条件。
-                            </td>
-                          </tr>
-                        )}
-                        {invoicePaged.map((item, index) => {
-                          const expanded = expandedInvoiceIds.includes(item.id);
-                          const lines = Array.isArray(item.items) ? item.items : [];
-                          const quantity = lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0);
-                          const lineAmount = lines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
-                          const exclTax =
-                            item.excl_tax_amount != null ? Number(item.excl_tax_amount) : lineAmount;
-                          const serial = (invoiceSafePage - 1) * invoicePageSize + index + 1;
-                          return (
-                            <Fragment key={item.id}>
-                              <tr className={expanded ? 'invoice-row-expanded' : ''}>
-                                <td className="select-col">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedInvoiceIds.includes(item.id)}
-                                    onChange={() => toggleInvoiceSelect(item.id)}
-                                    aria-label={`勾选发票 ${item.invoice_no}`}
-                                  />
-                                </td>
-                                <td className="num invoice-serial">
-                                  <button
-                                    type="button"
-                                    className="caret-btn"
-                                    onClick={() => toggleInvoiceExpand(item.id)}
-                                    disabled={lines.length === 0}
-                                    title={lines.length === 0 ? '这张发票没有解析出明细' : '展开 / 收起明细'}
-                                    aria-label="展开明细"
-                                  >
-                                    {lines.length === 0 ? '·' : expanded ? '▾' : '▸'}
-                                  </button>
-                                  <span>{serial}</span>
-                                </td>
-                                <td className="nowrap">{item.date}</td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className="link-btn mono invoice-no-btn"
-                                    onClick={() => openInvoicePreview(item)}
-                                    title={item.has_source ? '查看真实发票' : '没有留档原件'}
-                                  >
-                                    {item.invoice_no}
-                                  </button>
-                                  <div className="cell-sub">
-                                    <span className={`status-badge ${item.direction === 'input' ? 'ok' : item.direction === 'output' ? 'warn' : 'muted'}`}>
-                                      {item.direction_label}
-                                    </span>
-                                    {item.invoice_flag === 'red' && <span className="status-badge danger">红字</span>}
-                                  </div>
-                                </td>
-                                <td className="nowrap">{item.invoice_type || '未知'}</td>
-                                <td className="cell-party">{item.buyer_name || '—'}</td>
-                                <td className="cell-tax mono">{item.buyer_tax_no || '—'}</td>
-                                <td className="cell-party">{item.seller_name || '—'}</td>
-                                <td className="cell-tax mono">{item.seller_tax_no || '—'}</td>
-                                <td className="num">{lines.length === 0 ? '—' : quantity}</td>
-                                <td className="num">{money(exclTax)}</td>
-                                <td className="num strong">{money(item.amount)}</td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className="link-btn"
-                                    disabled={!item.has_source || invoiceBusy === `qr-${item.id}`}
-                                    onClick={() => openInvoiceQr(item)}
-                                  >
-                                    {invoiceBusy === `qr-${item.id}` ? '读取中…' : '查看'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="link-btn"
-                                    disabled={!item.has_source}
-                                    onClick={() => downloadInvoiceQr(item)}
-                                  >
-                                    下载
-                                  </button>
-                                </td>
-                                <td className="row-actions nowrap">
-                                  <button type="button" className="link-btn" onClick={() => openInvoicePreview(item)}>
-                                    查看
-                                  </button>
-                                  <button type="button" className="link-btn" onClick={() => openInvoiceEdit(item)}>
-                                    编辑
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="link-btn danger"
-                                    onClick={() =>
-                                      setConfirmDelete({
-                                        id: item.id,
-                                        endpoint: `/invoices/${item.id}`,
-                                        label: `发票 ${item.invoice_no || item.id}`,
-                                        kind: 'invoice',
-                                      })
-                                    }
-                                  >
-                                    删除
-                                  </button>
-                                </td>
-                              </tr>
-                              {expanded && (
-                                <tr className="invoice-detail-row">
-                                  <td colSpan="14">
-                                    {lines.length === 0 ? (
-                                      <div className="detail-empty">
-                                        这张发票没有解析出明细（可能是票面上就没有明细行，或识别时未取到）。
-                                      </div>
-                                    ) : (
-                                      <table className="invoice-line-table">
-                                        <thead>
-                                          <tr>
-                                            <th>品名</th>
-                                            <th>规格型号</th>
-                                            <th>单位</th>
-                                            <th className="num">单价</th>
-                                            <th className="num">数量</th>
-                                            <th className="num">金额</th>
-                                            <th className="num">税率</th>
-                                            <th className="num">税额</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {lines.map((line, lineIndex) => (
-                                            <tr key={`${item.id}-line-${lineIndex}`}>
-                                              <td>{line.item_name || '—'}</td>
-                                              <td>{line.spec || '—'}</td>
-                                              <td>{line.unit || '—'}</td>
-                                              <td className="num">
-                                                {line.unit_price != null
-                                                  ? Number(line.unit_price).toLocaleString('zh-CN', { maximumFractionDigits: 4 })
-                                                  : '—'}
-                                              </td>
-                                              <td className="num">{line.quantity ?? '—'}</td>
-                                              <td className="num">{money(line.amount)}</td>
-                                              <td className="num">{line.tax_rate != null ? `${line.tax_rate}%` : '—'}</td>
-                                              <td className="num">{money(line.tax_amount)}</td>
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    )}
-                                  </td>
-                                </tr>
-                              )}
-                            </Fragment>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* 左下角全选 + 右下角分页 —— 用户明确要求全选框放在表格左下角 */}
-                  <div className="invoice-table-footer">
-                    <label className="select-all-box">
-                      <input
-                        type="checkbox"
-                        checked={invoicePageAllSelected}
-                        onChange={toggleSelectAllInvoices}
-                      />
-                      全选本页（{invoicePaged.length} 张）
-                    </label>
-                    <span className="footer-hint">
-                      已勾选 {selectedInvoiceIds.length} 张 · 当前筛选共 {invoiceFiltered.length} 张
-                    </span>
-                    <div className="pager">
-                      <label className="page-size">
-                        每页
-                        <select
-                          value={invoicePageSize}
-                          onChange={(event) => setInvoicePageSize(Number(event.target.value))}
-                        >
-                          {[10, 20, 50, 100].map((size) => (
-                            <option key={size} value={size}>
-                              {size}
-                            </option>
-                          ))}
-                        </select>
-                        条
-                      </label>
-                      <button
-                        type="button"
-                        className="secondary-btn small-btn"
-                        disabled={invoiceSafePage <= 1}
-                        onClick={() => setInvoicePage((prev) => Math.max(1, prev - 1))}
-                      >
-                        上一页
-                      </button>
-                      <span className="page-indicator">
-                        {invoiceSafePage} / {invoicePageCount}
-                      </span>
-                      <button
-                        type="button"
-                        className="secondary-btn small-btn"
-                        disabled={invoiceSafePage >= invoicePageCount}
-                        onClick={() => setInvoicePage((prev) => Math.min(invoicePageCount, prev + 1))}
-                      >
-                        下一页
-                      </button>
-                    </div>
-                  </div>
-                </section>
-
-<section className="panel">
-                  <div className="section-header">
-                    <h2>发票分析</h2>
-                    <span className="status-badge">OCR 识别 · 财务关联 · 智能分析</span>
-                  </div>
-
-                  <div className="invoice-action-row">
-                    <button type="button" className="primary-btn small-btn" onClick={handleDeepSeekInvoiceAnalysis}>智能分类分析</button>
-                    <button type="button" className="primary-btn small-btn" onClick={handleInvoiceAgentAnalysis}>智能体分析</button>
-                    <button type="button" className="primary-btn small-btn" onClick={handleSyncInvoicesToFinance}>同步到财务</button>
-                    <button type="button" className="secondary-btn small-btn" onClick={exportInvoiceReportXlsx}>导出勾选（旧版 Excel）</button>
-                    <button type="button" className="secondary-btn small-btn" onClick={exportInvoiceReportHtml}>导出美观表格</button>
-                  </div>
-
-                  {invoiceItems.length > 0 ? (
-                    <>
-                      <div className="invoice-chart-grid">
-                        <div className="chart-card">
-                          <div className="chart-card-title">发票类别对比</div>
-                          {(() => {
-                            const total = Math.max(Number(invoiceAggregate.total_amount || 0), 1);
-                            const spec = Number((invoiceAggregate.by_type || []).find((t) => t.type === '专票')?.amount || 0);
-                            const gen = Number((invoiceAggregate.by_type || []).find((t) => t.type === '普票')?.amount || 0);
-                            const other = Math.max(total - spec - gen, 0);
-                            const specPct = (spec / total) * 100;
-                            const genPct = (gen / total) * 100;
-                            return (
-                              <div className="donut-wrap">
-                                <div className="donut" style={{ background: `conic-gradient(#6366f1 0 ${specPct}%, #22c55e ${specPct}% ${specPct + genPct}%, #94a3b8 ${specPct + genPct}% 100%)` }}>
-                                  <div className="donut-hole" />
-                                </div>
-                                <div className="donut-legend">
-                                  <div><i className="legend-dot" style={{ background: '#6366f1' }} />专票 ¥{spec.toLocaleString()}（{specPct.toFixed(1)}%）</div>
-                                  <div><i className="legend-dot" style={{ background: '#22c55e' }} />普票 ¥{gen.toLocaleString()}（{genPct.toFixed(1)}%）</div>
-                                  {other > 0 && <div><i className="legend-dot" style={{ background: '#94a3b8' }} />其他 ¥{other.toLocaleString()}</div>}
-                                </div>
-                              </div>
-                            );
-                          })()}
-                        </div>
-
-                        <div className="chart-card">
-                          <div className="chart-card-title">专票抵扣情况</div>
-                          <div className="deduct-legend">
-                            <div className="deduct-line">
-                              <i className="legend-dot" style={{ background: '#16a34a' }} />
-                              已抵扣 {invoiceAggregate.deduction.deducted_count} 张 ¥{Number(invoiceAggregate.deduction.deducted_amount || 0).toLocaleString()}
-                            </div>
-                            <div className="deduct-line red-text">
-                              <i className="legend-dot" style={{ background: '#dc2626' }} />
-                              未抵扣 {invoiceAggregate.deduction.undeducted_count} 张 ¥{Number(invoiceAggregate.deduction.undeducted_amount || 0).toLocaleString()}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="chart-card">
-                          <div className="chart-card-title">普票月度金额对比（元）</div>
-                          {(() => {
-                            const months = Object.keys(invoiceAggregate.monthly || {}).slice(-12);
-                            const values = months.map((m) => Number(invoiceAggregate.monthly[m]?.['普票']?.amount || 0));
-                            const max = Math.max(...values, 1);
-                            return (
-                              <div className="mini-bars">
-                                {months.map((m, i) => (
-                                  <div className="mini-bar-col" key={m} title={`${m}：¥${values[i].toLocaleString()}`}>
-                                    <div className="mini-bar-fill bar-green" style={{ height: `${Math.max((values[i] / max) * 100, values[i] > 0 ? 6 : 2)}%` }} />
-                                    <span>{m.slice(5)}月</span>
-                                  </div>
-                                ))}
-                              </div>
-                            );
-                          })()}
-                        </div>
-
-                        <div className="chart-card">
-                          <div className="chart-card-title">专票月度金额对比（元）</div>
-                          {(() => {
-                            const months = Object.keys(invoiceAggregate.monthly || {}).slice(-12);
-                            const values = months.map((m) => Number(invoiceAggregate.monthly[m]?.['专票']?.amount || 0));
-                            const max = Math.max(...values, 1);
-                            return (
-                              <div className="mini-bars">
-                                {months.map((m, i) => (
-                                  <div className="mini-bar-col" key={m} title={`${m}：¥${values[i].toLocaleString()}`}>
-                                    <div className="mini-bar-fill bar-indigo" style={{ height: `${Math.max((values[i] / max) * 100, values[i] > 0 ? 6 : 2)}%` }} />
-                                    <span>{m.slice(5)}月</span>
-                                  </div>
-                                ))}
-                              </div>
-                            );
-                          })()}
-                        </div>
-                      </div>
-
-                      {invoiceAgentReport && (
-                        <div className="agent-report-box">
-                          <div className="agent-report-header">
-                            <strong>智能体分析报告</strong>
-                            <span className="status-badge">{invoiceAgentReport.provider === 'deepseek' ? 'DeepSeek 智能体' : '本地规则分析'}</span>
-                          </div>
-                          <pre>{invoiceAgentReport.analysis}</pre>
-                        </div>
-                      )}
-
-                      <div className="invoice-summary-row">
-                        <div className="metric-card">
-                          <span>发票总额</span>
-                          <strong>¥{Number(invoiceAggregate.total_amount || 0).toLocaleString()}</strong>
-                        </div>
-                        <div className="metric-card">
-                          <span>发票数量</span>
-                          <strong>{invoiceAggregate.total_count}</strong>
-                        </div>
-                        <div className="metric-card">
-                          <span>税额合计</span>
-                          <strong>¥{Number(invoiceAggregate.total_tax || 0).toLocaleString()}</strong>
-                        </div>
-                        <div className="metric-card">
-                          <span>未抵扣专票</span>
-                          <strong className="red-text">¥{Number(invoiceAggregate.deduction.undeducted_amount || 0).toLocaleString()}</strong>
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="empty-state">还没有发票数据。先在上一栏「上传发票」导入原件。</div>
-                  )}
-
-                  {/* ——— 看真实发票：PDF 走 iframe、图片走 img ——— */}
-                  {invoicePreview && (
-                    <div className="modal-backdrop" onClick={closeInvoicePreview}>
-                      <div className="modal-card modal-wide" onClick={(event) => event.stopPropagation()}>
-                        <div className="modal-header">
-                          <h3>
-                            发票原件 · <span className="mono">{invoicePreview.item.invoice_no}</span>
-                          </h3>
-                          <button type="button" className="close-btn" onClick={closeInvoicePreview}>×</button>
-                        </div>
-                        <div className="preview-meta">
-                          <span>{invoicePreview.item.source_name || '原件'}</span>
-                          <span>{(invoicePreview.size / 1024).toFixed(0)} KB</span>
-                          <button
-                            type="button"
-                            className="secondary-btn small-btn"
-                            onClick={() => downloadInvoiceSource(invoicePreview.item)}
-                          >
-                            下载原件
-                          </button>
-                        </div>
-                        {String(invoicePreview.mime).startsWith('image/') ? (
-                          <img className="invoice-preview-img" src={invoicePreview.url} alt={invoicePreview.item.invoice_no} />
-                        ) : (
-                          <iframe className="pdf-preview" src={invoicePreview.url} title="发票原件预览" />
-                        )}
-                        {!String(invoicePreview.mime).includes('pdf') && !String(invoicePreview.mime).startsWith('image/') && (
-                          <p className="settings-hint">
-                            这个格式浏览器不能直接预览，请点「下载原件」用本地程序打开。
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ——— 二维码 ——— */}
-                  {invoiceQr && (
-                    <div className="modal-backdrop" onClick={() => setInvoiceQr(null)}>
-                      <div className="modal-card modal-narrow" onClick={(event) => event.stopPropagation()}>
-                        <div className="modal-header">
-                          <h3>发票二维码</h3>
-                          <button type="button" className="close-btn" onClick={() => setInvoiceQr(null)}>×</button>
-                        </div>
-                        <img className="invoice-qr-img" src={invoiceQr.dataUrl} alt="发票二维码" />
-                        <p className="settings-hint center">
-                          发票号码 <span className="mono">{invoiceQr.item.invoice_no}</span>
-                          <br />
-                          {invoiceQr.origin === 'embedded'
-                            ? '取自原件里那一张二维码原图。'
-                            : invoiceQr.origin === 'cropped'
-                              ? '从原件图片上裁出来的二维码区域。'
-                              : '原件上的二维码解不出来，这张是按其内容重画的。'}
-                        </p>
-                        <div className="modal-actions">
-                          <button
-                            type="button"
-                            className="primary-btn small-btn"
-                            onClick={() => downloadInvoiceQr(invoiceQr.item)}
-                          >
-                            下载二维码
-                          </button>
-                          <button type="button" className="secondary-btn small-btn" onClick={() => setInvoiceQr(null)}>
-                            关闭
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ——— 编辑 ——— */}
-                  {invoiceEditForm && (
-                    <div className="modal-backdrop" onClick={() => setInvoiceEditForm(null)}>
-                      <div className="modal-card modal-wide" onClick={(event) => event.stopPropagation()}>
-                        <div className="modal-header">
-                          <h3>编辑发票</h3>
-                          <button type="button" className="close-btn" onClick={() => setInvoiceEditForm(null)}>×</button>
-                        </div>
-                        <form className="invoice-edit-form" onSubmit={submitInvoiceEdit}>
-                          <label>
-                            <span>发票号码</span>
-                            <input
-                              value={invoiceEditForm.invoice_no}
-                              required
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, invoice_no: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>开票日期</span>
-                            <input
-                              type="date"
-                              value={invoiceEditForm.issue_date || ''}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, issue_date: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>发票类型</span>
-                            <select
-                              value={invoiceEditForm.invoice_type}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, invoice_type: event.target.value }))}
-                            >
-                              {['专票', '普票', '电子专票', '电子普票', '未知'].map((type) => (
-                                <option key={type} value={type}>{type}</option>
-                              ))}
-                            </select>
-                          </label>
-                          <label>
-                            <span>进销项</span>
-                            <select
-                              value={invoiceEditForm.direction}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, direction: event.target.value }))}
-                            >
-                              <option value="input">进项</option>
-                              <option value="output">销项</option>
-                              <option value="unknown">待判定</option>
-                            </select>
-                          </label>
-                          <label>
-                            <span>红蓝字</span>
-                            <select
-                              value={invoiceEditForm.invoice_flag}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, invoice_flag: event.target.value }))}
-                            >
-                              <option value="blue">蓝字</option>
-                              <option value="red">红字</option>
-                            </select>
-                          </label>
-                          <label>
-                            <span>开票方式</span>
-                            <select
-                              value={invoiceEditForm.issue_mode}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, issue_mode: event.target.value }))}
-                            >
-                              <option value="manual">手工开票</option>
-                              <option value="api">对接开票</option>
-                            </select>
-                          </label>
-                          <label className="span-2">
-                            <span>购买方名称</span>
-                            <input
-                              value={invoiceEditForm.buyer_name}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, buyer_name: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>购买方税号</span>
-                            <input
-                              value={invoiceEditForm.buyer_tax_no}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, buyer_tax_no: event.target.value }))}
-                            />
-                          </label>
-                          <label className="span-2">
-                            <span>销售方名称</span>
-                            <input
-                              value={invoiceEditForm.seller_name}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, seller_name: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>销售方税号</span>
-                            <input
-                              value={invoiceEditForm.seller_tax_no}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, seller_tax_no: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>发票代码</span>
-                            <input
-                              value={invoiceEditForm.invoice_code}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, invoice_code: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>价税合计</span>
-                            <input
-                              type="number"
-                              step="0.01"
-                              value={invoiceEditForm.total_amount}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, total_amount: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>不含税额</span>
-                            <input
-                              type="number"
-                              step="0.01"
-                              value={invoiceEditForm.excl_tax_amount ?? ''}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, excl_tax_amount: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>税额</span>
-                            <input
-                              type="number"
-                              step="0.01"
-                              value={invoiceEditForm.tax_amount ?? ''}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, tax_amount: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>税率 %</span>
-                            <input
-                              type="number"
-                              step="0.01"
-                              list="lookup-tax-rate"
-                              value={invoiceEditForm.tax_rate ?? ''}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, tax_rate: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>分类</span>
-                            <input
-                              value={invoiceEditForm.category}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, category: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>状态</span>
-                            <input
-                              value={invoiceEditForm.status}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, status: event.target.value }))}
-                            />
-                          </label>
-                          <label>
-                            <span>经手人</span>
-                            <input
-                              value={invoiceEditForm.handler}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, handler: event.target.value }))}
-                            />
-                          </label>
-                          <label className="checkbox-field">
-                            <input
-                              type="checkbox"
-                              checked={invoiceEditForm.deducted}
-                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, deducted: event.target.checked }))}
-                            />
-                            <span>专票已抵扣</span>
-                          </label>
-                          <div className="form-actions span-2">
-                            <button type="submit" className="primary-btn" disabled={invoiceBusy === 'edit'}>
-                              {invoiceBusy === 'edit' ? '保存中…' : '保存'}
-                            </button>
-                            <button type="button" className="secondary-btn" onClick={() => setInvoiceEditForm(null)}>
-                              取消
-                            </button>
-                          </div>
-                        </form>
-                      </div>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'analysis' && (
-              <div className="report-grid">
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>财务分析窗口</h2>
-                    <span className="status-badge">实时汇总</span>
-                  </div>
-
-                  <div className="report-summary-grid">
-                    <div className="metric-card">
-                      <span>收入合计</span>
-                      <strong>¥{Number(financeAnalysis.total_revenue || 0).toLocaleString()}</strong>
-                    </div>
-                    <div className="metric-card">
-                      <span>支出合计</span>
-                      <strong>¥{Number(financeAnalysis.total_expense || 0).toLocaleString()}</strong>
-                    </div>
-                    <div className="metric-card">
-                      <span>净利润</span>
-                      <strong>¥{Number(financeAnalysis.net_profit || 0).toLocaleString()}</strong>
-                    </div>
-                    <div className="metric-card">
-                      <span>发票条数</span>
-                      <strong>{invoiceSummary.count}</strong>
-                    </div>
-                  </div>
-                </section>
-
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>按客户收入分析</h2>
-                    <span className="status-badge">Top客户</span>
-                  </div>
-
-                  <div className="analysis-filter-row">
-                    <label>
-                      <span>开始日期</span>
-                      <input type="date" value={analysisRange.startDate} onChange={handleAnalysisRangeChange('startDate')} />
-                    </label>
-                    <label>
-                      <span>结束日期</span>
-                      <input type="date" value={analysisRange.endDate} onChange={handleAnalysisRangeChange('endDate')} />
-                    </label>
-                  </div>
-
-                  {financeAnalysis.by_customer && financeAnalysis.by_customer.length > 0 ? (
-                    <>
-                      <div className="chart-bars">
-                        {(() => {
-                          const maxValue = Math.max(...financeAnalysis.by_customer.map((item) => Number(item.total || 0)), 1);
-                          return financeAnalysis.by_customer.slice(0, 6).map((item) => (
-                            <div className="chart-row" key={item.customer_id || item.customer_name}>
-                              <span>{item.customer_name}</span>
-                              <div className="chart-track">
-                                <div className="chart-fill" style={{ width: `${((Number(item.total || 0) / maxValue) * 100)}%` }} />
-                              </div>
-                              <strong>¥{Number(item.total || 0).toLocaleString()}</strong>
-                            </div>
-                          ));
-                        })()}
-                      </div>
-
-                      <div className="customer-rank-list">
-                        {financeAnalysis.by_customer.slice(0, 5).map((item, index) => (
-                          <div className="rank-item" key={`${item.customer_name}-${index}`}>
-                            <span className="rank-badge">#{index + 1}</span>
-                            <div>
-                              <strong>{item.customer_name}</strong>
-                              <small>贡献收入</small>
-                            </div>
-                            <div className="invoice-amount">¥{Number(item.total || 0).toLocaleString()}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="empty-state">暂无客户收入数据</div>
-                  )}
-                </section>
-
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>发票汇总</h2>
-                    <span className="status-badge">已归入财务管理</span>
-                  </div>
-                  <p className="settings-hint">
-                    发票的<strong>上传、进销项、下载原件与导出</strong>已经统一到
-                    「财务管理 → 发票管理」—— 同一件事只留一个入口，避免两处各改一遍。
-                    这里保留发票的趋势与分析。
-                  </p>
-                  <div className="invoice-summary-row">
-                    <div className="metric-card">
-                      <span>发票总额</span>
-                      <strong>¥{Number(invoiceAggregate.total_amount || 0).toLocaleString()}</strong>
-                    </div>
-                    <div className="metric-card">
-                      <span>发票数量</span>
-                      <strong>{invoiceAggregate.total_count}</strong>
-                    </div>
-                    <div className="metric-card">
-                      <span>进项 / 销项</span>
-                      <strong>
-                        {invoiceDirectionCounts.input.count} / {invoiceDirectionCounts.output.count}
-                      </strong>
-                    </div>
-                    <div className="metric-card">
-                      <span>待判定</span>
-                      <strong className="red-text">{invoiceDirectionCounts.unknown.count}</strong>
-                    </div>
-                  </div>
-                  <div className="invoice-action-row">
-                    <button type="button" className="primary-btn small-btn" onClick={() => setSelectedTab('invoices')}>
-                      去发票管理
+                      }}
+                    >
+                      仍然新建
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => {
+                        setNameGuard(null);
+                        pendingFormRef.current = null;
+                      }}
+                    >
+                      返回修改
                     </button>
                   </div>
-                </section>
-
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>月度现金流</h2>
-                    <span className="status-badge">趋势</span>
-                  </div>
-
-                  {financeAnalysis.monthly_trend && financeAnalysis.monthly_trend.length > 0 ? (
-                    <div className="chart-bars">
-                      {(() => {
-                        const maxValue = Math.max(
-                          ...financeAnalysis.monthly_trend.map((item) => Math.max(Number(item.income || 0), Number(item.expense || 0))),
-                          1,
-                        );
-                        return financeAnalysis.monthly_trend.map((item) => (
-                          <div className="chart-row" key={item.month}>
-                            <span>{item.month}</span>
-                            <div className="chart-track">
-                              <div className="chart-fill" style={{ width: `${((Math.max(Number(item.income || 0), Number(item.expense || 0)) / maxValue) * 100)}%` }} />
-                            </div>
-                            <strong>¥{Number(item.income || 0).toLocaleString()}</strong>
-                          </div>
-                        ));
-                      })()}
-                    </div>
-                  ) : (
-                    <div className="empty-state">暂无月度现金流数据</div>
-                  )}
-                </section>
+                </div>
               </div>
             )}
 
-            {selectedTab === 'finance' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增财务记录</h2>
-                    <span className="status-badge">收支流水</span>
-                  </div>
+            {selectedTab === 'dataio' && <DataioPage ctx={appCtx} />}
 
-                  <form onSubmit={submitFinance} className="erp-form">
-                    <div className="report-summary-grid" style={{ marginBottom: '18px' }}>
-                      <div className="metric-card">
-                        <span>净现金流</span>
-                        <strong>¥{Number(financeDecision.summary.net_cash_flow || 0).toLocaleString()}</strong>
-                      </div>
-                      <div className="metric-card">
-                        <span>毛利率</span>
-                        <strong>{Number(financeDecision.summary.gross_margin_rate || 0).toFixed(1)}%</strong>
-                      </div>
-                      <div className="metric-card">
-                        <span>风险</span>
-                        <strong>{financeDecision.risk_level === 'healthy' ? '健康' : financeDecision.risk_level === 'watch' ? '关注' : '风险'}</strong>
-                      </div>
-                    </div>
+            {selectedTab === 'purchase-order' && <PurchaseOrderPage ctx={appCtx} />}
 
-                    <div className="form-row two-col">
-                      <label>
-                        类型
-                        <select value={financeForm.transaction_type} onChange={handleFinanceChange('transaction_type')}>
-                          <option value="income">收入</option>
-                          <option value="expense">支出</option>
-                        </select>
-                      </label>
-                      <label>
-                        金额
-                        <input type="number" step="0.01" value={financeForm.amount} onChange={handleFinanceChange('amount')} required />
-                      </label>
-                    </div>
+            {selectedTab === 'purchase' && <PurchasePage ctx={appCtx} />}
 
-                    <div className="form-row two-col">
-                      <label>
-                        货币
-                        <input value={financeForm.currency} onChange={handleFinanceChange('currency')} />
-                      </label>
-                      <label>
-                        关联订单 ID
-                        <input type="number" value={financeForm.related_order_id} onChange={handleFinanceChange('related_order_id')} />
-                      </label>
-                    </div>
+            {selectedTab === 'sales-order' && <SalesOrderPage ctx={appCtx} />}
 
-                    <div className="form-row two-col">
-                      <label>
-                        客户 ID
-                        <input type="number" value={financeForm.customer_id} onChange={handleFinanceChange('customer_id')} />
-                      </label>
-                      <label>
-                        供应商 ID
-                        <input type="number" value={financeForm.supplier_id} onChange={handleFinanceChange('supplier_id')} />
-                      </label>
-                    </div>
+            {selectedTab === 'sales' && <SalesPage ctx={appCtx} />}
 
-                    <label>
-                      备注
-                      <textarea value={financeForm.note} onChange={handleFinanceChange('note')} rows="3" />
-                    </label>
+            {selectedTab === 'production' && <ProductionPage ctx={appCtx} />}
 
-                    <button className="primary-btn" type="submit">保存财务记录</button>
-                  </form>
-                </section>
+            {selectedTab === 'projects' && <ProjectsPage ctx={appCtx} />}
 
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>打印中心</h2>
-                    <span className="status-badge">对账单 / 余额确认单</span>
-                  </div>
+            {selectedTab === 'reports' && <ReportsPage ctx={appCtx} />}
 
-                  <div className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        客户（对账单 / 确认单）
-                        <select value={printParty.customer_id} onChange={(event) => setPrintParty((prev) => ({ ...prev, customer_id: event.target.value }))}>
-                          <option value="">— 选择客户 —</option>
-                          {customers.map((c) => (
-                            <option key={c.id} value={c.id}>{c.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        供应商（对账单）
-                        <select value={printParty.supplier_id} onChange={(event) => setPrintParty((prev) => ({ ...prev, supplier_id: event.target.value }))}>
-                          <option value="">— 选择供应商 —</option>
-                          {suppliers.map((s) => (
-                            <option key={s.id} value={s.id}>{s.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
+            {selectedTab === 'invoices' && <InvoicesPage ctx={appCtx} />}
 
-                    <div className="form-row two-col">
-                      <label>
-                        起始日期
-                        <input type="date" value={printParty.from} onChange={(event) => setPrintParty((prev) => ({ ...prev, from: event.target.value }))} />
-                      </label>
-                      <label>
-                        截止日期
-                        <input type="date" value={printParty.to} onChange={(event) => setPrintParty((prev) => ({ ...prev, to: event.target.value }))} />
-                      </label>
-                    </div>
+            {selectedTab === 'analysis' && <AnalysisPage ctx={appCtx} />}
 
-                    <div className="modal-actions" style={{ justifyContent: 'flex-start' }}>
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        disabled={!printParty.customer_id}
-                        onClick={() => printPdf(`/print/statement/customer/${printParty.customer_id}${printPeriodQuery()}`, '客户对账单.pdf')}
-                      >
-                        打印客户对账单
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        disabled={!printParty.customer_id}
-                        onClick={() => printPdf(`/print/balance-confirm/customer/${printParty.customer_id}${printPeriodQuery()}`, '往来余额确认单.pdf')}
-                      >
-                        打印余额确认单
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        disabled={!printParty.supplier_id}
-                        onClick={() => printPdf(`/print/statement/supplier/${printParty.supplier_id}${printPeriodQuery()}`, '供应商对账单.pdf')}
-                      >
-                        打印供应商对账单
-                      </button>
-                    </div>
-                  </div>
-                </section>
+            {selectedTab === 'finance' && <FinancePage ctx={appCtx} />}
 
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>财务流水</h2>
-                    <span className="status-badge">{finance.length} 条</span>
-                  </div>
-
-                  {finance.length === 0 ? (
-                    <div className="empty-state">暂无财务记录</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>类型</th>
-                          <th>金额</th>
-                          <th>货币</th>
-                          <th>备注</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {finance.slice(0, 8).map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.transaction_type}</td>
-                            <td>¥{Number(row.amount || 0).toLocaleString()}</td>
-                            <td>{row.currency}</td>
-                            <td>{row.note || '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {finance.length > 8 && (
-                    <div className="table-hint">共 {finance.length} 条，仅显示最近 8 条</div>
-                  )}
-                </section>
-              </div>
-            )}
+            {selectedTab === 'three-way-match' && <ThreeWayMatchPage ctx={appCtx} />}
 
             {selectedTab === 'stock-logs' && renderStockLogsPage()}
 
@@ -14817,4880 +12283,107 @@ function App() {
 
             {selectedTab === 'general-ledger' && renderGeneralLedgerPage()}
 
-            {selectedTab === 'contracts' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增购销合同</h2>
-                    <span className="status-badge">模板 A2 · 标准版</span>
-                  </div>
+            {selectedTab === 'contracts' && <ContractsPage ctx={appCtx} />}
 
-                  <form onSubmit={submitContract} className="erp-form">
-                    <div className="contract-own-block">
-                      <div className="section-header compact-header">
-                        <h3>我方信息（合同抬头）</h3>
-                        <button
-                          type="button"
-                          className="secondary-btn small-btn"
-                          onClick={saveCompanyDefaults}
-                        >
-                          保存为公司默认
-                        </button>
-                      </div>
-                      <div className="contract-item-row" style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 2fr) 140px' }}>
-                        <input
-                          value={contractForm.own_name}
-                          onChange={handleContractChange('own_name')}
-                          placeholder="单位名称"
-                        />
-                        <input
-                          value={contractForm.own_address}
-                          onChange={handleContractChange('own_address')}
-                          placeholder="地址"
-                        />
-                        <input
-                          value={contractForm.own_legal_person}
-                          onChange={handleContractChange('own_legal_person')}
-                          placeholder="法定代表人"
-                        />
-                      </div>
-                      <div className="contract-item-row" style={{ gridTemplateColumns: 'minmax(0, 2fr) 140px 140px' }}>
-                        <input
-                          value={contractForm.own_tax_no}
-                          onChange={handleContractChange('own_tax_no')}
-                          placeholder="统一社会信用代码"
-                        />
-                        <input
-                          value={contractForm.own_contact}
-                          onChange={handleContractChange('own_contact')}
-                          placeholder="联系人"
-                        />
-                        <input
-                          value={contractForm.own_phone}
-                          onChange={handleContractChange('own_phone')}
-                          placeholder="联系电话"
-                        />
-                      </div>
-                      <div className="contract-item-row" style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)' }}>
-                        <input
-                          list="lookup-bank-name"
-                          value={contractForm.own_bank_name}
-                          onChange={handleContractChange('own_bank_name')}
-                          placeholder="开户银行"
-                        />
-                        <input
-                          value={contractForm.own_bank_account}
-                          onChange={handleContractChange('own_bank_account')}
-                          placeholder="银行账号"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        合同类型
-                        <select value={contractForm.contract_type} onChange={handleContractChange('contract_type')}>
-                          <option value="sales">销售合同（我方为供方）</option>
-                          <option value="purchase">采购合同（我方为需方）</option>
-                        </select>
-                      </label>
-                      <label>
-                        {contractForm.contract_type === 'sales' ? '客户' : '供应商'}
-                        <select value={contractForm.party_id} onChange={handleContractChange('party_id')} required>
-                          <option value="">请选择</option>
-                          {(contractForm.contract_type === 'sales' ? customers : suppliers).map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        签订日期
-                        <input type="date" value={contractForm.sign_date} onChange={handleContractChange('sign_date')} />
-                      </label>
-                      <label>
-                        签订地点
-                        <input value={contractForm.sign_place} onChange={handleContractChange('sign_place')} placeholder="如：西安市" />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        交货时间
-                        <input value={contractForm.delivery_date} onChange={handleContractChange('delivery_date')} placeholder="如：2026-10-20" />
-                      </label>
-                      <label>
-                        交货地点
-                        <input value={contractForm.delivery_place} onChange={handleContractChange('delivery_place')} placeholder="默认按对方单位地址" />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        验收期限（天）
-                        <input type="number" min="1" value={contractForm.inspection_days} onChange={handleContractChange('inspection_days')} />
-                      </label>
-                      <label>
-                        违约金日利率（万分之）
-                        <input type="number" min="0" step="0.5" value={contractForm.penalty_rate} onChange={handleContractChange('penalty_rate')} />
-                      </label>
-                    </div>
-
-                    <label>
-                      付款方式与节点
-                      <input value={contractForm.payment_terms} onChange={handleContractChange('payment_terms')} placeholder="如：货到验收合格后 30 日内付清全款" />
-                    </label>
-
-                    <label>
-                      质量标准
-                      <input value={contractForm.quality_standard} onChange={handleContractChange('quality_standard')} placeholder="如：GB/T 12224 国家标准" />
-                    </label>
-
-                    <div className="form-row two-col">
-                      <label>
-                        开票要求
-                        <input value={contractForm.invoice_requirement} onChange={handleContractChange('invoice_requirement')} />
-                      </label>
-                      <label>
-                        合同份数
-                        <input type="number" min="1" value={contractForm.copies} onChange={handleContractChange('copies')} />
-                      </label>
-                    </div>
-
-                    <label>
-                      包装标准
-                      <input value={contractForm.package_standard} onChange={handleContractChange('package_standard')} />
-                    </label>
-
-                    <label>
-                      运输与风险承担
-                      <input value={contractForm.freight_bearer} onChange={handleContractChange('freight_bearer')} />
-                    </label>
-
-                    <label>
-                      质保与售后
-                      <input value={contractForm.warranty_terms} onChange={handleContractChange('warranty_terms')} />
-                    </label>
-
-                    <label>
-                      争议解决方式
-                      <input value={contractForm.dispute_resolution} onChange={handleContractChange('dispute_resolution')} />
-                    </label>
-
-                    <label>
-                      送达地址
-                      <input value={contractForm.service_address} onChange={handleContractChange('service_address')} />
-                    </label>
-
-                    <label>
-                      补充条款（打印时作为「第十二条 补充约定」）
-                      <textarea rows="2" value={contractForm.other_terms} onChange={handleContractChange('other_terms')} />
-                    </label>
-
-                    <div className="contract-items">
-                      <div className="section-header compact-header">
-                        <h3>合同标的（明细）</h3>
-                        <span className="status-badge">{contractForm.items.length} 行</span>
-                      </div>
-                      {contractForm.items.map((row, index) => (
-                        <div className="contract-item-row" key={index}>
-                          <select value={row.product_id} onChange={handleContractItemChange(index, 'product_id')}>
-                            <option value="">选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.name}
-                                {item.standards ? ` / ${item.standards}` : ''}
-                              </option>
-                            ))}
-                          </select>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={row.quantity}
-                            onChange={handleContractItemChange(index, 'quantity')}
-                            placeholder="数量"
-                          />
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={row.unit_price}
-                            onChange={handleContractItemChange(index, 'unit_price')}
-                            placeholder="单价"
-                          />
-                          <button
-                            type="button"
-                            className="secondary-btn small-btn"
-                            onClick={() => removeContractItem(index)}
-                            disabled={contractForm.items.length <= 1}
-                          >
-                            删行
-                          </button>
-                        </div>
-                      ))}
-                      <div className="contract-item-actions">
-                        <button type="button" className="secondary-btn small-btn" onClick={addContractItem}>
-                          ＋ 添加明细行
-                        </button>
-                        <span className="table-hint">
-                          预计金额 ¥
-                          {contractForm.items
-                            .reduce(
-                              (sum, row) => sum + (Number(row.quantity) || 0) * (Number(row.unit_price) || 0),
-                              0,
-                            )
-                            .toLocaleString()}
-                        </span>
-                      </div>
-                    </div>
-
-                    <label>
-                      备注
-                      <input value={contractForm.note} onChange={handleContractChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存合同</button>
-                    <p className="table-hint">
-                      条款变量留空时由系统按行业常规表述兜底，保存后可直接打印 A2 标准版合同。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>合同列表</h2>
-                    <span className="status-badge">{contracts.length} 份</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={contractKeyword}
-                      onChange={(event) => setContractKeyword(event.target.value)}
-                      placeholder="按合同号 / 名称 / 对方单位搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshContracts(contractKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setContractKeyword('');
-                        refreshContracts();
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {contracts.length === 0 ? (
-                    <div className="empty-state">暂无合同数据</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>合同号</th>
-                          <th>类型</th>
-                          <th>对方单位</th>
-                          <th>金额</th>
-                          <th>状态</th>
-                          <th>签订日期</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {contracts.map((row) => (
-                          <tr
-                            key={row.id}
-                            onClick={() => setSelectedContract(row)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault();
-                                setSelectedContract(row);
-                              }
-                            }}
-                            tabIndex={0}
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <td>{row.contract_no}</td>
-                            <td>{row.contract_type === 'sales' ? '销售' : '采购'}</td>
-                            <td>{row.party_name || '—'}</td>
-                            <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
-                            <td>{contractStatusLabel(row.status)}</td>
-                            <td>{row.sign_date || '—'}</td>
-                            <td>
-                              <button
-                                type="button"
-                                className="secondary-btn small-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  printPdf(`/print/contract/${row.id}`, `购销合同_${row.contract_no}.pdf`);
-                                }}
-                              >
-                                打印
-                              </button>{' '}
-                              <button
-                                type="button"
-                                className="secondary-btn small-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  contractToOrder(row);
-                                }}
-                                disabled={Boolean(row.order_id)}
-                              >
-                                {row.order_id ? `已转 ${row.order_no}` : '生成单据'}
-                              </button>{' '}
-                              <button
-                                type="button"
-                                className="danger-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/contracts/${row.id}`,
-                                    label: `合同 ${row.contract_no}`,
-                                    kind: 'contract',
-                                  });
-                                }}
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-
-                {selectedContract && (
-                  <div className="modal-overlay" onClick={() => setSelectedContract(null)}>
-                    <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-                      <div className="modal-header">
-                        <h3>合同 {selectedContract.contract_no}</h3>
-                        <button type="button" className="close-btn" onClick={() => setSelectedContract(null)}>×</button>
-                      </div>
-                      <div className="contract-detail">
-                        <p>
-                          <strong>{selectedContract.contract_type === 'sales' ? '销售合同' : '采购合同'}</strong>
-                          {' · '}
-                          {contractStatusLabel(selectedContract.status)}
-                          {selectedContract.order_no ? ` · 已生成单据 ${selectedContract.order_no}` : ''}
-                        </p>
-                        <p>对方单位：{selectedContract.party_name || '—'}</p>
-                        <p>签订日期：{selectedContract.sign_date || '—'}　签订地点：{selectedContract.sign_place || '—'}</p>
-                        <p>金额：¥{Number(selectedContract.total_amount || 0).toLocaleString()}（{selectedContract.amount_chinese || '—'}）</p>
-                        <p>付款：{selectedContract.payment_terms || '—'}</p>
-                        <p>质量标准：{selectedContract.quality_standard || '—'}</p>
-                        <p>交货：{selectedContract.delivery_date || '—'} / {selectedContract.delivery_place || '—'}</p>
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>商品</th>
-                              <th>规格</th>
-                              <th>单位</th>
-                              <th>数量</th>
-                              <th>单价</th>
-                              <th>金额</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(selectedContract.items || []).map((line) => (
-                              <tr key={line.id}>
-                                <td>{line.product_name}</td>
-                                <td>{line.standards || '—'}</td>
-                                <td>{line.unit || '—'}</td>
-                                <td>{line.quantity}</td>
-                                <td>¥{Number(line.unit_price || 0).toLocaleString()}</td>
-                                <td>¥{Number(line.amount || 0).toLocaleString()}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="modal-actions">
-                        <button
-                          type="button"
-                          className="secondary-btn"
-                          onClick={() => printPdf(`/print/contract/${selectedContract.id}`, `购销合同_${selectedContract.contract_no}.pdf`)}
-                        >
-                          打印合同
-                        </button>
-                        <button type="button" className="secondary-btn" onClick={() => setSelectedContract(null)}>关闭</button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+            {/* 第 13 批：合同台账。组件自己取数（token 走 localStorage），
+                所以这里**不传 ctx** —— 传了反而会诱使人往里加 ctx 依赖。
+                Suspense 的 fallback 用一个空面板占位，避免切页时整屏闪一下 */}
+            {selectedTab === 'contracts-ledger' && (
+              <Suspense fallback={<section className="panel">正在加载合同台账…</section>}>
+                <ContractsLedger />
+              </Suspense>
             )}
 
-            {selectedTab === 'quotation' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增销售报价单</h2>
-                    <span className="status-badge">只报价 · 不动库存</span>
-                  </div>
-
-                  <form onSubmit={submitQuotation} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        客户
-                        <select value={quotationForm.customer_id} onChange={handleQuotationChange('customer_id')}>
-                          <option value="">请选择客户</option>
-                          {customers.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.name}
-                            </option>
-                          ))}
-                        </select>
-                        {renderPartyLink('customers', quotationForm.customer_id, '客户')}
-                      </label>
-                      <label>
-                        客户地址
-                        <input
-                          value={quotationForm.customer_address}
-                          onChange={handleQuotationChange('customer_address')}
-                          placeholder="选客户后自动带出"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        联系人
-                        <input value={quotationForm.contact} onChange={handleQuotationChange('contact')} />
-                      </label>
-                      <label>
-                        联系电话
-                        <input value={quotationForm.contact_phone} onChange={handleQuotationChange('contact_phone')} />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        报价日期
-                        <input type="date" value={quotationForm.quote_date} onChange={handleQuotationChange('quote_date')} />
-                      </label>
-                      <label>
-                        报价效期
-                        <input type="date" value={quotationForm.valid_until} onChange={handleQuotationChange('valid_until')} />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        出货仓库
-                        <select value={quotationForm.warehouse_id} onChange={handleQuotationChange('warehouse_id')}>
-                          <option value="">转单时再选</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        业务员
-                        <input value={quotationForm.businesser} onChange={handleQuotationChange('businesser')} placeholder="如：范先生" />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        付款方式
-                        <select value={quotationForm.payment_method} onChange={handleQuotationChange('payment_method')}>
-                          <option value="">请选择</option>
-                          {(quotationMeta?.payment_methods || []).map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        运输方式
-                        <select value={quotationForm.transport_method} onChange={handleQuotationChange('transport_method')}>
-                          <option value="">请选择</option>
-                          {(quotationMeta?.transport_methods || []).map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        传真号码
-                        <input value={quotationForm.fax} onChange={handleQuotationChange('fax')} />
-                      </label>
-                      <label>
-                        交货地点
-                        <input value={quotationForm.delivery_place} onChange={handleQuotationChange('delivery_place')} />
-                      </label>
-                    </div>
-
-                    <div className="contract-items">
-                      <div className="section-header compact-header">
-                        <h3>报价明细</h3>
-                        <button type="button" className="secondary-btn small-btn" onClick={addQuotationItem}>
-                          + 添加一行
-                        </button>
-                      </div>
-                      {quotationForm.items.map((line, index) => (
-                        <div className="contract-item-row" key={index}>
-                          <select value={line.product_id} onChange={handleQuotationItemChange(index, 'product_id')}>
-                            <option value="">请选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.name}
-                              </option>
-                            ))}
-                          </select>
-                          {renderStockHint(line.product_id)}
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.quantity}
-                            onChange={handleQuotationItemChange(index, 'quantity')}
-                            placeholder="数量"
-                          />
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.unit_price}
-                            onChange={handleQuotationItemChange(index, 'unit_price')}
-                            placeholder="报价单价"
-                          />
-                          <button
-                            type="button"
-                            className="danger-btn"
-                            onClick={() => removeQuotationItem(index)}
-                            disabled={quotationForm.items.length <= 1}
-                          >
-                            移除
-                          </button>
-                        </div>
-                      ))}
-                      <p className="table-hint">
-                        共 {quotationForm.items.filter((r) => r.product_id).length} 行 · 合计 ¥
-                        {quotationForm.items
-                          .reduce((sum, r) => sum + (Number(r.quantity) || 0) * (Number(r.unit_price) || 0), 0)
-                          .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </p>
-                    </div>
-
-                    <label>
-                      备注
-                      <input value={quotationForm.note} onChange={handleQuotationChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存报价单</button>
-                    <p className="table-hint">
-                      报价单只是报价意向，不产生应收、不扣库存；客户确认后点「转销售订单」生成订单，再走单据流程。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>报价单列表</h2>
-                    <span className="status-badge">{quotations.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={quotationKeyword}
-                      onChange={(event) => setQuotationKeyword(event.target.value)}
-                      placeholder="按报价单号 / 客户 / 业务员搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshQuotations(quotationKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setQuotationKeyword('');
-                        refreshQuotations();
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {quotations.length === 0 ? (
-                    <div className="empty-state">暂无报价单</div>
-                  ) : (
-                    <div className="quotation-table-wrap">
-                      <table className="data-table quotation-table">
-                      <thead>
-                        <tr>
-                          <th>报价单号</th>
-                          <th>客户</th>
-                          <th>金额</th>
-                          <th>业务员</th>
-                          <th>状态</th>
-                          <th>报价日期</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {quotations.map((row) => (
-                          <tr
-                            key={row.id}
-                            onClick={() => setSelectedQuotation(row)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault();
-                                setSelectedQuotation(row);
-                              }
-                            }}
-                            tabIndex={0}
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <td>{row.quote_no}</td>
-                            <td>{row.customer_name || '—'}</td>
-                            <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
-                            <td>{row.businesser || '—'}</td>
-                            <td>{quotationStatusLabel(row.status)}</td>
-                            <td>{row.quote_date || '—'}</td>
-                            <td>
-                              <button
-                                type="button"
-                                className="secondary-btn small-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  printPdf(`/print/quotation/${row.id}`, `报价单_${row.quote_no}.pdf`);
-                                }}
-                              >
-                                打印
-                              </button>{' '}
-                              <button
-                                type="button"
-                                className="secondary-btn small-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  quotationToOrder(row);
-                                }}
-                                disabled={Boolean(row.order_id)}
-                              >
-                                {row.order_id ? `已转 ${row.order_no}` : '转订单'}
-                              </button>{' '}
-                              <button
-                                type="button"
-                                className="danger-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/quotations/${row.id}`,
-                                    label: `报价单 ${row.quote_no}`,
-                                    kind: 'quotation',
-                                  });
-                                }}
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-
-                {selectedQuotation && (
-                  <div className="modal-overlay" onClick={() => setSelectedQuotation(null)}>
-                    <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-                      <div className="modal-header">
-                        <h3>报价单 {selectedQuotation.quote_no}</h3>
-                        <button type="button" className="close-btn" onClick={() => setSelectedQuotation(null)}>×</button>
-                      </div>
-                      <div className="contract-detail">
-                        <p>
-                          <strong>{quotationStatusLabel(selectedQuotation.status)}</strong>
-                          {selectedQuotation.order_no ? ` · 已生成销售订单 ${selectedQuotation.order_no}` : ''}
-                        </p>
-                        <p>客户：{selectedQuotation.customer_name || '—'}　联系人：{selectedQuotation.contact || '—'}</p>
-                        <p>联系电话：{selectedQuotation.contact_phone || '—'}　传真：{selectedQuotation.fax || '—'}</p>
-                        <p>客户地址：{selectedQuotation.customer_address || '—'}</p>
-                        <p>报价日期：{selectedQuotation.quote_date || '—'}　效期至：{selectedQuotation.valid_until || '—'}</p>
-                        <p>业务员：{selectedQuotation.businesser || '—'}　付款方式：{selectedQuotation.payment_method || '—'}</p>
-                        <p>运输方式：{selectedQuotation.transport_method || '—'}　交货地点：{selectedQuotation.delivery_place || '—'}</p>
-                        <p>金额：¥{Number(selectedQuotation.total_amount || 0).toLocaleString()}（{selectedQuotation.amount_chinese || '—'}）</p>
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>商品</th>
-                              <th>规格</th>
-                              <th>单位</th>
-                              <th>数量</th>
-                              <th>单价</th>
-                              <th>金额</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(selectedQuotation.items || []).map((line) => (
-                              <tr key={line.id}>
-                                <td>{line.product_name}</td>
-                                <td>{line.standards || '—'}</td>
-                                <td>{line.unit || '—'}</td>
-                                <td>{line.quantity}</td>
-                                <td>¥{Number(line.unit_price || 0).toLocaleString()}</td>
-                                <td>¥{Number(line.amount || 0).toLocaleString()}</td>
-                              </tr>
-                            ))}
-                            {(selectedQuotation.items || []).length === 0 && (
-                              <tr>
-                                <td colSpan={6}>该报价单暂无明细（浩技云历史导入数据只含单头）</td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="modal-actions">
-                        <button
-                          type="button"
-                          className="secondary-btn"
-                          onClick={() => printPdf(`/print/quotation/${selectedQuotation.id}`, `报价单_${selectedQuotation.quote_no}.pdf`)}
-                        >
-                          打印报价单
-                        </button>
-                        <button type="button" className="secondary-btn" onClick={() => setSelectedQuotation(null)}>关闭</button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+            {/* 第 13 批第三步：增强对账单编辑器（自包含组件，不传 ctx） */}
+            {selectedTab === 'statements-editor' && (
+              <Suspense fallback={<section className="panel">正在加载对账单…</section>}>
+                {/* key 带 nonce：从智能指令跳过来时即使已经停在这一页，也要按新单位重建。
+                    `initialParty` 形如 `c:12` / `s:45`（与页面内部 partyId 同一套前缀）。 */}
+                <StatementEditor
+                  key={`stmt-${statementPreset.nonce}`}
+                  initialScope={statementPreset.scope}
+                  initialParty={statementPreset.party}
+                />
+              </Suspense>
             )}
 
-            {selectedTab === 'purchase-return' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增采购退货单</h2>
-                    <span className="status-badge">退货冲减库存 · 应付</span>
-                  </div>
+            {selectedTab === 'quotation' && <QuotationPage ctx={appCtx} />}
 
-                  <form onSubmit={submitPurchaseReturn} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        供应商
-                        <select value={purchaseReturnForm.supplier_id} onChange={handlePurchaseReturnChange('supplier_id')} required>
-                          <option value="">请选择供应商</option>
-                          {suppliers.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}（{item.code}）</option>
-                          ))}
-                        </select>
-                        {renderPartyLink('suppliers', purchaseReturnForm.supplier_id, '供应商')}
-                      </label>
-                      <label>
-                        退货仓库
-                        <select value={purchaseReturnForm.warehouse_id} onChange={handlePurchaseReturnChange('warehouse_id')}>
-                          <option value="">默认仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
+            {selectedTab === 'purchase-return' && <PurchaseReturnPage ctx={appCtx} />}
 
-                    <div className="form-row two-col">
-                      <label>
-                        退货日期
-                        <input type="date" value={purchaseReturnForm.return_date} onChange={handlePurchaseReturnChange('return_date')} />
-                      </label>
-                      <label>
-                        业务员
-                        <input value={purchaseReturnForm.businesser} onChange={handlePurchaseReturnChange('businesser')} placeholder="如：采购员" />
-                      </label>
-                    </div>
+            {selectedTab === 'sales-return' && <SalesReturnPage ctx={appCtx} />}
 
-                    <div className="form-row two-col">
-                      <label>
-                        退款方式
-                        <input list="lookup-payment-method" value={purchaseReturnForm.payment_method} onChange={handlePurchaseReturnChange('payment_method')} placeholder="如：银行转账 / 现金" />
-                      </label>
-                      <label>
-                        来源单号
-                        <input value={purchaseReturnForm.source_order_no} onChange={handlePurchaseReturnChange('source_order_no')} placeholder="关联的采购入库单号（可选）" />
-                      </label>
-                    </div>
+            {selectedTab === 'transfer' && <TransferPage ctx={appCtx} />}
 
-                    <label>
-                      退货原因
-                      <input value={purchaseReturnForm.return_reason} onChange={handlePurchaseReturnChange('return_reason')} placeholder="如：质量不合格 / 规格不符" />
-                    </label>
+            {selectedTab === 'stocktaking' && <StocktakingPage ctx={appCtx} />}
 
-                    <div className="section-header">
-                      <h3>退货明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addPurchaseReturnItem}>+ 添加一行</button>
-                    </div>
-                    {purchaseReturnForm.items.map((line, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          商品
-                          <select value={line.product_id} onChange={handlePurchaseReturnItemChange(index, 'product_id')}>
-                            <option value="">请选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(line.product_id)}
-                        </label>
-                        <label>
-                          数量
-                          <input type="number" min="1" value={line.quantity} onChange={handlePurchaseReturnItemChange(index, 'quantity')} />
-                        </label>
-                        <label>
-                          单价
-                          <input type="number" min="0" step="0.01" value={line.unit_price} onChange={handlePurchaseReturnItemChange(index, 'unit_price')} />
-                        </label>
-                        {purchaseReturnForm.items.length > 1 && (
-                          <button
-                            type="button"
-                            className="danger-btn small-btn"
-                            onClick={() => removePurchaseReturnItem(index)}
-                          >
-                            移除
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    <p className="table-hint">
-                      共 {purchaseReturnForm.items.filter((r) => r.product_id).length} 行 · 合计 ¥
-                      {purchaseReturnForm.items
-                        .reduce((sum, r) => sum + (Number(r.quantity) || 0) * (Number(r.unit_price) || 0), 0)
-                        .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </p>
+            {selectedTab === 'loss-overflow' && <LossOverflowPage ctx={appCtx} />}
 
-                    <label>
-                      备注
-                      <input value={purchaseReturnForm.note} onChange={handlePurchaseReturnChange('note')} />
-                    </label>
+            {selectedTab === 'production-plan' && <ProductionPlanPage ctx={appCtx} />}
 
-                    <button className="primary-btn" type="submit">保存采购退货单</button>
-                    <p className="table-hint">
-                      退货审核后自动冲减库存与应付，删除退货单会撤销这两笔动作。
-                    </p>
-                  </form>
-                </section>
+            {selectedTab === 'mrp' && <MrpPage ctx={appCtx} />}
 
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>采购退货列表</h2>
-                    <span className="status-badge">{purchaseReturns.length} 张</span>
-                  </div>
+            {selectedTab === 'material-issue' && <MaterialIssuePage ctx={appCtx} />}
 
-                  <div className="contract-search">
-                    <input
-                      value={purchaseReturnKeyword}
-                      onChange={(event) => setPurchaseReturnKeyword(event.target.value)}
-                      placeholder="按退货单号 / 供应商 / 业务员搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshPurchaseReturns(purchaseReturnKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setPurchaseReturnKeyword('');
-                        refreshPurchaseReturns();
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
+            {selectedTab === 'material-return' && <MaterialReturnPage ctx={appCtx} />}
 
-                  {purchaseReturns.length === 0 ? (
-                    <div className="empty-state">暂无采购退货单。退货单会把货退回供应商，同时冲减库存与应付。</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>退货单号</th>
-                          <th>供应商</th>
-                          <th>金额</th>
-                          <th>业务员</th>
-                          <th>退货原因</th>
-                          <th>状态</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {purchaseReturns.map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.return_no}</td>
-                            <td>{row.supplier_name || suppliers.find((s) => s.id === row.supplier_id)?.name || row.supplier_id}</td>
-                            <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
-                            <td>{row.businesser || '—'}</td>
-                            <td>{row.return_reason || '—'}</td>
-                            <td><span className="status-badge">{purchaseReturnStatusLabel(row.status)}</span></td>
-                            <td className="row-actions">
-                              <button
-                                type="button"
-                                className="secondary-btn small-btn"
-                                onClick={() => printPdf(`/print/purchase-return/${row.id}`, `采购退货单_${row.return_no}.pdf`)}
-                              >
-                                打印
-                              </button>{' '}
-                              <button
-                                type="button"
-                                className="danger-btn"
-                                onClick={() => setConfirmDelete({
-                                  id: row.id,
-                                  endpoint: `/purchase-returns/${row.id}`,
-                                  label: `采购退货单 ${row.return_no}`,
-                                  kind: 'purchase-return',
-                                })}
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
+            {selectedTab === 'finished-goods' && <FinishedGoodsPage ctx={appCtx} />}
+
+            {selectedTab === 'outsourcing' && <OutsourcingPage ctx={appCtx} />}
+
+            {selectedTab === 'users' && <UsersPage ctx={appCtx} />}
+
+            {selectedTab === 'params' && <ParamsPage ctx={appCtx} />}
+
+            {selectedTab === 'dictionaries' && <DictionariesPage ctx={appCtx} />}
+
+            {selectedTab === 'print-templates' && <PrintTemplatesPage ctx={appCtx} />}
+
+            {selectedTab === 'logs' && <LogsPage ctx={appCtx} />}
+
+            {selectedTab === 'menus' && <MenusPage ctx={appCtx} />}
+
+            {selectedTab === 'settings' && <SettingsPage ctx={appCtx} />}
+
+            {selectedTab === 'inventory' && <InventoryPage ctx={appCtx} />}
+
+            {selectedTab === 'stock-alert' && <StockAlertPage ctx={appCtx} />}
+
+            {selectedTab === 'agent' && <AgentPage ctx={appCtx} />}
+
+            {notice && (
+              <div className={`notice-box${noticeTone ? ` notice-box--${noticeTone}` : ''}`}>{notice}</div>
             )}
 
-            {selectedTab === 'sales-return' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增销售退货单</h2>
-                    <span className="status-badge">退货冲减库存 · 应收</span>
+            {/* 删单被拦（2026-10-18）：单据已登记收付款。只有一个「知道了」，
+                没有强制删除 —— 真实资金记录不能因为删单而消失。 */}
+            {deleteBlocked && (
+              <div className="modal-backdrop" onClick={() => setDeleteBlocked(null)} data-delete-blocked>
+                <div
+                  className="modal-card delete-blocked"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="无法删除"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="modal-header">
+                    <h3>无法删除</h3>
+                    <button type="button" className="close-btn" onClick={() => setDeleteBlocked(null)} aria-label="关闭">×</button>
                   </div>
-
-                  <form onSubmit={submitSalesReturn} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        客户
-                        <select value={salesReturnForm.customer_id} onChange={handleSalesReturnChange('customer_id')} required>
-                          <option value="">请选择客户</option>
-                          {customers.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}（{item.code}）</option>
-                          ))}
-                        </select>
-                        {renderPartyLink('customers', salesReturnForm.customer_id, '客户')}
-                      </label>
-                      <label>
-                        退货入库仓库
-                        <select value={salesReturnForm.warehouse_id} onChange={handleSalesReturnChange('warehouse_id')}>
-                          <option value="">默认仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        退货日期
-                        <input type="date" value={salesReturnForm.return_date} onChange={handleSalesReturnChange('return_date')} />
-                      </label>
-                      <label>
-                        业务员
-                        <input value={salesReturnForm.businesser} onChange={handleSalesReturnChange('businesser')} placeholder="如：销售员" />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        退款方式
-                        <input list="lookup-payment-method" value={salesReturnForm.payment_method} onChange={handleSalesReturnChange('payment_method')} placeholder="如：银行转账 / 现金" />
-                      </label>
-                      <label>
-                        来源单号
-                        <input value={salesReturnForm.source_order_no} onChange={handleSalesReturnChange('source_order_no')} placeholder="关联的销售出库单号（可选）" />
-                      </label>
-                    </div>
-
-                    <label>
-                      退货原因
-                      <input value={salesReturnForm.return_reason} onChange={handleSalesReturnChange('return_reason')} placeholder="如：客户拒收 / 规格不符" />
-                    </label>
-
-                    <div className="section-header">
-                      <h3>退货明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addSalesReturnItem}>+ 添加一行</button>
-                    </div>
-                    {salesReturnForm.items.map((line, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          商品
-                          <select value={line.product_id} onChange={handleSalesReturnItemChange(index, 'product_id')}>
-                            <option value="">请选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(line.product_id)}
-                        </label>
-                        <label>
-                          数量
-                          <input type="number" min="1" value={line.quantity} onChange={handleSalesReturnItemChange(index, 'quantity')} />
-                        </label>
-                        <label>
-                          单价
-                          <input type="number" min="0" step="0.01" value={line.unit_price} onChange={handleSalesReturnItemChange(index, 'unit_price')} />
-                        </label>
-                        {salesReturnForm.items.length > 1 && (
-                          <button
-                            type="button"
-                            className="danger-btn small-btn"
-                            onClick={() => removeSalesReturnItem(index)}
-                          >
-                            移除
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    <p className="table-hint">
-                      共 {salesReturnForm.items.filter((r) => r.product_id).length} 行 · 合计 ¥
-                      {salesReturnForm.items
-                        .reduce((sum, r) => sum + (Number(r.quantity) || 0) * (Number(r.unit_price) || 0), 0)
-                        .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </p>
-
-                    <label>
-                      备注
-                      <input value={salesReturnForm.note} onChange={handleSalesReturnChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存销售退货单</button>
-                    <p className="table-hint">
-                      退货后自动增加库存并冲减应收，删除退货单会撤销这两笔动作。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>销售退货列表</h2>
-                    <span className="status-badge">{salesReturns.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={salesReturnKeyword}
-                      onChange={(event) => setSalesReturnKeyword(event.target.value)}
-                      placeholder="按退货单号 / 客户 / 业务员搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshSalesReturns(salesReturnKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setSalesReturnKeyword('');
-                        refreshSalesReturns();
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {salesReturns.length === 0 ? (
-                    <div className="empty-state">暂无销售退货单。退货单会把货收回仓库，同时冲减库存与应收。</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>退货单号</th>
-                          <th>客户</th>
-                          <th>金额</th>
-                          <th>业务员</th>
-                          <th>退货原因</th>
-                          <th>状态</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {salesReturns.map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.return_no}</td>
-                            <td>{row.customer_name || customers.find((c) => c.id === row.customer_id)?.name || row.customer_id}</td>
-                            <td>¥{Number(row.total_amount || 0).toLocaleString()}</td>
-                            <td>{row.businesser || '—'}</td>
-                            <td>{row.return_reason || '—'}</td>
-                            <td><span className="status-badge">{salesReturnStatusLabel(row.status)}</span></td>
-                            <td className="row-actions">
-                              <button
-                                type="button"
-                                className="secondary-btn small-btn"
-                                onClick={() => printPdf(`/print/sales-return/${row.id}`, `销售退货单_${row.return_no}.pdf`)}
-                              >
-                                打印
-                              </button>{' '}
-                              <button
-                                type="button"
-                                className="danger-btn"
-                                onClick={() => setConfirmDelete({
-                                  id: row.id,
-                                  endpoint: `/sales-returns/${row.id}`,
-                                  label: `销售退货单 ${row.return_no}`,
-                                  kind: 'sales-return',
-                                })}
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'transfer' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增调拨单</h2>
-                    <span className="status-badge">内部移库 · 不影响财务</span>
-                  </div>
-
-                  <form onSubmit={submitTransfer} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        调出仓库（库存减少）
-                        <select value={transferForm.from_warehouse_id} onChange={handleTransferChange('from_warehouse_id')} required>
-                          <option value="">请选择调出仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        调入仓库（库存增加）
-                        <select value={transferForm.to_warehouse_id} onChange={handleTransferChange('to_warehouse_id')} required>
-                          <option value="">请选择调入仓库</option>
-                          {warehouses
-                            .filter((item) => String(item.id) !== String(transferForm.from_warehouse_id))
-                            .map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        调拨日期
-                        <input type="date" value={transferForm.transfer_date} onChange={handleTransferChange('transfer_date')} />
-                      </label>
-                      <label>
-                        经办人
-                        <input value={transferForm.handler} onChange={handleTransferChange('handler')} placeholder="如：仓管员" />
-                      </label>
-                    </div>
-
-                    <label>
-                      调拨原因
-                      <input value={transferForm.reason} onChange={handleTransferChange('reason')} placeholder="如：门店补货 / 仓库整合" />
-                    </label>
-
-                    <div className="section-header">
-                      <h3>调拨明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addTransferItem}>+ 添加一行</button>
-                    </div>
-                    {transferForm.items.map((line, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          商品
-                          <select value={line.product_id} onChange={handleTransferItemChange(index, 'product_id')}>
-                            <option value="">请选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderTransferStockHint(line.product_id, transferForm.from_warehouse_id)}
-                        </label>
-                        <label>
-                          调拨数量
-                          <input type="number" min="1" value={line.quantity} onChange={handleTransferItemChange(index, 'quantity')} />
-                        </label>
-                        <label>
-                          成本单价
-                          <input type="number" min="0" step="0.01" value={line.unit_price} onChange={handleTransferItemChange(index, 'unit_price')} />
-                        </label>
-                        {transferForm.items.length > 1 && (
-                          <button
-                            type="button"
-                            className="danger-btn small-btn"
-                            onClick={() => removeTransferItem(index)}
-                          >
-                            移除
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    <p className="table-hint">
-                      共 {transferForm.items.filter((r) => r.product_id).length} 行 · 合计数量{' '}
-                      {transferForm.items
-                        .reduce((sum, r) => sum + (Number(r.quantity) || 0), 0)
-                        .toLocaleString()}
-                    </p>
-
-                    <label>
-                      备注
-                      <input value={transferForm.note} onChange={handleTransferChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存调拨单</button>
-                    <p className="table-hint">
-                      调拨是同一企业内部的库存位置转移，只改动两个仓库的现存量、不产生财务流水；删除调拨单会把两侧库存同时还原。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>调拨单列表</h2>
-                    <span className="status-badge">{transfers.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={transferKeyword}
-                      onChange={(event) => setTransferKeyword(event.target.value)}
-                      placeholder="按调拨单号 / 经办人 / 原因搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshTransfers(transferKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setTransferKeyword('');
-                        refreshTransfers();
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {transfers.length === 0 ? (
-                    <div className="empty-state">暂无调拨单。调拨单把货从一个仓库搬到另一个仓库，只改现存量、不涉财务。</div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>调拨单号</th>
-                            <th>调拨方向</th>
-                            <th>数量</th>
-                            <th>经办人</th>
-                            <th>调拨日期</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {transfers.map((row) => (
-                            <tr key={row.id}>
-                              <td>{row.transfer_no}</td>
-                              <td>
-                                {warehouses.find((w) => w.id === row.from_warehouse_id)?.name || row.from_warehouse_id}
-                                <span className="transfer-arrow"> → </span>
-                                {warehouses.find((w) => w.id === row.to_warehouse_id)?.name || row.to_warehouse_id}
-                              </td>
-                              <td>{Number(row.total_quantity || 0).toLocaleString()}</td>
-                              <td>{row.handler || '—'}</td>
-                              <td>{row.transfer_date || '—'}</td>
-                              <td><span className="status-badge">{transferStatusLabel(row.status)}</span></td>
-                              <td className="row-actions">
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() => printPdf(`/print/inventory-transfer/${row.id}`, `调拨单_${row.transfer_no}.pdf`)}
-                                >
-                                  打印
-                                </button>{' '}
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/inventory-transfers/${row.id}`,
-                                    label: `调拨单 ${row.transfer_no}`,
-                                    kind: 'inventory-transfer',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'stocktaking' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增盘点单</h2>
-                    <span className="status-badge">账实核对 · 不影响财务</span>
-                  </div>
-
-                  <form onSubmit={submitStocktaking} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        盘点仓库
-                        <select
-                          value={stocktakingForm.warehouse_id}
-                          onChange={handleStocktakingChange('warehouse_id')}
-                          required
-                        >
-                          <option value="">请选择盘点仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        盘点日期
-                        <input
-                          type="date"
-                          value={stocktakingForm.check_date}
-                          onChange={handleStocktakingChange('check_date')}
-                        />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        盘点人
-                        <input
-                          value={stocktakingForm.handler}
-                          onChange={handleStocktakingChange('handler')}
-                          placeholder="如：仓管员"
-                        />
-                      </label>
-                      <label>
-                        盘点范围
-                        <input
-                          value={stocktakingForm.scope}
-                          onChange={handleStocktakingChange('scope')}
-                          placeholder="如：全仓 / 仅 A 区货架"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="section-header">
-                      <h3>盘点明细（账面 → 实盘）</h3>
-                      <span className="section-actions">
-                        <button type="button" className="secondary-btn small-btn" onClick={loadStocktakingPlan}>
-                          带出账面库存
-                        </button>
-                        <button type="button" className="secondary-btn small-btn" onClick={addStocktakingItem}>
-                          + 手工加行
-                        </button>
-                      </span>
-                    </div>
-
-                    {stocktakingPlanHint && <p className="focus-banner">{stocktakingPlanHint}</p>}
-
-                    {stocktakingForm.items.length === 0 ? (
-                      <div className="empty-state">
-                        先选仓库，再点「带出账面库存」——系统会按实时现存量生成盘点底稿，
-                        你只需要改有差异的行；账面为 0 却盘出货物的，用「手工加行」补。
-                      </div>
-                    ) : (
-                      <div className="wide-table-wrap">
-                        <table className="data-table stocktaking-table">
-                          <thead>
-                            <tr>
-                              <th>商品</th>
-                              <th>账面数</th>
-                              <th>实盘数</th>
-                              <th>盈亏</th>
-                              <th>操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {stocktakingForm.items.map((line, index) => {
-                              const diff =
-                                (Number(line.actual_quantity) || 0) - (Number(line.book_quantity) || 0);
-                              return (
-                                <tr key={index}>
-                                  <td>
-                                    {line.product_name ? (
-                                      <>
-                                        <span className="line-product">{line.product_name}</span>
-                                        {renderStockHint(line.product_id)}
-                                      </>
-                                    ) : (
-                                      <select
-                                        value={line.product_id}
-                                        onChange={(event) =>
-                                          handleStocktakingProductPick(index, event.target.value)
-                                        }
-                                      >
-                                        <option value="">请选择商品</option>
-                                        {products.map((item) => (
-                                          <option key={item.id} value={item.id}>{item.name}</option>
-                                        ))}
-                                      </select>
-                                    )}
-                                  </td>
-                                  <td>
-                                    <input
-                                      type="number"
-                                      step="0.01"
-                                      value={line.book_quantity}
-                                      onChange={handleStocktakingItemChange(index, 'book_quantity')}
-                                    />
-                                  </td>
-                                  <td>
-                                    <input
-                                      type="number"
-                                      step="0.01"
-                                      value={line.actual_quantity}
-                                      onChange={handleStocktakingItemChange(index, 'actual_quantity')}
-                                    />
-                                  </td>
-                                  <td>
-                                    <span
-                                      className={
-                                        diff > 0 ? 'num-profit' : diff < 0 ? 'num-loss' : undefined
-                                      }
-                                    >
-                                      {diff > 0 ? `+${diff}` : diff}
-                                    </span>
-                                  </td>
-                                  <td className="row-actions">
-                                    <button
-                                      type="button"
-                                      className="danger-btn small-btn"
-                                      onClick={() => removeStocktakingItem(index)}
-                                    >
-                                      移除
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-
-                    <p className="table-hint">
-                      共 {stocktakingForm.items.length} 行 ·
-                      盘盈{' '}
-                      <strong className="num-profit">
-                        {stocktakingForm.items
-                          .reduce((sum, r) => {
-                            const d = (Number(r.actual_quantity) || 0) - (Number(r.book_quantity) || 0);
-                            return sum + (d > 0 ? d : 0);
-                          }, 0)
-                          .toLocaleString()}
-                      </strong>{' '}
-                      · 盘亏{' '}
-                      <strong className="num-loss">
-                        {stocktakingForm.items
-                          .reduce((sum, r) => {
-                            const d = (Number(r.actual_quantity) || 0) - (Number(r.book_quantity) || 0);
-                            return sum + (d < 0 ? -d : 0);
-                          }, 0)
-                          .toLocaleString()}
-                      </strong>
-                    </p>
-
-                    <label>
-                      备注
-                      <input value={stocktakingForm.note} onChange={handleStocktakingChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存盘点单并调整库存</button>
-                    <p className="table-hint">
-                      保存后系统按盈亏直接调整现存量（盘盈入库、盘亏出库），只动库存、不生成财务流水；
-                      删除盘点单会把盘盈盘亏一起冲销，账面与库存同时还原到盘点前。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>盘点单列表</h2>
-                    <span className="status-badge">{stocktakings.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={stocktakingKeyword}
-                      onChange={(event) => setStocktakingKeyword(event.target.value)}
-                      placeholder="按盘点单号 / 盘点人 / 范围搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshStocktakings(stocktakingKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setStocktakingKeyword('');
-                        refreshStocktakings();
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {stocktakings.length === 0 ? (
-                    <div className="empty-state">暂无盘点单。盘点用于账实核对，盈亏会直接调整现存量。</div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>盘点单号</th>
-                            <th>仓库</th>
-                            <th>盘盈</th>
-                            <th>盘亏</th>
-                            <th>盘点日期</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {stocktakings.map((row) => (
-                            <tr key={row.id}>
-                              <td>{row.check_no}</td>
-                              <td>
-                                {warehouses.find((w) => w.id === row.warehouse_id)?.name || row.warehouse_id}
-                              </td>
-                              <td className="num-profit">
-                                {Number(row.total_profit || 0) > 0 ? `+${Number(row.total_profit).toLocaleString()}` : '—'}
-                              </td>
-                              <td className="num-loss">
-                                {Number(row.total_loss || 0) > 0 ? `-${Number(row.total_loss).toLocaleString()}` : '—'}
-                              </td>
-                              <td>{row.check_date || '—'}</td>
-                              <td><span className="status-badge">{stocktakingStatusLabel(row.status)}</span></td>
-                              <td className="row-actions">
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() => printPdf(`/print/stocktaking/${row.id}`, `盘点单_${row.check_no}.pdf`)}
-                                >
-                                  打印
-                                </button>{' '}
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/stocktakings/${row.id}`,
-                                    label: `盘点单 ${row.check_no}`,
-                                    kind: 'stocktaking',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'loss-overflow' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增{adjustTypeLabel(adjustmentForm.adjust_type)}单</h2>
-                    <span className="status-badge">
-                      {ADJUST_TYPE_DIRECTION[adjustmentForm.adjust_type]} · 不影响财务
-                    </span>
-                  </div>
-
-                  <div className="type-switch">
-                    {['scrap', 'overflow'].map((type) => (
-                      <button
-                        key={type}
-                        type="button"
-                        className={`type-switch-btn ${adjustmentForm.adjust_type === type ? 'active' : ''}`}
-                        onClick={() => setAdjustmentForm((prev) => ({ ...prev, adjust_type: type }))}
-                      >
-                        {adjustTypeLabel(type)}
-                        <span className="type-switch-sub">{ADJUST_TYPE_DIRECTION[type]}</span>
-                      </button>
-                    ))}
-                  </div>
-
-                  <form onSubmit={submitAdjustment} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        发生仓库
-                        <select
-                          value={adjustmentForm.warehouse_id}
-                          onChange={handleAdjustmentChange('warehouse_id')}
-                          required
-                        >
-                          <option value="">请选择仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        单据日期
-                        <input
-                          type="date"
-                          value={adjustmentForm.adjust_date}
-                          onChange={handleAdjustmentChange('adjust_date')}
-                        />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        经办人
-                        <input
-                          value={adjustmentForm.handler}
-                          onChange={handleAdjustmentChange('handler')}
-                          placeholder="如：仓管员"
-                        />
-                      </label>
-                      <label>
-                        {`${adjustTypeLabel(adjustmentForm.adjust_type)}原因`}
-                        <input
-                          value={adjustmentForm.reason}
-                          onChange={handleAdjustmentChange('reason')}
-                          placeholder={
-                            adjustmentForm.adjust_type === 'scrap'
-                              ? '如：包装破损 / 过期报废'
-                              : '如：入库少记补登'
-                          }
-                        />
-                      </label>
-                    </div>
-
-                    <div className="section-header">
-                      <h3>{adjustTypeLabel(adjustmentForm.adjust_type)}明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addAdjustmentItem}>
-                        + 添加一行
-                      </button>
-                    </div>
-                    {adjustmentForm.items.map((line, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          商品
-                          <select value={line.product_id} onChange={handleAdjustmentItemChange(index, 'product_id')}>
-                            <option value="">请选择商品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(line.product_id)}
-                        </label>
-                        <label>
-                          {`${adjustTypeLabel(adjustmentForm.adjust_type)}数量`}
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={line.quantity}
-                            onChange={handleAdjustmentItemChange(index, 'quantity')}
-                          />
-                        </label>
-                        <label>
-                          成本单价
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.unit_price}
-                            onChange={handleAdjustmentItemChange(index, 'unit_price')}
-                          />
-                        </label>
-                        {adjustmentForm.items.length > 1 && (
-                          <button
-                            type="button"
-                            className="danger-btn small-btn"
-                            onClick={() => removeAdjustmentItem(index)}
-                          >
-                            移除
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    <p className="table-hint">
-                      共 {adjustmentForm.items.filter((r) => r.product_id).length} 行 · 合计数量{' '}
-                      {adjustmentForm.items
-                        .reduce((sum, r) => sum + Math.abs(Number(r.quantity) || 0), 0)
-                        .toLocaleString()}{' '}
-                      · 合计金额{' '}
-                      {adjustmentForm.items
-                        .reduce(
-                          (sum, r) =>
-                            sum + Math.abs(Number(r.quantity) || 0) * (Number(r.unit_price) || 0),
-                          0,
-                        )
-                        .toLocaleString()}
-                    </p>
-
-                    <label>
-                      备注
-                      <input value={adjustmentForm.note} onChange={handleAdjustmentChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">
-                      保存{adjustTypeLabel(adjustmentForm.adjust_type)}单
-                    </button>
-                    <p className="table-hint">
-                      报损让库存减少、报溢让库存增加，明细数量一律填正数，方向由上面的类型决定；
-                      两者都只调整现存量、不生成应收应付与财务流水，删除单据即把库存还原。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>报损报溢列表</h2>
-                    <span className="status-badge">{adjustments.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={adjustmentKeyword}
-                      onChange={(event) => setAdjustmentKeyword(event.target.value)}
-                      placeholder="按单号 / 经办人 / 原因搜索"
-                    />
-                    <select
-                      value={adjustmentTypeFilter}
-                      onChange={(event) => {
-                        setAdjustmentTypeFilter(event.target.value);
-                        refreshAdjustments(adjustmentKeyword, event.target.value);
-                      }}
-                    >
-                      <option value="">全部类型</option>
-                      <option value="scrap">仅报损</option>
-                      <option value="overflow">仅报溢</option>
-                    </select>
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshAdjustments(adjustmentKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setAdjustmentKeyword('');
-                        setAdjustmentTypeFilter('');
-                        refreshAdjustments('', '');
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {adjustments.length === 0 ? (
-                    <div className="empty-state">暂无报损报溢单。报损减库存、报溢加库存，都只动库存不涉财务。</div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>单号</th>
-                            <th>类型</th>
-                            <th>仓库</th>
-                            <th>数量</th>
-                            <th>金额</th>
-                            <th>日期</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {adjustments.map((row) => (
-                            <tr key={row.id}>
-                              <td>{row.adjust_no}</td>
-                              <td>
-                                <span className={row.adjust_type === 'scrap' ? 'num-loss' : 'num-profit'}>
-                                  {adjustTypeLabel(row.adjust_type)}
-                                </span>
-                              </td>
-                              <td>
-                                {warehouses.find((w) => w.id === row.warehouse_id)?.name || row.warehouse_id}
-                              </td>
-                              <td>{Number(row.total_quantity || 0).toLocaleString()}</td>
-                              <td>{Number(row.total_amount || 0).toLocaleString()}</td>
-                              <td>{row.adjust_date || '—'}</td>
-                              <td><span className="status-badge">{adjustmentStatusLabel(row.status)}</span></td>
-                              <td className="row-actions">
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() =>
-                                    printPdf(
-                                      `/print/inventory-${row.adjust_type === 'scrap' ? 'scrap' : 'overflow'}/${row.id}`,
-                                      `${adjustTypeLabel(row.adjust_type)}单_${row.adjust_no}.pdf`,
-                                    )
-                                  }
-                                >
-                                  打印
-                                </button>{' '}
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/inventory-adjustments/${row.id}`,
-                                    label: `${adjustTypeLabel(row.adjust_type)}单 ${row.adjust_no}`,
-                                    kind: 'inventory-adjustment',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'production-plan' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增{planTypeLabel(productionPlanForm.plan_type)}生产计划</h2>
-                    <span className="status-badge">排产意图 · 不动库存财务</span>
-                  </div>
-
-                  <div className="type-switch">
-                    {['self', 'outsource'].map((type) => (
-                      <button
-                        key={type}
-                        type="button"
-                        className={`type-switch-btn ${productionPlanForm.plan_type === type ? 'active' : ''}`}
-                        onClick={() => setProductionPlanForm((prev) => ({ ...prev, plan_type: type }))}
-                      >
-                        {planTypeLabel(type)}
-                        <span className="type-switch-sub">{type === 'self' ? '车间自制' : '外协加工'}</span>
-                      </button>
-                    ))}
-                  </div>
-
-                  <form onSubmit={submitProductionPlan} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        生产仓库
-                        <select value={productionPlanForm.warehouse_id} onChange={handlePlanChange('warehouse_id')}>
-                          <option value="">请选择仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        车间 / 产线
-                        <input
-                          value={productionPlanForm.workshop}
-                          onChange={handlePlanChange('workshop')}
-                          placeholder="如：一号车间"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        计划日期
-                        <input type="date" value={productionPlanForm.plan_date} onChange={handlePlanChange('plan_date')} />
-                      </label>
-                      <label>
-                        计划完工日期
-                        <input type="date" value={productionPlanForm.delivery_date} onChange={handlePlanChange('delivery_date')} />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        计划员
-                        <input
-                          value={productionPlanForm.handler}
-                          onChange={handlePlanChange('handler')}
-                          placeholder="如：李计划"
-                        />
-                      </label>
-                      <label>
-                        来源订单号
-                        <input
-                          value={productionPlanForm.source_order_no}
-                          onChange={handlePlanChange('source_order_no')}
-                          placeholder="按销售订单排产（可空）"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="section-header">
-                      <h3>计划明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addPlanItem}>
-                        + 添加一行
-                      </button>
-                    </div>
-                    {productionPlanForm.items.map((line, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          成品
-                          <select value={line.product_id} onChange={handlePlanItemChange(index, 'product_id')}>
-                            <option value="">请选择成品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          计划数量
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={line.quantity}
-                            onChange={handlePlanItemChange(index, 'quantity')}
-                          />
-                        </label>
-                        <label>
-                          计划单位成本
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.unit_price}
-                            onChange={handlePlanItemChange(index, 'unit_price')}
-                          />
-                        </label>
-                        {productionPlanForm.items.length > 1 && (
-                          <button
-                            type="button"
-                            className="danger-btn small-btn"
-                            onClick={() => removePlanItem(index)}
-                          >
-                            移除
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    <p className="table-hint">
-                      共 {productionPlanForm.items.filter((r) => r.product_id).length} 行 · 计划总量{' '}
-                      {productionPlanForm.items
-                        .reduce((sum, r) => sum + (Number(r.quantity) || 0), 0)
-                        .toLocaleString()}{' '}
-                      · 计划金额{' '}
-                      {productionPlanForm.items
-                        .reduce(
-                          (sum, r) => sum + (Number(r.quantity) || 0) * (Number(r.unit_price) || 0),
-                          0,
-                        )
-                        .toLocaleString()}
-                    </p>
-
-                    <label>
-                      备注
-                      <input value={productionPlanForm.note} onChange={handlePlanChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存生产计划</button>
-                    <p className="table-hint">
-                      生产计划只登记"打算生产什么、什么时候完工"，不写库存也不写财务；
-                      保存后在右侧点「MRP 运算」，按 BOM 算出缺哪些料。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>生产计划列表</h2>
-                    <span className="status-badge">{productionPlans.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={productionPlanKeyword}
-                      onChange={(event) => setProductionPlanKeyword(event.target.value)}
-                      placeholder="按单号 / 计划员 / 车间 / 订单号搜索"
-                    />
-                    <select
-                      value={productionPlanTypeFilter}
-                      onChange={(event) => {
-                        setProductionPlanTypeFilter(event.target.value);
-                        refreshProductionPlans(productionPlanKeyword, event.target.value);
-                      }}
-                    >
-                      <option value="">全部类型</option>
-                      <option value="self">仅自制</option>
-                      <option value="outsource">仅委外</option>
-                    </select>
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshProductionPlans(productionPlanKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setProductionPlanKeyword('');
-                        setProductionPlanTypeFilter('');
-                        refreshProductionPlans('', '');
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {productionPlans.length === 0 ? (
-                    <div className="empty-state">暂无生产计划。计划只排产不动库存，是 MRP 与领料的起点。</div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>单号</th>
-                            <th>类型</th>
-                            <th>仓库</th>
-                            <th>计划量</th>
-                            <th>计划金额</th>
-                            <th>计划完工</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {productionPlans.map((row) => (
-                            <tr key={row.id}>
-                              <td>{row.plan_no}</td>
-                              <td>{planTypeLabel(row.plan_type)}</td>
-                              <td>{warehouses.find((w) => w.id === row.warehouse_id)?.name || '—'}</td>
-                              <td>{Number(row.total_quantity || 0).toLocaleString()}</td>
-                              <td>{Number(row.total_amount || 0).toLocaleString()}</td>
-                              <td>{row.delivery_date || '—'}</td>
-                              <td><span className="status-badge">{productionPlanStatusLabel(row.status)}</span></td>
-                              <td className="row-actions">
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() => {
-                                    setMrpForm({
-                                      warehouse_id: row.warehouse_id ? String(row.warehouse_id) : '',
-                                      plan_id: String(row.id),
-                                      items: [{ product_id: '', quantity: '1' }],
-                                    });
-                                    setMrpResult(null);
-                                    setSelectedTab('mrp');
-                                  }}
-                                >
-                                  MRP 运算
-                                </button>{' '}
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() =>
-                                    printPdf(`/print/production-plan/${row.id}`, `生产计划单_${row.plan_no}.pdf`)
-                                  }
-                                >
-                                  打印
-                                </button>{' '}
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/production-plans/${row.id}`,
-                                    label: `生产计划 ${row.plan_no}`,
-                                    kind: 'production-plan',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'mrp' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>MRP 物料需求运算</h2>
-                    <span className="status-badge">按 BOM 展开 · 只算不动账</span>
-                  </div>
-
-                  <form onSubmit={runMrp} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        运算仓库
-                        <select value={mrpForm.warehouse_id} onChange={handleMrpChange('warehouse_id')}>
-                          <option value="">全部仓库（合计现有量）</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        按生产计划运算
-                        <select value={mrpForm.plan_id} onChange={handleMrpChange('plan_id')}>
-                          <option value="">不使用（手工输入成品）</option>
-                          {productionPlans.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.plan_no} · {Number(item.total_quantity || 0)} 件
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    {!mrpForm.plan_id && (
-                      <>
-                        <div className="section-header">
-                          <h3>成品需求</h3>
-                          <button type="button" className="secondary-btn small-btn" onClick={addMrpItem}>
-                            + 添加一行
-                          </button>
-                        </div>
-                        {mrpForm.items.map((line, index) => (
-                          <div className="form-row two-col" key={index}>
-                            <label>
-                              成品
-                              <select value={line.product_id} onChange={handleMrpItemChange(index, 'product_id')}>
-                                <option value="">请选择成品</option>
-                                {products.map((item) => (
-                                  <option key={item.id} value={item.id}>{item.name}</option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              需求数量
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={line.quantity}
-                                onChange={handleMrpItemChange(index, 'quantity')}
-                              />
-                            </label>
-                            {mrpForm.items.length > 1 && (
-                              <button
-                                type="button"
-                                className="danger-btn small-btn"
-                                onClick={() => removeMrpItem(index)}
-                              >
-                                移除
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </>
-                    )}
-
-                    <button className="primary-btn" type="submit" disabled={mrpBusy}>
-                      {mrpBusy ? '运算中…' : '开始 MRP 运算'}
-                    </button>
-                    <p className="table-hint">
-                      MRP 按 BOM 逐层展开：成品 → 半成品 → 原材料，再拿现存量一减得出净需求。
-                      运算只在屏幕上进行，不生成任何单据、不动库存与财务。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>运算结果</h2>
-                    {mrpResult && <span className="status-badge">{mrpResult.levels} 层 BOM</span>}
-                  </div>
-
-                  {!mrpResult ? (
-                    <div className="empty-state">
-                      还没有运算结果。选好成品数量或一张生产计划，点「开始 MRP 运算」。
-                    </div>
-                  ) : (
-                    <>
-                      <div className="mrp-summary">
-                        <div className="mrp-metric">
-                          <span>需求成品</span>
-                          <strong>{mrpResult.summary.demand_lines}</strong>
-                        </div>
-                        <div className="mrp-metric">
-                          <span>物料种类</span>
-                          <strong>{mrpResult.summary.material_lines}</strong>
-                        </div>
-                        <div className={`mrp-metric ${mrpResult.summary.shortage_lines ? 'warn' : ''}`}>
-                          <span>缺料种类</span>
-                          <strong>{mrpResult.summary.shortage_lines}</strong>
-                        </div>
-                        <div className={`mrp-metric ${mrpResult.summary.shortage_amount ? 'warn' : ''}`}>
-                          <span>缺料金额</span>
-                          <strong>¥{Number(mrpResult.summary.shortage_amount || 0).toLocaleString()}</strong>
-                        </div>
-                      </div>
-
-                      {!mrpResult.bom_ready && (
-                        <p className="table-hint">
-                          系统里还没有 BOM 数据，本次只按成品本身计算，未展开下层物料。去「BOM 清单」维护配方后再算。
-                        </p>
-                      )}
-
-                      <div className="wide-table-wrap">
-                        <table className="data-table wide-table">
-                          <thead>
-                            <tr>
-                              <th>层级</th>
-                              <th>物料</th>
-                              <th>规格</th>
-                              <th>单位</th>
-                              <th>毛需求</th>
-                              <th>现存量</th>
-                              <th>净需求</th>
-                              <th>参考进价</th>
-                              <th>缺料金额</th>
-                              <th>状态</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {mrpResult.rows.map((row) => (
-                              <tr
-                                key={`${row.level}-${row.product_id}`}
-                                className={row.is_product ? 'mrp-product-row' : ''}
-                              >
-                                <td>{row.level}</td>
-                                <td>{row.product_name}</td>
-                                <td>{row.standards || '—'}</td>
-                                <td>{row.unit || '—'}</td>
-                                <td>{Number(row.gross_quantity || 0).toLocaleString()}</td>
-                                <td>{Number(row.on_hand || 0).toLocaleString()}</td>
-                                <td>{row.is_product ? '—' : Number(row.net_quantity || 0).toLocaleString()}</td>
-                                <td>{Number(row.unit_price || 0).toLocaleString()}</td>
-                                <td>{row.is_product ? '—' : Number(row.amount || 0).toLocaleString()}</td>
-                                <td>
-                                  <span
-                                    className={
-                                      row.is_product
-                                        ? 'status-badge'
-                                        : Number(row.net_quantity) > 0
-                                          ? 'num-loss'
-                                          : 'num-profit'
-                                    }
-                                  >
-                                    {mrpStatusLabel(row.status)}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'material-issue' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增生产领料单</h2>
-                    <span className="status-badge">材料出库 · 不影响财务</span>
-                  </div>
-
-                  <form onSubmit={submitMaterialIssue} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        关联生产计划
-                        <select value={materialIssueForm.plan_id} onChange={handleIssueChange('plan_id')}>
-                          <option value="">不关联（手工领料）</option>
-                          {productionPlans.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.plan_no} · {Number(item.total_quantity || 0)} 件
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        领料仓库
-                        <select value={materialIssueForm.warehouse_id} onChange={handleIssueChange('warehouse_id')}>
-                          <option value="">请选择仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="section-actions">
-                      <button type="button" className="secondary-btn small-btn" onClick={loadIssueSuggestion}>
-                        按计划带出领料底稿
-                      </button>
-                      {issueSuggestionHint && <span className="table-hint">{issueSuggestionHint}</span>}
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        领料日期
-                        <input type="date" value={materialIssueForm.issue_date} onChange={handleIssueChange('issue_date')} />
-                      </label>
-                      <label>
-                        领料车间
-                        <input
-                          value={materialIssueForm.workshop}
-                          onChange={handleIssueChange('workshop')}
-                          placeholder="如：装配车间"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        领料人
-                        <input
-                          value={materialIssueForm.handler}
-                          onChange={handleIssueChange('handler')}
-                          placeholder="如：王师傅"
-                        />
-                      </label>
-                      <label>
-                        备注
-                        <input value={materialIssueForm.note} onChange={handleIssueChange('note')} />
-                      </label>
-                    </div>
-
-                    <div className="section-header">
-                      <h3>领料明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addIssueItem}>
-                        + 添加一行
-                      </button>
-                    </div>
-                    {materialIssueForm.items.map((line, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          材料
-                          <select value={line.product_id} onChange={handleIssueItemChange(index, 'product_id')}>
-                            <option value="">请选择材料</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(line.product_id)}
-                        </label>
-                        <label>
-                          领料数量
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={line.quantity}
-                            onChange={handleIssueItemChange(index, 'quantity')}
-                          />
-                        </label>
-                        <label>
-                          单价
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.unit_price}
-                            onChange={handleIssueItemChange(index, 'unit_price')}
-                          />
-                        </label>
-                        {materialIssueForm.items.length > 1 && (
-                          <button
-                            type="button"
-                            className="danger-btn small-btn"
-                            onClick={() => removeIssueItem(index)}
-                          >
-                            移除
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    <p className="table-hint">
-                      共 {materialIssueForm.items.filter((r) => r.product_id).length} 行 · 合计数量{' '}
-                      {materialIssueForm.items
-                        .reduce((sum, r) => sum + Math.abs(Number(r.quantity) || 0), 0)
-                        .toLocaleString()}
-                    </p>
-
-                    <button className="primary-btn" type="submit">保存领料单</button>
-                    <p className="table-hint">
-                      领料把材料从仓库发到车间（减少原料库存），属纯库存单据、不生成应收应付与财务流水；
-                      删除单据即把材料退回仓库。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>生产领料列表</h2>
-                    <span className="status-badge">{materialIssues.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={materialIssueKeyword}
-                      onChange={(event) => setMaterialIssueKeyword(event.target.value)}
-                      placeholder="按单号 / 计划号 / 车间 / 领料人搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshMaterialIssues(materialIssueKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setMaterialIssueKeyword('');
-                        refreshMaterialIssues('');
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {materialIssues.length === 0 ? (
-                    <div className="empty-state">暂无生产领料单。领料把材料发到车间（减原料库存），不涉财务。</div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>单号</th>
-                            <th>关联计划</th>
-                            <th>仓库</th>
-                            <th>数量</th>
-                            <th>金额</th>
-                            <th>日期</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {materialIssues.map((row) => (
-                            <tr key={row.id}>
-                              <td>{row.issue_no}</td>
-                              <td>{row.plan_no || '—'}</td>
-                              <td>{warehouses.find((w) => w.id === row.warehouse_id)?.name || '—'}</td>
-                              <td>{Number(row.total_quantity || 0).toLocaleString()}</td>
-                              <td>{Number(row.total_amount || 0).toLocaleString()}</td>
-                              <td>{row.issue_date || '—'}</td>
-                              <td><span className="status-badge">{materialIssueStatusLabel(row.status)}</span></td>
-                              <td className="row-actions">
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() =>
-                                    printPdf(`/print/material-issue/${row.id}`, `生产领料单_${row.issue_no}.pdf`)
-                                  }
-                                >
-                                  打印
-                                </button>{' '}
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/material-issues/${row.id}`,
-                                    label: `生产领料单 ${row.issue_no}`,
-                                    kind: 'material-issue',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'material-return' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增生产退料单</h2>
-                    <span className="status-badge">余料退回 · 不影响财务</span>
-                  </div>
-
-                  <form onSubmit={submitMaterialReturn} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        关联生产计划
-                        <select value={materialReturnForm.plan_id} onChange={handleReturnChange('plan_id')}>
-                          <option value="">不关联（手工退料）</option>
-                          {productionPlans.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.plan_no} · {Number(item.total_quantity || 0)} 件
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        退料仓库
-                        <select value={materialReturnForm.warehouse_id} onChange={handleReturnChange('warehouse_id')}>
-                          <option value="">请选择仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        退料日期
-                        <input type="date" value={materialReturnForm.return_date} onChange={handleReturnChange('return_date')} />
-                      </label>
-                      <label>
-                        退料车间
-                        <input
-                          value={materialReturnForm.workshop}
-                          onChange={handleReturnChange('workshop')}
-                          placeholder="如：装配车间"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        退料人
-                        <input
-                          value={materialReturnForm.handler}
-                          onChange={handleReturnChange('handler')}
-                          placeholder="如：王师傅"
-                        />
-                      </label>
-                      <label>
-                        退料原因
-                        <input
-                          value={materialReturnForm.reason}
-                          onChange={handleReturnChange('reason')}
-                          placeholder="如：余料退回 / 领错料退回"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="section-header">
-                      <h3>退料明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addReturnItem}>
-                        + 添加一行
-                      </button>
-                    </div>
-                    {materialReturnForm.items.map((line, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          材料
-                          <select value={line.product_id} onChange={handleReturnItemChange(index, 'product_id')}>
-                            <option value="">请选择材料</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(line.product_id)}
-                        </label>
-                        <label>
-                          退料数量
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={line.quantity}
-                            onChange={handleReturnItemChange(index, 'quantity')}
-                          />
-                        </label>
-                        <label>
-                          单价
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.unit_price}
-                            onChange={handleReturnItemChange(index, 'unit_price')}
-                          />
-                        </label>
-                        {materialReturnForm.items.length > 1 && (
-                          <button
-                            type="button"
-                            className="danger-btn small-btn"
-                            onClick={() => removeReturnItem(index)}
-                          >
-                            移除
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    <p className="table-hint">
-                      共 {materialReturnForm.items.filter((r) => r.product_id).length} 行 · 合计数量{' '}
-                      {materialReturnForm.items
-                        .reduce((sum, r) => sum + Math.abs(Number(r.quantity) || 0), 0)
-                        .toLocaleString()}
-                    </p>
-
-                    <label>
-                      备注
-                      <input value={materialReturnForm.note} onChange={handleReturnChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存退料单</button>
-                    <p className="table-hint">
-                      退料把车间余料退回仓库（增加原料库存），是领料的反向单据，同样不写财务；
-                      删除单据即把退回的料再扣回车间。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>生产退料列表</h2>
-                    <span className="status-badge">{materialReturns.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={materialReturnKeyword}
-                      onChange={(event) => setMaterialReturnKeyword(event.target.value)}
-                      placeholder="按单号 / 计划号 / 车间 / 原因搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshMaterialReturns(materialReturnKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setMaterialReturnKeyword('');
-                        refreshMaterialReturns('');
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {materialReturns.length === 0 ? (
-                    <div className="empty-state">暂无生产退料单。退料把车间余料退回仓库（加原料库存），不涉财务。</div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>单号</th>
-                            <th>关联计划</th>
-                            <th>仓库</th>
-                            <th>数量</th>
-                            <th>金额</th>
-                            <th>日期</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {materialReturns.map((row) => (
-                            <tr key={row.id}>
-                              <td>{row.return_no}</td>
-                              <td>{row.plan_no || '—'}</td>
-                              <td>{warehouses.find((w) => w.id === row.warehouse_id)?.name || '—'}</td>
-                              <td>{Number(row.total_quantity || 0).toLocaleString()}</td>
-                              <td>{Number(row.total_amount || 0).toLocaleString()}</td>
-                              <td>{row.return_date || '—'}</td>
-                              <td><span className="status-badge">{materialReturnStatusLabel(row.status)}</span></td>
-                              <td className="row-actions">
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() =>
-                                    printPdf(`/print/material-return/${row.id}`, `生产退料单_${row.return_no}.pdf`)
-                                  }
-                                >
-                                  打印
-                                </button>{' '}
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/material-returns/${row.id}`,
-                                    label: `生产退料单 ${row.return_no}`,
-                                    kind: 'material-return',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'finished-goods' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增成品入库单</h2>
-                    <span className="status-badge">成品入库 · 结转生产成本</span>
-                  </div>
-
-                  <form onSubmit={submitFinishedGoods} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        关联生产计划
-                        <select value={finishedGoodsForm.plan_id} onChange={handleFinishedGoodsChange('plan_id')}>
-                          <option value="">不关联（手工入库）</option>
-                          {productionPlans.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.plan_no} · {Number(item.total_quantity || 0)} 件
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        入库仓库
-                        <select value={finishedGoodsForm.warehouse_id} onChange={handleFinishedGoodsChange('warehouse_id')}>
-                          <option value="">请选择仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        入库日期
-                        <input type="date" value={finishedGoodsForm.receipt_date} onChange={handleFinishedGoodsChange('receipt_date')} />
-                      </label>
-                      <label>
-                        生产车间
-                        <input
-                          value={finishedGoodsForm.workshop}
-                          onChange={handleFinishedGoodsChange('workshop')}
-                          placeholder="如：总装车间"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        交库人
-                        <input
-                          value={finishedGoodsForm.handler}
-                          onChange={handleFinishedGoodsChange('handler')}
-                          placeholder="如：李班长"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="section-header">
-                      <h3>入库成品明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addFinishedGoodsItem}>
-                        + 添加一行
-                      </button>
-                    </div>
-                    {finishedGoodsForm.items.map((line, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          成品
-                          <select value={line.product_id} onChange={handleFinishedGoodsItemChange(index, 'product_id')}>
-                            <option value="">请选择成品</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          入库数量
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={line.quantity}
-                            onChange={handleFinishedGoodsItemChange(index, 'quantity')}
-                          />
-                        </label>
-                        <label>
-                          单位成本
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.unit_price}
-                            onChange={handleFinishedGoodsItemChange(index, 'unit_price')}
-                          />
-                        </label>
-                        {finishedGoodsForm.items.length > 1 && (
-                          <button
-                            type="button"
-                            className="danger-btn small-btn"
-                            onClick={() => removeFinishedGoodsItem(index)}
-                          >
-                            移除
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    <p className="table-hint">
-                      共 {finishedGoodsForm.items.filter((r) => r.product_id).length} 行 · 合计数量{' '}
-                      {finishedGoodsForm.items
-                        .reduce((sum, r) => sum + Math.abs(Number(r.quantity) || 0), 0)
-                        .toLocaleString()}
-                      　·　合计成本{' '}
-                      {finishedGoodsForm.items
-                        .reduce(
-                          (sum, r) =>
-                            sum + Math.abs(Number(r.quantity) || 0) * (Number(r.unit_price) || 0),
-                          0,
-                        )
-                        .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </p>
-
-                    <label>
-                      备注
-                      <input value={finishedGoodsForm.note} onChange={handleFinishedGoodsChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存入库单</button>
-                    <p className="table-hint">
-                      成品入库让成品现存量增加，并按入库成本结转生产成本（成本口径流水，不影响应收应付）；
-                      删除单据即把成品扣回车间并冲销成本流水。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>成品入库列表</h2>
-                    <span className="status-badge">{finishedGoodsList.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={finishedGoodsKeyword}
-                      onChange={(event) => setFinishedGoodsKeyword(event.target.value)}
-                      placeholder="按单号 / 计划号 / 车间 / 交库人搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshFinishedGoods(finishedGoodsKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setFinishedGoodsKeyword('');
-                        refreshFinishedGoods('');
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {finishedGoodsList.length === 0 ? (
-                    <div className="empty-state">暂无成品入库单。成品入库让成品库存增加，并结转生产成本。</div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>单号</th>
-                            <th>关联计划</th>
-                            <th>仓库</th>
-                            <th>数量</th>
-                            <th>入库成本</th>
-                            <th>日期</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {finishedGoodsList.map((row) => (
-                            <tr key={row.id}>
-                              <td>{row.receipt_no}</td>
-                              <td>{row.plan_no || '—'}</td>
-                              <td>{warehouses.find((w) => w.id === row.warehouse_id)?.name || '—'}</td>
-                              <td>{Number(row.total_quantity || 0).toLocaleString()}</td>
-                              <td>{Number(row.total_amount || 0).toLocaleString()}</td>
-                              <td>{row.receipt_date || '—'}</td>
-                              <td><span className="status-badge">{finishedGoodsStatusLabel(row.status)}</span></td>
-                              <td className="row-actions">
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() =>
-                                    printPdf(`/print/finished-goods/${row.id}`, `成品入库单_${row.receipt_no}.pdf`)
-                                  }
-                                >
-                                  打印
-                                </button>{' '}
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/finished-goods/${row.id}`,
-                                    label: `成品入库单 ${row.receipt_no}`,
-                                    kind: 'finished-goods',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'outsourcing' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增委外加工单</h2>
-                    <span className="status-badge">发料 + 收成品 · 加工费挂应付</span>
-                  </div>
-
-                  <form onSubmit={submitOutsourcing} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        外协厂
-                        <select value={outsourcingForm.supplier_id} onChange={handleOutsourcingChange('supplier_id')}>
-                          <option value="">请选择外协厂</option>
-                          {suppliers.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        发料 / 收料仓
-                        <select value={outsourcingForm.warehouse_id} onChange={handleOutsourcingChange('warehouse_id')}>
-                          <option value="">请选择仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        加工日期
-                        <input type="date" value={outsourcingForm.order_date} onChange={handleOutsourcingChange('order_date')} />
-                      </label>
-                      <label>
-                        经办人
-                        <input
-                          value={outsourcingForm.handler}
-                          onChange={handleOutsourcingChange('handler')}
-                          placeholder="如：采购张工"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="section-header">
-                      <h3>加工产出（收回成品）</h3>
-                    </div>
-                    <div className="form-row three-col">
-                      <label>
-                        产出成品
-                        <select value={outsourcingForm.product_id} onChange={handleOutsourcingChange('product_id')}>
-                          <option value="">请选择成品</option>
-                          {products.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        收回数量
-                        <input
-                          type="number"
-                          min="0"
-                          step="1"
-                          value={outsourcingForm.quantity}
-                          onChange={handleOutsourcingChange('quantity')}
-                        />
-                      </label>
-                      <label>
-                        成品单位成本
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={outsourcingForm.unit_price}
-                          onChange={handleOutsourcingChange('unit_price')}
-                        />
-                      </label>
-                    </div>
-
-                    <div className="section-header">
-                      <h3>发出材料明细</h3>
-                      <button type="button" className="secondary-btn small-btn" onClick={addOutsourcingItem}>
-                        + 添加一行
-                      </button>
-                    </div>
-                    {outsourcingForm.items.map((line, index) => (
-                      <div className="form-row three-col" key={index}>
-                        <label>
-                          材料
-                          <select value={line.product_id} onChange={handleOutsourcingItemChange(index, 'product_id')}>
-                            <option value="">请选择材料</option>
-                            {products.map((item) => (
-                              <option key={item.id} value={item.id}>{item.name}</option>
-                            ))}
-                          </select>
-                          {renderStockHint(line.product_id)}
-                        </label>
-                        <label>
-                          发出数量
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={line.quantity}
-                            onChange={handleOutsourcingItemChange(index, 'quantity')}
-                          />
-                        </label>
-                        <label>
-                          单价
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.unit_price}
-                            onChange={handleOutsourcingItemChange(index, 'unit_price')}
-                          />
-                        </label>
-                        {outsourcingForm.items.length > 1 && (
-                          <button
-                            type="button"
-                            className="danger-btn small-btn"
-                            onClick={() => removeOutsourcingItem(index)}
-                          >
-                            移除
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    <p className="table-hint">
-                      发出材料 {outsourcingForm.items.filter((r) => r.product_id).length} 行 · 合计发出数量{' '}
-                      {outsourcingForm.items
-                        .reduce((sum, r) => sum + Math.abs(Number(r.quantity) || 0), 0)
-                        .toLocaleString()}
-                    </p>
-
-                    <div className="form-row two-col">
-                      <label>
-                        加工费（应付外协厂）
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={outsourcingForm.process_fee}
-                          onChange={handleOutsourcingChange('process_fee')}
-                        />
-                      </label>
-                    </div>
-
-                    <label>
-                      备注
-                      <input value={outsourcingForm.note} onChange={handleOutsourcingChange('note')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存委外加工单</button>
-                    <p className="table-hint">
-                      委外加工一张单两个方向：发出材料减少原材料库存、收回成品增加成品库存，
-                      并按加工费对外协厂产生应付；删除单据即一次性全冲。
-                    </p>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>委外加工列表</h2>
-                    <span className="status-badge">{outsourcings.length} 张</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={outsourcingKeyword}
-                      onChange={(event) => setOutsourcingKeyword(event.target.value)}
-                      placeholder="按单号 / 成品 / 经办人搜索"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshOutsourcings(outsourcingKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setOutsourcingKeyword('');
-                        refreshOutsourcings('');
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  {outsourcings.length === 0 ? (
-                    <div className="empty-state">暂无委外加工单。委外加工发料出库、收回成品入库，并按加工费挂应付。</div>
-                  ) : (
-                    <div className="wide-table-wrap">
-                      <table className="data-table wide-table">
-                        <thead>
-                          <tr>
-                            <th>单号</th>
-                            <th>外协厂</th>
-                            <th>产出成品</th>
-                            <th>收回数量</th>
-                            <th>加工费</th>
-                            <th>发出材料</th>
-                            <th>日期</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {outsourcings.map((row) => (
-                            <tr key={row.id}>
-                              <td>{row.order_no}</td>
-                              <td>{suppliers.find((s) => s.id === row.supplier_id)?.name || '—'}</td>
-                              <td>{row.product_name || '—'}</td>
-                              <td>{Number(row.quantity || 0).toLocaleString()}</td>
-                              <td>{Number(row.process_fee || 0).toLocaleString()}</td>
-                              <td>{Number(row.total_amount || 0).toLocaleString()}</td>
-                              <td>{row.order_date || '—'}</td>
-                              <td><span className="status-badge">{outsourcingStatusLabel(row.status)}</span></td>
-                              <td className="row-actions">
-                                <button
-                                  type="button"
-                                  className="secondary-btn small-btn"
-                                  onClick={() =>
-                                    printPdf(`/print/outsourcing/${row.id}`, `委外加工单_${row.order_no}.pdf`)
-                                  }
-                                >
-                                  打印
-                                </button>{' '}
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => setConfirmDelete({
-                                    id: row.id,
-                                    endpoint: `/outsourcings/${row.id}`,
-                                    label: `委外加工单 ${row.order_no}`,
-                                    kind: 'outsourcing',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'users' && (
-              <div className="system-center">
-                <aside className="panel dept-panel">
-                  <div className="section-header">
-                    <h2>组织机构</h2>
-                    <span className="status-badge">{departmentOptions.length} 个部门</span>
-                  </div>
-                  <p className="settings-hint">
-                    部门是树形结构，用户挂在部门下。点部门名筛选右侧用户；「新增下级」会在当前选中部门下建子部门。
+                  <p className="delete-blocked__message" data-delete-blocked-message>
+                    {deleteBlocked.message}
                   </p>
-
-                  <div className="dept-tree">
-                    {departmentOptions.length === 0 && <div className="empty-state">暂无部门数据。</div>}
-                    {departmentOptions.map((node) => (
-                      <div
-                        key={node.id}
-                        className={`dept-node ${String(node.id) === selectedDeptId ? 'active' : ''} ${node.is_active ? '' : 'inactive'}`}
-                        style={{ paddingLeft: `${8 + node.depth * 16}px` }}
-                      >
-                        <button
-                          type="button"
-                          className="dept-node-btn"
-                          onClick={() => {
-                            setSelectedDeptId(String(node.id));
-                            setSystemUserDeptFilter(String(node.id));
-                            refreshSystemUsers({ department_id: String(node.id) });
-                          }}
-                        >
-                          <span className="dept-name">{node.name}</span>
-                          <span className="dept-count">{node.user_count}</span>
-                        </button>
-                        <span className="dept-actions">
-                          <button type="button" className="link-btn" onClick={() => startEditDepartment(node)}>改</button>
-                          <button
-                            type="button"
-                            className="link-btn danger"
-                            onClick={() => setConfirmDelete({
-                              id: node.id,
-                              endpoint: `/system/departments/${node.id}`,
-                              label: `部门「${node.name}」`,
-                              kind: 'system-dept',
-                            })}
-                          >
-                            删
-                          </button>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <form className="erp-form dept-form" onSubmit={submitDepartment}>
-                    <div className="form-title">
-                      {departmentForm.id ? '编辑部门' : '新增部门'}
-                      {departmentForm.parent_id && (
-                        <span className="form-subtitle">
-                          上级：{departmentOptions.find((item) => String(item.id) === departmentForm.parent_id)?.name || '—'}
-                        </span>
-                      )}
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        部门名称
-                        <input value={departmentForm.name} onChange={handleDepartmentChange('name')} required />
-                      </label>
-                      <label>
-                        部门编码
-                        <input
-                          value={departmentForm.code}
-                          onChange={handleDepartmentChange('code')}
-                          placeholder={departmentForm.id ? '' : '留空自动生成'}
-                          disabled={Boolean(departmentForm.id)}
-                        />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        上级部门
-                        <select value={departmentForm.parent_id} onChange={handleDepartmentChange('parent_id')}>
-                          <option value="">（顶层）</option>
-                          {departmentOptions
-                            .filter((item) => String(item.id) !== departmentForm.id)
-                            .map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {'　'.repeat(item.depth)}{item.name}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                      <label>
-                        负责人
-                        <input value={departmentForm.leader} onChange={handleDepartmentChange('leader')} />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        联系电话
-                        <input value={departmentForm.phone} onChange={handleDepartmentChange('phone')} />
-                      </label>
-                      <label>
-                        排序号
-                        <input type="number" value={departmentForm.sort_order} onChange={handleDepartmentChange('sort_order')} />
-                      </label>
-                    </div>
-                    <label>
-                      备注
-                      <input value={departmentForm.note} onChange={handleDepartmentChange('note')} />
-                    </label>
-                    <label className="checkbox-row">
-                      <input type="checkbox" checked={departmentForm.is_active} onChange={handleDepartmentChange('is_active')} />
-                      启用
-                    </label>
-                    <div className="form-actions">
-                      <button className="primary-btn" type="submit" disabled={systemBusy}>保存部门</button>
-                      <button type="button" className="secondary-btn" onClick={() => resetDepartmentForm(null)}>清空</button>
-                    </div>
-                  </form>
-                </aside>
-
-                <div className="system-body">
-                  <div className="system-tabs">
-                    {SYSTEM_TABS.map((tab) => (
-                      <button
-                        key={tab.key}
-                        type="button"
-                        className={`system-tab ${systemTab === tab.key ? 'active' : ''}`}
-                        onClick={() => setSystemTab(tab.key)}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {systemTab === 'users' && (
-                    <div className="system-stack">
-                      <section className="panel form-panel">
-                        <div className="section-header">
-                          <h2>{systemUserForm.id ? `编辑用户：${systemUserForm.username}` : '新增用户'}</h2>
-                          <span className="status-badge">共 {systemUsers.length} 人</span>
-                        </div>
-
-                        <form onSubmit={submitSystemUser} className="erp-form">
-                          <div className="form-row two-col">
-                            <label>
-                              用户名
-                              <input
-                                value={systemUserForm.username}
-                                onChange={handleSystemUserChange('username')}
-                                disabled={Boolean(systemUserForm.id)}
-                                required
-                              />
-                            </label>
-                            <label>
-                              姓名
-                              <input value={systemUserForm.full_name} onChange={handleSystemUserChange('full_name')} />
-                            </label>
-                          </div>
-
-                          <div className="form-row two-col">
-                            <label>
-                              {systemUserForm.id ? '重置密码（留空则不改）' : '初始密码'}
-                              <input
-                                type="password"
-                                value={systemUserForm.password}
-                                onChange={handleSystemUserChange('password')}
-                                placeholder="至少 6 位"
-                                autoComplete="new-password"
-                              />
-                            </label>
-                            <label>
-                              邮箱
-                              <input value={systemUserForm.email} onChange={handleSystemUserChange('email')} placeholder="留空自动生成" />
-                            </label>
-                          </div>
-
-                          <div className="form-row two-col">
-                            <label>
-                              所属部门
-                              <select value={systemUserForm.department_id} onChange={handleSystemUserChange('department_id')}>
-                                <option value="">未分配</option>
-                                {departmentOptions.map((item) => (
-                                  <option key={item.id} value={item.id}>
-                                    {'　'.repeat(item.depth)}{item.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              角色
-                              <select value={systemUserForm.role_id} onChange={handleSystemUserChange('role_id')}>
-                                <option value="">普通员工（默认）</option>
-                                {systemMeta.roles.map((role) => (
-                                  <option key={role.id} value={role.id}>{role.name}</option>
-                                ))}
-                              </select>
-                            </label>
-                          </div>
-
-                          <div className="form-row two-col">
-                            <label>
-                              手机号
-                              <input value={systemUserForm.phone} onChange={handleSystemUserChange('phone')} />
-                            </label>
-                            <label>
-                              岗位
-                              <input list="lookup-position" value={systemUserForm.position} onChange={handleSystemUserChange('position')} />
-                            </label>
-                          </div>
-
-                          <label>
-                            备注
-                            <input value={systemUserForm.remark} onChange={handleSystemUserChange('remark')} />
-                          </label>
-
-                          <label className="checkbox-row">
-                            <input type="checkbox" checked={systemUserForm.is_active} onChange={handleSystemUserChange('is_active')} />
-                            启用该账号
-                          </label>
-
-                          <div className="form-actions">
-                            <button className="primary-btn" type="submit" disabled={systemBusy}>
-                              {systemUserForm.id ? '保存修改' : '创建用户'}
-                            </button>
-                            <button type="button" className="secondary-btn" onClick={resetSystemUserForm}>清空</button>
-                          </div>
-                        </form>
-                      </section>
-
-                      <section className="panel table-panel">
-                        <div className="section-header">
-                          <h2>用户列表</h2>
-                          <div className="contract-search">
-                            <input
-                              value={systemUserKeyword}
-                              onChange={(event) => {
-                                setSystemUserKeyword(event.target.value);
-                                refreshSystemUsers({ keyword: event.target.value });
-                              }}
-                              placeholder="按用户名 / 姓名 / 邮箱搜索"
-                            />
-                            <select
-                              value={systemUserDeptFilter}
-                              onChange={(event) => {
-                                setSystemUserDeptFilter(event.target.value);
-                                refreshSystemUsers({ department_id: event.target.value });
-                              }}
-                            >
-                              <option value="">全部部门</option>
-                              {departmentOptions.map((item) => (
-                                <option key={item.id} value={item.id}>
-                                  {'　'.repeat(item.depth)}{item.name}
-                                </option>
-                              ))}
-                            </select>
-                            <select
-                              value={systemUserRoleFilter}
-                              onChange={(event) => {
-                                setSystemUserRoleFilter(event.target.value);
-                                refreshSystemUsers({ role_id: event.target.value });
-                              }}
-                            >
-                              <option value="">全部角色</option>
-                              {systemMeta.roles.map((role) => (
-                                <option key={role.id} value={role.id}>{role.name}</option>
-                              ))}
-                            </select>
-                            <button
-                              type="button"
-                              className="secondary-btn small-btn"
-                              onClick={() => {
-                                setSystemUserKeyword('');
-                                setSystemUserDeptFilter('');
-                                setSystemUserRoleFilter('');
-                                refreshSystemUsers({ keyword: '', department_id: '', role_id: '' });
-                              }}
-                            >
-                              重置
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="table-wrap">
-                          <table className="data-table">
-                            <thead>
-                              <tr>
-                                <th>用户名</th>
-                                <th>姓名</th>
-                                <th>所属部门</th>
-                                <th>角色</th>
-                                <th>联系方式</th>
-                                <th>状态</th>
-                                <th>最后登录</th>
-                                <th>操作</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {systemUsers.length === 0 && (
-                                <tr><td colSpan="8" className="table-empty">没有符合条件的用户。</td></tr>
-                              )}
-                              {systemUsers.map((row) => (
-                                <tr key={row.id}>
-                                  <td>{row.username}</td>
-                                  <td>{row.full_name || '—'}</td>
-                                  <td>{row.department_name || '未分配'}</td>
-                                  <td>{row.role_name || row.role}</td>
-                                  <td>
-                                    <div className="cell-stack">
-                                      <span>{row.phone || '—'}</span>
-                                      <span className="cell-sub">{row.email || ''}</span>
-                                    </div>
-                                  </td>
-                                  <td>
-                                    <span className={`status-badge ${row.is_active ? 'ok' : 'muted'}`}>
-                                      {row.is_active ? '启用' : '已停用'}
-                                    </span>
-                                  </td>
-                                  <td>{row.last_login_at ? String(row.last_login_at).slice(0, 16).replace('T', ' ') : '从未登录'}</td>
-                                  <td className="row-actions">
-                                    <button type="button" className="link-btn" onClick={() => startEditSystemUser(row)}>编辑</button>
-                                    <button type="button" className="link-btn" onClick={() => { setPasswordTarget(row); setPasswordDraft({ new_password: '' }); }}>重置密码</button>
-                                    <button type="button" className="link-btn" onClick={() => toggleSystemUser(row)}>
-                                      {row.is_active ? '停用' : '启用'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="link-btn danger"
-                                      onClick={() => setConfirmDelete({
-                                        id: row.id,
-                                        endpoint: `/system/users/${row.id}`,
-                                        label: `用户「${row.username}」`,
-                                        kind: 'system-user',
-                                      })}
-                                    >
-                                      删除
-                                    </button>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </section>
-                    </div>
+                  {deleteBlocked.hint && (
+                    <p className="delete-blocked__hint" data-delete-blocked-hint>{deleteBlocked.hint}</p>
                   )}
-
-                  {systemTab === 'roles' && (
-                    <div className="system-stack">
-                      <section className="panel form-panel">
-                        <div className="section-header">
-                          <h2>{roleForm.id ? `编辑角色：${roleForm.name}` : '新增角色'}</h2>
-                          <span className="status-badge">共 {systemMeta.roles.length} 个角色</span>
-                        </div>
-
-                        <form onSubmit={submitRole} className="erp-form">
-                          <div className="form-row two-col">
-                            <label>
-                              角色编码
-                              <input
-                                value={roleForm.code}
-                                onChange={handleRoleChange('code')}
-                                placeholder="英文/数字，如 sales2"
-                                required
-                                disabled={Boolean(roleForm.id)}
-                              />
-                            </label>
-                            <label>
-                              角色名称
-                              <input value={roleForm.name} onChange={handleRoleChange('name')} required />
-                            </label>
-                          </div>
-
-                          <div className="form-row two-col">
-                            <label>
-                              说明
-                              <input value={roleForm.description} onChange={handleRoleChange('description')} />
-                            </label>
-                            <label>
-                              排序号
-                              <input type="number" value={roleForm.sort_order} onChange={handleRoleChange('sort_order')} />
-                            </label>
-                          </div>
-
-                          <label className="checkbox-row">
-                            <input type="checkbox" checked={roleForm.is_active} onChange={handleRoleChange('is_active')} />
-                            启用该角色（停用后该角色用户只能看工作台）
-                          </label>
-
-                          <div className="permission-header">
-                            <strong>菜单权限</strong>
-                            <span className="cell-sub">
-                              已选 {permissionDraft.all ? systemMeta.total_menus : permissionDraft.menus.length} / {systemMeta.total_menus}
-                            </span>
-                            <label className="checkbox-row inline">
-                              <input
-                                type="checkbox"
-                                checked={permissionDraft.all}
-                                onChange={(event) => setPermissionDraft((prev) => ({ ...prev, all: event.target.checked }))}
-                              />
-                              超级管理员（拥有全部菜单，含以后新增的）
-                            </label>
-                          </div>
-
-                          {permissionDraft.all ? (
-                            <p className="settings-hint">该角色是超级管理员，菜单权限无需逐项勾选。</p>
-                          ) : (
-                            <div className="permission-tree">
-                              {(systemMeta.permission_catalog || []).map((group) => {
-                                const keys = (group.items || []).map((item) => item.key);
-                                const checkedCount = keys.filter((key) => permissionDraft.menus.includes(key)).length;
-                                return (
-                                  <div className="permission-group" key={group.group}>
-                                    <label className="permission-group-title">
-                                      <input
-                                        type="checkbox"
-                                        checked={keys.length > 0 && checkedCount === keys.length}
-                                        ref={(el) => {
-                                          if (el) el.indeterminate = checkedCount > 0 && checkedCount < keys.length;
-                                        }}
-                                        onChange={() => togglePermissionGroup(group)}
-                                      />
-                                      {group.label}
-                                      <span className="cell-sub">{checkedCount}/{keys.length}</span>
-                                    </label>
-                                    <div className="permission-items">
-                                      {(group.items || []).map((item) => (
-                                        <label className="permission-item" key={item.key}>
-                                          <input
-                                            type="checkbox"
-                                            checked={permissionDraft.menus.includes(item.key)}
-                                            onChange={() => togglePermissionMenu(item.key)}
-                                          />
-                                          {item.label}
-                                        </label>
-                                      ))}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-
-                          <div className="form-actions">
-                            <button className="primary-btn" type="submit" disabled={systemBusy}>
-                              {roleForm.id ? '保存角色' : '创建角色'}
-                            </button>
-                            <button type="button" className="secondary-btn" onClick={resetRoleForm}>清空</button>
-                          </div>
-                        </form>
-                      </section>
-
-                      <section className="panel table-panel">
-                        <div className="section-header">
-                          <h2>角色列表</h2>
-                          <span className="status-badge">内置角色不可删除</span>
-                        </div>
-
-                        <div className="table-wrap">
-                          <table className="data-table">
-                            <thead>
-                              <tr>
-                                <th>编码</th>
-                                <th>名称</th>
-                                <th>说明</th>
-                                <th>菜单权限</th>
-                                <th>用户数</th>
-                                <th>类型</th>
-                                <th>状态</th>
-                                <th>操作</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {systemMeta.roles.map((role) => (
-                                <tr key={role.id}>
-                                  <td>{role.code}</td>
-                                  <td>{role.name}</td>
-                                  <td className="cell-sub">{role.description || '—'}</td>
-                                  <td>
-                                    {role.permissions?.all
-                                      ? `全部 ${systemMeta.total_menus} 项`
-                                      : `${(role.permissions?.menus || []).length} 项`}
-                                  </td>
-                                  <td>{role.user_count}</td>
-                                  <td>{role.is_builtin ? '内置' : '自定义'}</td>
-                                  <td>
-                                    <span className={`status-badge ${role.is_active ? 'ok' : 'muted'}`}>
-                                      {role.is_active ? '启用' : '已停用'}
-                                    </span>
-                                  </td>
-                                  <td className="row-actions">
-                                    <button type="button" className="link-btn" onClick={() => startEditRole(role)}>编辑权限</button>
-                                    {!role.is_builtin && (
-                                      <button
-                                        type="button"
-                                        className="link-btn danger"
-                                        onClick={() => setConfirmDelete({
-                                          id: role.id,
-                                          endpoint: `/system/roles/${role.id}`,
-                                          label: `角色「${role.name}」`,
-                                          kind: 'system-role',
-                                        })}
-                                      >
-                                        删除
-                                      </button>
-                                    )}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </section>
-                    </div>
-                  )}
+                  <div className="modal-actions">
+                    <button type="button" className="primary-btn" onClick={() => setDeleteBlocked(null)} data-delete-blocked-ok>
+                      知道了
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
-
-            {selectedTab === 'params' && (
-              <div className="system-stack">
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>系统参数</h2>
-                    <div className="param-toolbar">
-                      <span className="status-badge">共 {paramTotal} 项</span>
-                      <button type="button" className="primary-btn small-btn" onClick={saveParams} disabled={systemBusy}>
-                        保存全部
-                      </button>
-                      <button type="button" className="secondary-btn small-btn" onClick={refreshParams}>重新载入</button>
-                    </div>
-                  </div>
-
-                  <p className="settings-hint">
-                    这里只放<strong>真正会被程序读取</strong>的参数（打印页脚、登录默认页、库存预警），
-                    改完点「保存全部」立即生效，无需重启。自定义参数用于记录本部署特有的配置项。
-                  </p>
-
-                  {(paramGroups || []).map((group) => (
-                    <div className="param-group" key={group.group}>
-                      <h3 className="param-group-title">{group.label}</h3>
-                      {(group.items || []).map((item) => (
-                        <div className="param-row" key={item.param_key}>
-                          <div className="param-meta">
-                            <strong>{item.label}</strong>
-                            <span className="cell-sub mono">{item.param_key}</span>
-                            {item.description && <span className="cell-sub">{item.description}</span>}
-                          </div>
-                          <div className="param-control">
-                            {item.value_type === 'bool' ? (
-                              <label className="checkbox-row">
-                                <input
-                                  type="checkbox"
-                                  checked={String(paramDraft[item.param_key] ?? '') === 'true'}
-                                  onChange={handleParamDraftChange(item.param_key)}
-                                  disabled={!item.is_editable}
-                                />
-                                开启
-                              </label>
-                            ) : (
-                              <input
-                                value={paramDraft[item.param_key] ?? ''}
-                                onChange={handleParamDraftChange(item.param_key)}
-                                disabled={!item.is_editable}
-                                placeholder={item.default_value || '（空）'}
-                              />
-                            )}
-                          </div>
-                          <div className="param-actions">
-                            <span className="status-badge muted">
-                              {PARAM_VALUE_TYPE_LABEL[item.value_type] || item.value_type}
-                            </span>
-                            <button type="button" className="link-btn" onClick={() => resetParamToDefault(item)}>
-                              默认值
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </section>
-
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>新增自定义参数</h2>
-                    <span className="status-badge">本部署特有配置</span>
-                  </div>
-
-                  <form className="erp-form" onSubmit={submitParam}>
-                    <div className="form-row two-col">
-                      <label>
-                        参数键
-                        <input
-                          value={paramForm.param_key}
-                          onChange={handleParamFormChange('param_key')}
-                          placeholder="如 shop.name"
-                          required
-                        />
-                      </label>
-                      <label>
-                        显示名称
-                        <input value={paramForm.label} onChange={handleParamFormChange('label')} required />
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        参数值
-                        <input value={paramForm.param_value} onChange={handleParamFormChange('param_value')} />
-                      </label>
-                      <label>
-                        分组
-                        <select value={paramForm.param_group} onChange={handleParamFormChange('param_group')}>
-                          {(paramGroups || []).map((group) => (
-                            <option key={group.group} value={group.group}>{group.label}</option>
-                          ))}
-                          <option value="system">系统与界面</option>
-                        </select>
-                      </label>
-                    </div>
-                    <div className="form-row two-col">
-                      <label>
-                        值类型
-                        <select value={paramForm.value_type} onChange={handleParamFormChange('value_type')}>
-                          {Object.entries(PARAM_VALUE_TYPE_LABEL).map(([key, label]) => (
-                            <option key={key} value={key}>{label}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        排序号
-                        <input type="number" value={paramForm.sort_order} onChange={handleParamFormChange('sort_order')} />
-                      </label>
-                    </div>
-                    <label>
-                      说明
-                      <input value={paramForm.description} onChange={handleParamFormChange('description')} />
-                    </label>
-                    <div className="form-actions">
-                      <button className="primary-btn" type="submit" disabled={systemBusy}>新增参数</button>
-                      <button type="button" className="secondary-btn" onClick={() => setParamForm(emptyParamForm)}>清空</button>
-                    </div>
-                  </form>
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'dictionaries' && (
-              <div className="system-center">
-                <aside className="panel dept-panel">
-                  <div className="section-header">
-                    <h2>字典类型</h2>
-                    <span className="status-badge">{dictList.length} 个</span>
-                  </div>
-                  <p className="settings-hint">
-                    字典给「付款方式」「计量单位」这类字段提供下拉候选，仍可自由填写。
-                    内置字典不可删除，可停用或改项。
-                  </p>
-
-                  <div className="dept-tree">
-                    {dictList.length === 0 && <div className="empty-state">暂无字典。</div>}
-                    {dictList.map((row) => (
-                      <div
-                        key={row.id}
-                        className={`dept-node ${row.dict_type === activeDictType ? 'active' : ''} ${row.is_active ? '' : 'inactive'}`}
-                      >
-                        <button
-                          type="button"
-                          className="dept-node-btn"
-                          onClick={() => {
-                            setActiveDictType(row.dict_type);
-                            setDictItemForm(emptyDictItemForm);
-                            refreshDictItems(row.dict_type);
-                          }}
-                        >
-                          <span className="dept-name">
-                            {row.dict_name}
-                            <span className="cell-sub"> {row.dict_type}</span>
-                          </span>
-                          <span className="dept-count">{row.item_count}</span>
-                        </button>
-                        <span className="dept-actions">
-                          {!row.is_system && (
-                            <button
-                              type="button"
-                              className="link-btn danger"
-                              onClick={() => setConfirmDelete({
-                                id: row.id,
-                                endpoint: `/system/dictionaries/${row.id}`,
-                                label: `字典「${row.dict_name}」`,
-                                kind: 'system-dict',
-                              })}
-                            >
-                              删
-                            </button>
-                          )}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <form className="erp-form dept-form" onSubmit={submitDictionary}>
-                    <div className="form-title">新增字典</div>
-                    <div className="form-row two-col">
-                      <label>
-                        字典名称
-                        <input value={dictForm.dict_name} onChange={handleDictionaryChange('dict_name')} required />
-                      </label>
-                      <label>
-                        字典编码
-                        <input
-                          value={dictForm.dict_type}
-                          onChange={handleDictionaryChange('dict_type')}
-                          placeholder="英文，如 color"
-                          required
-                        />
-                      </label>
-                    </div>
-                    <label>
-                      说明
-                      <input value={dictForm.description} onChange={handleDictionaryChange('description')} />
-                    </label>
-                    <label className="checkbox-row">
-                      <input type="checkbox" checked={dictForm.is_active} onChange={handleDictionaryChange('is_active')} />
-                      启用
-                    </label>
-                    <div className="form-actions">
-                      <button className="primary-btn" type="submit" disabled={systemBusy}>创建字典</button>
-                      <button type="button" className="secondary-btn" onClick={() => setDictForm(emptyDictionaryForm)}>清空</button>
-                    </div>
-                  </form>
-                </aside>
-
-                <div className="system-body">
-                  <section className="panel form-panel">
-                    <div className="section-header">
-                      <h2>
-                        {dictItemForm.id ? '编辑字典项' : '新增字典项'}
-                        {activeDictType && <span className="form-subtitle">　所属字典：{activeDictType}</span>}
-                      </h2>
-                      <span className="status-badge">共 {dictItems.length} 项</span>
-                    </div>
-
-                    <form className="erp-form" onSubmit={submitDictItem}>
-                      <div className="form-row two-col">
-                        <label>
-                          项值
-                          <input
-                            value={dictItemForm.item_value}
-                            onChange={handleDictItemChange('item_value')}
-                            placeholder="实际存储的值"
-                            required
-                          />
-                        </label>
-                        <label>
-                          显示名
-                          <input
-                            value={dictItemForm.item_label}
-                            onChange={handleDictItemChange('item_label')}
-                            placeholder="留空同项值"
-                          />
-                        </label>
-                      </div>
-                      <div className="form-row two-col">
-                        <label>
-                          排序号
-                          <input type="number" value={dictItemForm.sort_order} onChange={handleDictItemChange('sort_order')} />
-                        </label>
-                        <label>
-                          备注
-                          <input value={dictItemForm.remark} onChange={handleDictItemChange('remark')} />
-                        </label>
-                      </div>
-                      <label className="checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={dictItemForm.is_enabled}
-                          onChange={handleDictItemChange('is_enabled')}
-                        />
-                        启用（停用后不出现在业务表单的下拉候选里）
-                      </label>
-                      <div className="form-actions">
-                        <button className="primary-btn" type="submit" disabled={systemBusy}>
-                          {dictItemForm.id ? '保存修改' : '新增项'}
-                        </button>
-                        <button type="button" className="secondary-btn" onClick={() => setDictItemForm(emptyDictItemForm)}>
-                          清空
-                        </button>
-                      </div>
-                    </form>
-                  </section>
-
-                  <section className="panel table-panel">
-                    <div className="section-header">
-                      <h2>字典项</h2>
-                      <span className="status-badge">{activeDictType || '未选择'}</span>
-                    </div>
-
-                    <div className="table-wrap">
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>项值</th>
-                            <th>显示名</th>
-                            <th>排序</th>
-                            <th>备注</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {dictItems.length === 0 && (
-                            <tr><td colSpan="6" className="table-empty">该字典下还没有字典项。</td></tr>
-                          )}
-                          {dictItems.map((item) => (
-                            <tr key={item.id}>
-                              <td>{item.item_value}</td>
-                              <td>{item.item_label}</td>
-                              <td>{item.sort_order}</td>
-                              <td className="cell-sub">{item.remark || '—'}</td>
-                              <td>
-                                <span className={`status-badge ${item.is_enabled ? 'ok' : 'muted'}`}>
-                                  {item.is_enabled ? '启用' : '已停用'}
-                                </span>
-                              </td>
-                              <td className="row-actions">
-                                <button type="button" className="link-btn" onClick={() => startEditDictItem(item)}>编辑</button>
-                                <button type="button" className="link-btn" onClick={() => toggleDictItem(item)}>
-                                  {item.is_enabled ? '停用' : '启用'}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="link-btn danger"
-                                  onClick={() => setConfirmDelete({
-                                    id: item.id,
-                                    endpoint: `/system/dictionary-items/${item.id}`,
-                                    label: `字典项「${item.item_label}」`,
-                                    kind: 'system-dict-item',
-                                  })}
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
-                </div>
-              </div>
-            )}
-
-            {selectedTab === 'print-templates' && (
-              <div className="system-center">
-                <aside className="panel dept-panel">
-                  <div className="section-header">
-                    <h2>单据类型</h2>
-                    <span className="status-badge">{printTemplates.length} 类</span>
-                  </div>
-                  <p className="settings-hint">
-                    每类单据一条模板。模板只改<strong>外观</strong>，改不了算式与列结构 —— 格式错版的单据比不能自定义更麻烦。
-                  </p>
-
-                  <div className="dept-tree">
-                    {printTemplates.length === 0 && <div className="empty-state">暂无模板。</div>}
-                    {printTemplates.map((row) => (
-                      <div
-                        key={row.id}
-                        className={`dept-node ${row.doc_type === activeTemplateType ? 'active' : ''}`}
-                      >
-                        <button type="button" className="dept-node-btn" onClick={() => { applyTemplateDraft(row); dropTemplatePreview(); }}>
-                          <span className="dept-name">
-                            {row.name || row.doc_label}
-                            <span className="cell-sub"> {row.doc_type}</span>
-                          </span>
-                          <span className="dept-count">{isTemplateCustomized(row) ? '已改' : ''}</span>
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </aside>
-
-                <div className="system-body">
-                  <section className="panel form-panel">
-                    <div className="section-header">
-                      <h2>
-                        模板设置
-                        {activeTemplateType && <span className="form-subtitle">　{activeTemplate()?.doc_label || activeTemplateType}</span>}
-                      </h2>
-                      <div className="param-toolbar">
-                        <button type="button" className="secondary-btn small-btn" onClick={previewPrintTemplate} disabled={systemBusy || !activeTemplateType}>
-                          预览效果
-                        </button>
-                        <button type="button" className="secondary-btn small-btn" onClick={resetPrintTemplate} disabled={systemBusy || !activeTemplateType}>
-                          恢复默认
-                        </button>
-                        <button type="button" className="primary-btn small-btn" onClick={savePrintTemplate} disabled={systemBusy || !activeTemplateType}>
-                          保存模板
-                        </button>
-                      </div>
-                    </div>
-
-                    {!activeTemplateType && <div className="empty-state">请先在左栏选择一类单据。</div>}
-
-                    {activeTemplateType && (
-                      <form className="erp-form" onSubmit={(event) => { event.preventDefault(); savePrintTemplate(); }}>
-                        <div className="form-row two-col">
-                          <label>
-                            模板名称
-                            <input value={templateDraft.name} onChange={handleTemplateDraftChange('name')} placeholder="给自己看的备注名" />
-                          </label>
-                          <label>
-                            打印标题
-                            <input
-                              value={templateDraft.title}
-                              onChange={handleTemplateDraftChange('title')}
-                              placeholder="留空 = 用单据默认标题"
-                            />
-                          </label>
-                        </div>
-                        <label>
-                          抬头附加文字
-                          <textarea
-                            rows="2"
-                            value={templateDraft.header_text}
-                            onChange={handleTemplateDraftChange('header_text')}
-                            placeholder="公司名下的一行/多行，如地址与电话（留空不打印）"
-                          />
-                        </label>
-                        <label>
-                          页脚文字
-                          <textarea
-                            rows="2"
-                            value={templateDraft.footer_text}
-                            onChange={handleTemplateDraftChange('footer_text')}
-                            placeholder="留空 = 用「参数设置」里的打印页脚"
-                          />
-                        </label>
-                        <div className="form-row two-col">
-                          <label className="checkbox-row">
-                            <input
-                              type="checkbox"
-                              checked={templateDraft.show_company}
-                              onChange={handleTemplateDraftChange('show_company')}
-                            />
-                            打印公司抬头（来自「公司信息」）
-                          </label>
-                          <label className="checkbox-row">
-                            <input
-                              type="checkbox"
-                              checked={templateDraft.show_signatures}
-                              onChange={handleTemplateDraftChange('show_signatures')}
-                            />
-                            打印签章栏（制单 / 审核 / 仓管）
-                          </label>
-                        </div>
-                        <label>
-                          备注
-                          <input value={templateDraft.note} onChange={handleTemplateDraftChange('note')} placeholder="管理员内部说明，不会打印出来" />
-                        </label>
-                        <div className="form-actions">
-                          <button className="primary-btn" type="submit" disabled={systemBusy}>保存模板</button>
-                          <button
-                            type="button"
-                            className="secondary-btn"
-                            onClick={() => { const row = activeTemplate(); if (row) applyTemplateDraft(row); }}
-                          >
-                            撤销改动
-                          </button>
-                        </div>
-                      </form>
-                    )}
-                  </section>
-
-                  <section className="panel">
-                    <div className="section-header">
-                      <h2>效果预览</h2>
-                      <span className="status-badge">样例数据</span>
-                    </div>
-                    {templatePreviewUrl ? (
-                      <>
-                        <p className="settings-hint">
-                          用样例数据渲染，方便先看效果再保存。预览里的数据全是假的，不是真单据。
-                        </p>
-                        <iframe className="pdf-preview" src={templatePreviewUrl} title="模板预览" />
-                      </>
-                    ) : (
-                      <div className="empty-state">点右上角「预览效果」生成一张样例单据。</div>
-                    )}
-                  </section>
-                </div>
-              </div>
-            )}
-
-            {selectedTab === 'logs' && (
-              <div className="system-stack">
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>操作日志</h2>
-                    <div className="param-toolbar">
-                      <span className="status-badge">共 {logPage?.total ?? 0} 条</span>
-                      <button
-                        type="button"
-                        className="danger-outline-btn small-btn"
-                        onClick={() => setConfirmDelete({ endpoint: '/system/logs', label: '全部操作日志', kind: 'system-logs' })}
-                        disabled={!logPage?.total}
-                      >
-                        清空日志
-                      </button>
-                    </div>
-                  </div>
-
-                  <p className="settings-hint">
-                    只记<strong>写操作</strong>（新增 / 修改 / 删除 / 登录）。查询请求不记，否则真正要追的「谁改了这张单」会被淹掉。
-                    日志表最多保留最近 {`${5000}`} 条，超出自动淘汰最老的。
-                  </p>
-
-                  <form className="log-filters" onSubmit={applyLogQuery}>
-                    <input
-                      value={logDraft.keyword}
-                      onChange={handleLogDraftChange('keyword')}
-                      placeholder="搜动作 / 路径 / 用户名"
-                    />
-                    <select value={logDraft.method} onChange={handleLogDraftChange('method')}>
-                      <option value="">全部方法</option>
-                      {(logPage?.methods || []).map((method) => (
-                        <option key={method} value={method}>{method}</option>
-                      ))}
-                    </select>
-                    <select value={logDraft.username} onChange={handleLogDraftChange('username')}>
-                      <option value="">全部用户</option>
-                      {(logPage?.users || []).map((name) => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
-                    <input type="date" value={logDraft.start} onChange={handleLogDraftChange('start')} title="起始日期" />
-                    <input type="date" value={logDraft.end} onChange={handleLogDraftChange('end')} title="截止日期（含当天）" />
-                    <button className="primary-btn small-btn" type="submit" disabled={logBusy}>查询</button>
-                    <button type="button" className="secondary-btn small-btn" onClick={resetLogQuery}>重置</button>
-                  </form>
-
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>时间</th>
-                          <th>操作人</th>
-                          <th>操作</th>
-                          <th>对象</th>
-                          <th>方法</th>
-                          <th>结果</th>
-                          <th>耗时</th>
-                          <th>来源 IP</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(logPage?.items || []).length === 0 && (
-                          <tr><td colSpan="8" className="table-empty">没有符合条件的日志。</td></tr>
-                        )}
-                        {(logPage?.items || []).map((row) => (
-                          <tr key={row.id}>
-                            <td className="cell-sub">{formatLogTime(row.created_at)}</td>
-                            <td>{row.username || '—'}</td>
-                            <td>
-                              <div className="cell-stack">
-                                <span>{row.action || '—'}</span>
-                                <span className="cell-sub mono">{row.path}</span>
-                              </div>
-                            </td>
-                            <td className="cell-sub">
-                              {row.target_type || '—'}
-                              {row.target_id ? <span className="cell-sub"> #{row.target_id}</span> : null}
-                            </td>
-                            <td><span className="status-badge muted">{row.method}</span></td>
-                            <td>
-                              <span className={`status-badge ${LOG_STATUS_TONE(row.status_code)}`}>
-                                {row.status_code >= 400 ? `失败 ${row.status_code}` : '成功'}
-                              </span>
-                            </td>
-                            <td className="cell-sub">{row.duration_ms} ms</td>
-                            <td className="cell-sub mono">{row.ip || '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {(logPage?.pages || 1) > 1 && (
-                    <div className="pager">
-                      <button
-                        type="button"
-                        className="secondary-btn small-btn"
-                        onClick={() => setLogPageNo((prev) => Math.max(1, prev - 1))}
-                        disabled={logBusy || logPageNo <= 1}
-                      >
-                        上一页
-                      </button>
-                      <span className="status-badge">第 {logPageNo} / {logPage?.pages || 1} 页</span>
-                      <button
-                        type="button"
-                        className="secondary-btn small-btn"
-                        onClick={() => setLogPageNo((prev) => Math.min(logPage?.pages || 1, prev + 1))}
-                        disabled={logBusy || logPageNo >= (logPage?.pages || 1)}
-                      >
-                        下一页
-                      </button>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'menus' && (
-              <div className="system-stack">
-                <section className="panel">
-                  <div className="section-header">
-                    <h2>菜单结构</h2>
-                    <div className="param-toolbar">
-                      <span className="status-badge">共 {menuAdmin.total || 0} 个节点</span>
-                      <span className="status-badge">最多 {menuAdmin.max_depth || 3} 层</span>
-                      <button
-                        type="button"
-                        className="secondary-btn small-btn"
-                        onClick={() => refreshMenuAdmin()}
-                      >
-                        刷新
-                      </button>
-                      <button
-                        type="button"
-                        className="danger-outline-btn"
-                        disabled={systemBusy}
-                        onClick={() =>
-                          setConfirmDelete({
-                            id: 0,
-                            endpoint: '',
-                            label: '全部菜单',
-                            kind: 'menus-reset',
-                          })
-                        }
-                      >
-                        恢复默认菜单
-                      </button>
-                    </div>
-                  </div>
-
-                  <p className="settings-hint">
-                    左侧导航就是这棵树渲染出来的。<strong>不选页面的节点是分组</strong>（能继续往里加下级），
-                    <strong>选了页面的节点是菜单项</strong>（点它跳到那个页面）。
-                    <br />
-                    ⚠️ 菜单项只能挂到<strong>已有的页面</strong>上 —— 菜单本身只是个入口，
-                    背后得有对应页面，否则点进去会是空白。所以这里
-                    <strong>做不出新的业务页面</strong>，只能调整已有页面的位置、名称与分组。
-                  </p>
-
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>菜单名称</th>
-                          <th>类型</th>
-                          <th>指向页面</th>
-                          <th>状态</th>
-                          <th>排序</th>
-                          <th>操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {flattenMenuTree(menuAdmin.tree).length === 0 && (
-                          <tr>
-                            <td colSpan="6" className="table-empty">
-                              菜单表是空的。点右上角「恢复默认菜单」可以一键重建。
-                            </td>
-                          </tr>
-                        )}
-                        {flattenMenuTree(menuAdmin.tree).map((node) => (
-                          <tr key={node.id} className={node.is_enabled === false ? 'row-muted' : ''}>
-                            <td>
-                              <span style={{ paddingLeft: `${(node.depth - 1) * 18}px` }}>
-                                {node.is_builtin ? '' : '★ '}
-                                {node.label}
-                              </span>
-                            </td>
-                            <td>
-                              <span className={`status-badge ${node.kind === 'group' ? 'muted' : 'ok'}`}>
-                                {node.kind_label}
-                              </span>
-                            </td>
-                            <td className="cell-sub">{node.page_label || '—'}</td>
-                            <td>
-                              <span className={`status-badge ${node.is_enabled === false ? 'muted' : 'ok'}`}>
-                                {node.is_enabled === false ? '已隐藏' : '显示中'}
-                              </span>
-                            </td>
-                            <td className="num cell-sub">{node.sort_order}</td>
-                            <td className="row-actions">
-                              {node.kind === 'group' && (
-                                <button
-                                  type="button"
-                                  className="link-btn"
-                                  onClick={() => {
-                                    resetMenuForm(node.id);
-                                    setMenuForm((prev) => ({ ...prev, parent_id: String(node.id) }));
-                                  }}
-                                >
-                                  加下级
-                                </button>
-                              )}
-                              <button type="button" className="link-btn" onClick={() => startEditMenu(node)}>
-                                编辑
-                              </button>
-                              <button type="button" className="link-btn" onClick={() => toggleMenuEnabled(node)}>
-                                {node.is_enabled === false ? '显示' : '隐藏'}
-                              </button>
-                              <button
-                                type="button"
-                                className="link-btn danger"
-                                onClick={() =>
-                                  setConfirmDelete({
-                                    id: node.id,
-                                    endpoint: `/system/menus/${node.id}`,
-                                    label: `菜单「${node.label}」`,
-                                    kind: 'menu',
-                                  })
-                                }
-                              >
-                                删除
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-
-                <div className="management-grid">
-                  <section className="panel form-panel">
-                    <div className="section-header">
-                      <h2>{menuForm.id ? '编辑菜单' : '新增菜单'}</h2>
-                      <span className="status-badge">{menuForm.page_key ? '菜单项' : '分组'}</span>
-                    </div>
-
-                    <form className="erp-form" onSubmit={submitMenu}>
-                      <div className="form-row two-col">
-                        <label>
-                          菜单名称
-                          <input
-                            value={menuForm.label}
-                            onChange={handleMenuFormChange('label')}
-                            placeholder="如 档案管理"
-                            required
-                          />
-                        </label>
-                        <label>
-                          上级菜单
-                          <select value={menuForm.parent_id} onChange={handleMenuFormChange('parent_id')}>
-                            <option value="">— 顶层分组 —</option>
-                            {flattenMenuTree(menuAdmin.tree)
-                              .filter((node) => node.kind === 'group' && node.id !== menuForm.id)
-                              .map((node) => (
-                                <option key={node.id} value={node.id}>
-                                  {'　'.repeat(node.depth - 1)}
-                                  {node.label}
-                                </option>
-                              ))}
-                          </select>
-                        </label>
-                      </div>
-
-                      <label>
-                        指向页面
-                        <select value={menuForm.page_key} onChange={handleMenuFormChange('page_key')}>
-                          <option value="">不指向页面（作为分组，可继续加下级）</option>
-                          {(menuAdmin.pages || []).map((page) => (
-                            <option key={page.key} value={page.key}>
-                              {page.label}（{page.group}）
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      <div className="form-row two-col">
-                        <label>
-                          排序号
-                          <input
-                            type="number"
-                            value={menuForm.sort_order}
-                            onChange={handleMenuFormChange('sort_order')}
-                          />
-                        </label>
-                        <label className="checkbox-row">
-                          <input
-                            type="checkbox"
-                            checked={menuForm.is_enabled}
-                            onChange={handleMenuFormChange('is_enabled')}
-                          />
-                          显示（不勾 = 只从导航里藏起来，菜单本身还在）
-                        </label>
-                      </div>
-
-                      <label>
-                        备注
-                        <input value={menuForm.note} onChange={handleMenuFormChange('note')} />
-                      </label>
-
-                      <div className="form-actions">
-                        <button className="primary-btn" type="submit" disabled={systemBusy}>
-                          {menuForm.id ? '保存修改' : '创建菜单'}
-                        </button>
-                        {menuForm.id && (
-                          <button type="button" className="secondary-btn" onClick={() => resetMenuForm()}>
-                            取消编辑
-                          </button>
-                        )}
-                      </div>
-                    </form>
-                  </section>
-
-                  <section className="panel form-panel">
-                    <div className="section-header">
-                      <h2>怎么用</h2>
-                      <span className="status-badge">三步</span>
-                    </div>
-                    <p className="settings-hint">
-                      <strong>1. 建分组</strong>：名称随便起，「指向页面」留空、上级选「顶层分组」——
-                      这就是左侧导航里一个可折叠的大类。
-                      <br />
-                      <strong>2. 建子分组</strong>：在表格里点某个分组的「加下级」，
-                      仍然把「指向页面」留空，就能做出二级折叠。
-                      <br />
-                      <strong>3. 挂菜单项</strong>：新建时选一个页面 —— 点它就会跳到那个页面。
-                      一个页面可以挂到多个位置（比如「客户档案」同时放在基础资料和销售管理下）。
-                    </p>
-                    <p className="settings-hint-foot">
-                      带 ★ 的是你自己建的，不带的是出厂内置。<br />
-                      改完立刻生效：左侧导航与页面标题会跟着变，不需要重启。
-                    </p>
-                  </section>
-                </div>
-              </div>
-            )}
-
-            {selectedTab === 'settings' && (
-              <section className="panel form-panel">
-                <div className="section-header">
-                  <h2>公司信息</h2>
-                  <span className="status-badge">打印抬头</span>
-                </div>
-                <p className="settings-hint">
-                  这里填公司抬头信息，购销合同、对账单等打印件会自动带出。信息保存在程序目录下的
-                  company.json，改完立即生效，不需要重启服务。
-                </p>
-
-                <form onSubmit={submitCompanySettings} className="erp-form">
-                  <div className="form-row two-col">
-                    <label>
-                      公司名称
-                      <input
-                        value={companyForm.own_name}
-                        onChange={handleCompanyChange('own_name')}
-                        placeholder="营业执照上的全称"
-                      />
-                    </label>
-                    <label>
-                      纳税人识别号
-                      <input
-                        value={companyForm.own_tax_no}
-                        onChange={handleCompanyChange('own_tax_no')}
-                        placeholder="统一社会信用代码"
-                      />
-                    </label>
-                  </div>
-
-                  <div className="form-row two-col">
-                    <label>
-                      法定代表人
-                      <input value={companyForm.own_legal_person} onChange={handleCompanyChange('own_legal_person')} />
-                    </label>
-                    <label>
-                      联系电话
-                      <input value={companyForm.own_phone} onChange={handleCompanyChange('own_phone')} />
-                    </label>
-                  </div>
-
-                  <div className="form-row two-col">
-                    <label>
-                      联系人
-                      <input value={companyForm.own_contact} onChange={handleCompanyChange('own_contact')} />
-                    </label>
-                    <label>
-                      注册地址
-                      <input value={companyForm.own_address} onChange={handleCompanyChange('own_address')} />
-                    </label>
-                  </div>
-
-                  <div className="form-row two-col">
-                    <label>
-                      开户银行
-                      <input list="lookup-bank-name" value={companyForm.own_bank_name} onChange={handleCompanyChange('own_bank_name')} />
-                    </label>
-                    <label>
-                      银行账号
-                      <input value={companyForm.own_bank_account} onChange={handleCompanyChange('own_bank_account')} />
-                    </label>
-                  </div>
-
-                  <button className="primary-btn" type="submit">保存公司信息</button>
-                  <button
-                    className="secondary-btn"
-                    type="button"
-                    style={{ marginLeft: 10 }}
-                    onClick={loadCompanySettings}
-                  >
-                    重新载入
-                  </button>
-                </form>
-              </section>
-            )}
-
-            {selectedTab === 'inventory' && (
-              <div className="management-grid">
-                {inventoryFocus && (
-                  <div className="focus-banner">
-                    <span className="focus-banner-tag">来自「{inventoryFocus.from}」</span>
-                    <span className="focus-banner-text">
-                      已按 <strong>{inventoryFocus.keyword || inventoryFocus.productName || '该商品'}</strong> 筛选现存量
-                      {inventoryFocus.sku ? `（SKU ${inventoryFocus.sku}）` : ''}
-                    </span>
-                    <button type="button" className="link-btn" onClick={clearInventoryFocus}>清除筛选</button>
-                  </div>
-                )}
-
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>出入库登记</h2>
-                    <span className="status-badge">手工调整库存</span>
-                  </div>
-
-                  <form onSubmit={submitInventory} className="erp-form">
-                    <div className="form-row two-col">
-                      <label>
-                        商品
-                        <select value={inventoryForm.product_id} onChange={handleInventoryChange('product_id')} required>
-                          <option value="">请选择商品</option>
-                          {products.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                        {renderStockHint(inventoryForm.product_id)}
-                      </label>
-                      <label>
-                        仓库
-                        <select value={inventoryForm.warehouse_id} onChange={handleInventoryChange('warehouse_id')} required>
-                          <option value="">请选择仓库</option>
-                          {warehouses.map((item) => (
-                            <option key={item.id} value={item.id}>{item.name}</option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="form-row two-col">
-                      <label>
-                        类型
-                        <select value={inventoryForm.transaction_type} onChange={handleInventoryChange('transaction_type')}>
-                          <option value="inbound">入库</option>
-                          <option value="outbound">出库</option>
-                        </select>
-                      </label>
-                      <label>
-                        数量
-                        <input type="number" min="1" value={inventoryForm.quantity} onChange={handleInventoryChange('quantity')} required />
-                      </label>
-                    </div>
-
-                    <label>
-                      单价
-                      <input type="number" step="0.01" value={inventoryForm.unit_price} onChange={handleInventoryChange('unit_price')} />
-                    </label>
-
-                    <button className="primary-btn" type="submit">保存库存记录</button>
-                  </form>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>现存量</h2>
-                    <span className="status-badge">{stockData.summary.stock_lines || 0} 条</span>
-                  </div>
-
-                  <div className="contract-search">
-                    <input
-                      value={inventoryKeyword}
-                      onChange={(event) => {
-                        setInventoryKeyword(event.target.value);
-                        refreshStock(event.target.value);
-                      }}
-                      placeholder="按商品名称 / SKU 搜索现存量"
-                    />
-                    <button type="button" className="secondary-btn small-btn" onClick={() => refreshStock(inventoryKeyword)}>
-                      查询
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn small-btn"
-                      onClick={() => {
-                        setInventoryKeyword('');
-                        setInventoryFocus(null);
-                        refreshStock('');
-                      }}
-                    >
-                      重置
-                    </button>
-                  </div>
-
-                  <div className="stock-kpis">
-                    <div className="stock-kpi">
-                      <span className="stock-kpi-label">库存总量</span>
-                      <strong>{Number(stockData.summary.total_quantity || 0).toLocaleString()}</strong>
-                    </div>
-                    <div className="stock-kpi">
-                      <span className="stock-kpi-label">库存金额（成本）</span>
-                      <strong>¥{Number(stockData.summary.estimated_value || 0).toLocaleString()}</strong>
-                    </div>
-                    <div className="stock-kpi">
-                      <span className="stock-kpi-label">缺货</span>
-                      <strong className="num-negative">{stockData.summary.shortage_count || 0}</strong>
-                    </div>
-                    <div className="stock-kpi">
-                      <span className="stock-kpi-label">低库存</span>
-                      <strong>{stockData.summary.low_stock_count || 0}</strong>
-                    </div>
-                    <div className="stock-kpi">
-                      <span className="stock-kpi-label">积压</span>
-                      <strong>{stockData.summary.overstock_count || 0}</strong>
-                    </div>
-                  </div>
-
-                  {(stockData.rows || []).length === 0 ? (
-                    <div className="empty-state">暂无库存数据，开一张采购单就会自动入库</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>仓库</th>
-                          <th>商品</th>
-                          <th>规格</th>
-                          <th>现存量</th>
-                          <th>下限</th>
-                          <th>上限</th>
-                          <th>状态</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(stockData.rows || []).map((row) => (
-                          <tr key={`${row.warehouse_id}-${row.product_id}`}>
-                            <td>{row.warehouse_name}</td>
-                            <td>{row.product_name}</td>
-                            <td>{row.standards || '—'}</td>
-                            <td className={row.quantity < 0 ? 'num-negative' : undefined}>
-                              {row.quantity}{row.unit ? ` ${row.unit}` : ''}
-                            </td>
-                            <td>{row.stock_lower ?? '—'}</td>
-                            <td>{row.stock_upper ?? '—'}</td>
-                            <td>
-                              {/* 库存预警开关来自系统参数 stock.warn_enabled（登录时随权限一起下发） */}
-                              {stockWarnEnabled
-                                ? <span className={`stock-tag ${row.status}`}>{stockStatusLabel(row.status)}</span>
-                                : <span className="cell-sub">—</span>}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>库存流水</h2>
-                    <span className="status-badge">{inventory.length} 条</span>
-                  </div>
-
-                  {inventory.length === 0 ? (
-                    <div className="empty-state">暂无库存记录</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>来源单号</th>
-                          <th>产品</th>
-                          <th>类型</th>
-                          <th>数量</th>
-                          <th>单价</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {inventory.map((row) => (
-                          <tr key={row.id}>
-                            <td>{row.doc_no || '手工登记'}</td>
-                            <td>{row.product_id}</td>
-                            <td>{row.transaction_type === 'inbound' ? '入库' : '出库'}</td>
-                            <td>{row.quantity}</td>
-                            <td>¥{Number(row.unit_price || 0).toLocaleString()}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {selectedTab === 'agent' && (
-              <div className="management-grid">
-                <section className="panel form-panel">
-                  <div className="section-header">
-                    <h2>移动智能体助手</h2>
-                    <span className="status-badge">iOS / Android / AI</span>
-                  </div>
-
-                  <div className="erp-form">
-                    <label>
-                      询问内容
-                      <textarea value={agentPrompt} onChange={(event) => setAgentPrompt(event.target.value)} rows="4" />
-                    </label>
-                    <button className="primary-btn" type="button" onClick={submitAgentPrompt}>启动智能分析</button>
-                  </div>
-                </section>
-
-                <section className="panel table-panel">
-                  <div className="section-header">
-                    <h2>分析结果</h2>
-                    <span className="status-badge">{agentResponse.risk_level || '健康'}</span>
-                  </div>
-
-                  <div className="agent-card">
-                    <p>{agentResponse.answer || '尚未进行分析。'}</p>
-                    <div className="agent-summary-grid">
-                      <div className="metric-card">
-                        <span>销售额</span>
-                        <strong>¥{Number(agentResponse.summary.sales_total || 0).toLocaleString()}</strong>
-                      </div>
-                      <div className="metric-card">
-                        <span>采购额</span>
-                        <strong>¥{Number(agentResponse.summary.purchase_total || 0).toLocaleString()}</strong>
-                      </div>
-                      <div className="metric-card">
-                        <span>毛利率</span>
-                        <strong>{Number(agentResponse.summary.gross_margin_rate || 0).toFixed(1)}%</strong>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            )}
-
-            {notice && <div className="notice-box">{notice}</div>}
 
             {confirmDelete && (
               <div className="modal-backdrop" onClick={() => setConfirmDelete(null)}>
@@ -19704,10 +12397,16 @@ function App() {
                     <p className="confirm-hint">BOM 节点是树形结构，删除会连同其子节点一起删除。</p>
                   )}
                   {confirmDelete.kind === 'sales-order' && (
-                    <p className="confirm-hint">订单明细也会一并删除。</p>
+                    <p className="confirm-hint">订单明细也会一并删除；已登记收付款的订单不允许删除。</p>
+                  )}
+                  {confirmDelete.kind === 'purchase-order' && (
+                    <p className="confirm-hint">订单明细也会一并删除；已登记收付款的订单不允许删除。</p>
                   )}
                   {confirmDelete.kind === 'contract' && (
-                    <p className="confirm-hint">合同明细（标的物清单）也会一并删除。</p>
+                    <p className="confirm-hint">
+                      合同明细（标的物清单）与<strong>已上传的原件文件</strong>会一并删除，删除后无法恢复。
+                      已生成单据的合同删不掉（会提示 409）—— 那说明它是某张单的溯源线索，请改为「已作废」。
+                    </p>
                   )}
                   {confirmDelete.kind === 'system-user' && (
                     <p className="confirm-hint">该账号将无法登录，历史操作日志保留。</p>
@@ -19881,3 +12580,6 @@ function App() {
 }
 
 export default App;
+
+
+

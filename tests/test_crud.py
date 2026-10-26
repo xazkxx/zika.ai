@@ -131,8 +131,35 @@ def test_update_sales_order_status():
     order_id = order.json()['id']
 
     update_response = client.patch(f'/api/v1/sales-orders/{order_id}/status', json={'status': 'completed'})
-    assert update_response.status_code == 200, update_response.text
-    assert update_response.json()['status'] == 'completed'
+    # 出库单没收款、没开票就点「完结」必须挡住（钱票两清闸，2026-10-21 恢复）。
+    # 闸门放开的话，账上就会出现「已完结但应收还挂着」的单，对账永远平不了。
+    assert update_response.status_code == 409, update_response.text
+    assert update_response.json()['detail']['code'] == 'not_settled'
+
+    # 而「订单」类型（doc_type=order，不动库存、不记应收）可以直接完结 ——
+    # 订单只是意向，不涉及钱票两清。
+    order2 = client.post('/api/v1/sales-orders', json={
+        'customer_id': customer.json()['id'],
+        'order_no': f'SO-STATUS2-{uuid.uuid4().hex[:8]}',
+        'doc_type': 'order',
+        'items': [{
+            'product_id': product_id,
+            'quantity': 2,
+            'unit_price': 16,
+        }],
+    })
+    assert order2.status_code == 201, order2.text
+    order2_id = order2.json()['id']
+    # 状态机要求先审核（submitted → approved → completed），不允许一步到位
+    appr = client.patch(f'/api/v1/sales-orders/{order2_id}/status', json={'status': 'approved'})
+    assert appr.status_code == 200, appr.text
+    ok = client.patch(f'/api/v1/sales-orders/{order2_id}/status', json={'status': 'completed'})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()['status'] == 'completed'
+
+    # 自己的数据自己收：别留给 conftest 猜
+    client.delete(f'/api/v1/sales-orders/{order2_id}')
+    client.delete(f'/api/v1/sales-orders/{order_id}')
 
 
 def test_create_inventory_and_finance_records():

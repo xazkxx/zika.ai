@@ -1,0 +1,273 @@
+/**
+ * ErpForm 样式 —— 命名空间 `.erp-form-*`
+ *
+ * 一个刻意的取舍：**控件样式由栅格容器统一发**，不给每个 input 写类名。
+ * 表单页里 input 动辄二三十个，逐个加 className 既啰嗦又容易漏，
+ * 漏了就是"这一格比旁边矮 2px"这类很难查的观感 bug。
+ */
+
+/* ------------------------------------------------------------------ 栅格 */
+.erp-form-grid {
+  display: grid;
+  gap: var(--gap-field) var(--space-4);   /* 行距 20 / 列距 16，是表单的经典节奏 */
+  align-items: start;
+}
+
+.erp-form-grid--cols-1 {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.erp-form-grid--cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.erp-form-grid--cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.erp-form-grid--cols-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.erp-form-grid--gap-sm {
+  gap: var(--space-3) var(--space-3);
+}
+
+.erp-form-grid--gap-lg {
+  gap: var(--space-6) var(--space-5);
+}
+
+/* ------------------------------------------------------------------ 单行 */
+.erp-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;             /* 长内容不许把列撑破 */
+}
+
+.erp-form-row--span-2 {
+  grid-column: span 2;
+}
+
+.erp-form-row--span-3 {
+  grid-column: span 3;
+}
+
+.erp-form-row--span-4 {
+  grid-column: span 4;
+}
+
+.erp-form-row--span-full {
+  grid-column: 1 / -1;
+}
+
+/* 标题与控件同一行 */
+.erp-form-row--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.erp-form-row--inline .erp-form-row__label {
+  flex: 0 0 96px;
+  margin: 0;
+}
+
+.erp-form-row--inline .erp-form-row__control {
+  flex: 1 1 auto;
+}
+
+/* ------------------------------------------------------------------ 标题 */
+.erp-form-row__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  color: var(--fg);
+}
+
+.erp-form-row__req {
+  color: var(--color-danger);
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+  /* 星号略上移一点，视觉上与汉字重心对齐 */
+  transform: translateY(1px);
+}
+
+/* ---------------------------------------------------------------- 控件区 */
+.erp-form-row__control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.erp-form-row__suffix {
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- 原生控件 */
+/* ⚠️ 用 :not() 排除 checkbox / radio：它们必须保持原生尺寸，
+   否则会被撑成 40px 见方的大方块（styles.css:688 踩过同样的坑）。 */
+.erp-form-grid input:not([type='checkbox']):not([type='radio']),
+.erp-form-grid select,
+.erp-form-grid textarea {
+  width: 100%;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--fg-strong);
+  font-family: inherit;
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  transition: var(--transition-colors);
+}
+
+.erp-form-grid input:not([type='checkbox']):not([type='radio']),
+.erp-form-grid select {
+  height: 40px;
+}
+
+.erp-form-grid textarea {
+  padding: var(--space-2) var(--space-3);
+  line-height: var(--lh-relaxed);
+  resize: vertical;
+}
+
+.erp-form-grid input:not([type='checkbox']):not([type='radio']):hover,
+.erp-form-grid select:hover,
+.erp-form-grid textarea:hover {
+  border-color: var(--gray-400);
+}
+
+.erp-form-grid input:not([type='checkbox']):not([type='radio']):focus,
+.erp-form-grid select:focus,
+.erp-form-grid textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--ring);
+}
+
+.erp-form-grid input::placeholder,
+.erp-form-grid textarea::placeholder {
+  color: var(--fg-subtle);
+}
+
+/* 只读态（如被辅助单位接管的「包装数」）：灰底 + 默认光标，
+   让用户一眼看出"这里改不了"，而不是点了没反应。 */
+.erp-form-grid input:read-only:not([type='checkbox']):not([type='radio']) {
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+  cursor: default;
+}
+
+.erp-form-grid input:read-only:not([type='checkbox']):not([type='radio']):hover {
+  border-color: var(--border-strong);
+}
+
+.erp-form-grid input:disabled,
+.erp-form-grid select:disabled,
+.erp-form-grid textarea:disabled {
+  background: var(--bg-soft);
+  color: var(--fg-subtle);
+  cursor: not-allowed;
+}
+
+/* 复选框 / 单选框所在的行：横向排列，不参与 40px 高度规则 */
+.erp-form-grid label:has(> .erp-form-row__control > input[type='checkbox']),
+.erp-form-grid label:has(> .erp-form-row__control > input[type='radio']) {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.erp-form-grid input[type='checkbox'],
+.erp-form-grid input[type='radio'] {
+  width: auto;
+  height: auto;
+  margin: 0;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+/* --------------------------------------------------------------- 校验态 */
+.erp-form-row__hint {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--fg-subtle);
+}
+
+.erp-form-row__error {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--color-danger);
+}
+
+.erp-form-row--invalid input:not([type='checkbox']):not([type='radio']),
+.erp-form-row--invalid select,
+.erp-form-row--invalid textarea {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+}
+
+.erp-form-row--invalid input:not([type='checkbox']):not([type='radio']):focus,
+.erp-form-row--invalid select:focus,
+.erp-form-row--invalid textarea:focus {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.18);
+}
+
+/* -------------------------------------------------------------- 操作条 */
+.erp-form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-inline);
+  margin-top: var(--space-2);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--divider);
+}
+
+.erp-form-actions--right {
+  justify-content: flex-end;
+}
+
+.erp-form-actions--left {
+  justify-content: flex-start;
+}
+
+.erp-form-actions--between {
+  justify-content: space-between;
+}
+
+/* ------------------------------------------------------------------ 响应式 */
+/* 小于 720 时多列全部落单列。低特异性写法，靠后出现即可覆盖上面的 span 规则。 */
+@media (max-width: 720px) {
+  .erp-form-grid.erp-form-grid--cols-2,
+  .erp-form-grid.erp-form-grid--cols-3,
+  .erp-form-grid.erp-form-grid--cols-4 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* span 必须一起归零，否则 span-2 在单列网格里会撑出第二列 */
+  .erp-form-row--span-2,
+  .erp-form-row--span-3,
+  .erp-form-row--span-4 {
+    grid-column: auto;
+  }
+
+  .erp-form-row--inline {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .erp-form-row--inline .erp-form-row__label {
+    flex: 0 0 auto;
+  }
+}

@@ -25,6 +25,46 @@ from app.main import app
 client = TestClient(app)
 
 
+def _purge_sales_flows(order_id: int) -> None:
+    """硬清一张销售单的资金流水（journal_entry_lines → journal_entries → financial_transactions）。
+
+    完结闸让测试单据真实带上了资金流水，而红冲有意不解锁删单——
+    测试收尾只能像运维清理一样按顺序硬删。related_type 实测是
+    sales_out（开单应收）/ receipt（收款登记），不是 'sales_order'。
+    """
+    import psycopg
+
+    conn = psycopg.connect("postgresql://erp:erp123456@127.0.0.1:5432/erp")
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            DELETE FROM journal_entry_lines WHERE entry_id IN (
+                SELECT je.id FROM journal_entries je
+                JOIN financial_transactions ft ON je.flow_id = ft.id
+                WHERE ft.related_order_id = %s
+                  AND ft.related_type IN ('sales_out', 'receipt'))
+            """,
+            (order_id,),
+        )
+        cur.execute(
+            """DELETE FROM journal_entries WHERE flow_id IN (
+                SELECT id FROM financial_transactions
+                WHERE related_order_id = %s
+                  AND related_type IN ('sales_out', 'receipt'))""",
+            (order_id,),
+        )
+        cur.execute(
+            "DELETE FROM financial_transactions WHERE related_order_id = %s"
+            " AND related_type IN ('sales_out', 'receipt')",
+            (order_id,),
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+
+
 def _new_product() -> int:
     resp = client.post(
         "/api/v1/products",
@@ -216,6 +256,16 @@ def test_purchase_order_to_inbound_full_chain():
             },
         ).json()
 
+        # 2026-10-18 新增闸口：未审核的订单不能转单（下面 approve 后才放行）
+        blocked = client.post(f"/api/v1/purchase-orders/{order['id']}/to-inbound")
+        assert blocked.status_code == 409, blocked.text
+        assert "审核" in blocked.json()["detail"], blocked.text
+        approved = client.patch(
+            f"/api/v1/purchase-orders/{order['id']}/status", json={"status": "approved"}
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "approved", approved.text
+
         resp = client.post(f"/api/v1/purchase-orders/{order['id']}/to-inbound")
         assert resp.status_code == 200, resp.text
         inbound = resp.json()
@@ -268,6 +318,16 @@ def test_sales_order_to_outbound_full_chain():
             },
         ).json()
 
+        # 同一条闸口：销售订单也必须先审核
+        blocked = client.post(f"/api/v1/sales-orders/{order['id']}/to-outbound")
+        assert blocked.status_code == 409, blocked.text
+        assert "审核" in blocked.json()["detail"], blocked.text
+        approved = client.patch(
+            f"/api/v1/sales-orders/{order['id']}/status", json={"status": "approved"}
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "approved", approved.text
+
         resp = client.post(f"/api/v1/sales-orders/{order['id']}/to-outbound")
         assert resp.status_code == 200, resp.text
         outbound = resp.json()
@@ -311,4 +371,142 @@ def test_purchase_order_status_and_plain_order_delete():
         assert client.delete(f"/api/v1/purchase-orders/{order['id']}").status_code == 404
     finally:
         client.delete(f"/api/v1/suppliers/{supplier_id}")
+        client.delete(f"/api/v1/products/{product_id}")
+
+
+# ---------- 状态机（2026-10-18） ----------
+
+
+def test_order_status_machine_rejects_illegal_values():
+    """PATCH status 不再是"什么都能写"：未知码 400、跳级 409、终态锁死。"""
+    product_id = _new_product()
+    customer_id = _new_customer()
+    try:
+        order = client.post(
+            "/api/v1/sales-orders",
+            json={
+                "doc_type": "order",
+                "customer_id": customer_id,
+                "items": [{"product_id": product_id, "quantity": 1, "unit_price": 5.0}],
+            },
+        ).json()
+        base = f"/api/v1/sales-orders/{order['id']}/status"
+
+        # ① 未知状态码 → 400（改造前任何字符串都能写进库）
+        bad = client.patch(base, json={"status": "已审核"})
+        assert bad.status_code == 400, bad.text
+        assert "draft" in bad.json()["detail"], bad.text
+
+        # ② 空状态 → 400（改造前默认塞 submitted，等于静默放行）
+        assert client.patch(base, json={}).status_code == 400
+
+        # ③ 跳级：待审核（老值 submitted 归一）直接到已完成 → 409
+        assert order["status"] == "submitted", order["status"]
+        skip = client.patch(base, json={"status": "completed"})
+        assert skip.status_code == 409, skip.text
+        assert "待审核" in skip.json()["detail"], skip.text
+
+        # ④ 正常审核：submitted(=pending) → approved
+        ok = client.patch(base, json={"status": "approved"})
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["status"] == "approved"
+
+        # ⑤ 幂等：同一状态再点一次不报错
+        again = client.patch(base, json={"status": "approved"})
+        assert again.status_code == 200, again.text
+        assert again.json()["status"] == "approved"
+
+        # ⑥ 审核后不能退回草稿（approved 只允许 completed / pending / cancelled）
+        back = client.patch(base, json={"status": "draft"})
+        assert back.status_code == 409, back.text
+
+        # ⑦ 终态锁死：cancelled 之后连审核都不行
+        assert client.patch(base, json={"status": "cancelled"}).status_code == 200
+        locked = client.patch(base, json={"status": "approved"})
+        assert locked.status_code == 409, locked.text
+        assert "终态" in locked.json()["detail"], locked.text
+
+        assert client.delete(f"/api/v1/sales-orders/{order['id']}").status_code == 204
+    finally:
+        client.delete(f"/api/v1/customers/{customer_id}")
+        client.delete(f"/api/v1/products/{product_id}")
+
+
+def test_spot_outbound_keeps_direct_flow():
+    """现货开单（doc_type=outbound）没有审核环节：submitted → completed 必须仍然可用。
+
+    2026-10-20 完结闸：completed 现在还要求"收齐款 + 开齐票"——
+    什么都没做直接完结会 409（not_settled，含应收余额/未开票金额）。
+    钱票两清后 submitted → completed 照常放行；完结后单据带着资金流水，
+    删除会被 has_payment_flow 拦下（红冲有意不解锁删单），清流水才能删。
+    """
+    product_id = _new_product()
+    customer_id = _new_customer()
+    invoice = None  # 断言中途失败时 finally 也要能安全引用
+    try:
+        outbound = client.post(
+            "/api/v1/sales-orders",
+            json={
+                "customer_id": customer_id,
+                "items": [{"product_id": product_id, "quantity": 1, "unit_price": 5.0}],
+            },
+        ).json()
+        assert outbound["doc_type"] == "outbound"
+        assert outbound["status"] == "submitted"
+
+        # 完结闸：没钱没票不许完结
+        resp = client.patch(
+            f"/api/v1/sales-orders/{outbound['id']}/status", json={"status": "completed"}
+        )
+        assert resp.status_code == 409, resp.text
+        detail = resp.json()["detail"]
+        assert detail["code"] == "not_settled"
+        assert float(detail["outstanding_amount"]) == 5.0
+        assert float(detail["uninvoiced_amount"]) == 5.0
+
+        # 钱票两清
+        receipt = client.post(
+            "/api/v1/finance/receipt",
+            json={"party_id": customer_id, "order_id": outbound["id"], "amount": 5},
+        )
+        assert receipt.status_code in (200, 201), receipt.text
+        invoice = client.post(
+            "/api/v1/invoices",
+            json={
+                "invoice_no": f"INV-ODT-{uuid.uuid4().hex[:8]}",
+                "invoice_type": "普票",
+                "total_amount": 5,
+                "direction": "output",
+                "customer_id": customer_id,
+                "related_order_id": outbound["id"],
+            },
+        )
+        assert invoice.status_code == 201, invoice.text
+
+        resp = client.patch(
+            f"/api/v1/sales-orders/{outbound['id']}/status", json={"status": "completed"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "completed"
+
+        # 现货单不接受审核态（没有这道流程）→ 400 而不是静默写入
+        rejected = client.patch(
+            f"/api/v1/sales-orders/{outbound['id']}/status", json={"status": "approved"}
+        )
+        assert rejected.status_code == 400, rejected.text
+
+        # 已完结单据带资金流水 → 删除被拦（红冲不解锁删单）
+        blocked = client.delete(f"/api/v1/sales-orders/{outbound['id']}")
+        assert blocked.status_code == 409, blocked.text
+        assert blocked.json()["detail"]["code"] == "has_payment_flow"
+
+        # 测试收尾：硬清本单流水后才能删（与生产清理路径一致）
+        _purge_sales_flows(outbound["id"])
+        assert client.delete(f"/api/v1/sales-orders/{outbound['id']}").status_code == 204
+    finally:
+        # 自己造的发票自己删：发票表没有指向客户的级联，删客户不会带走它。
+        # 漏这一步的后果实测过 —— 正式库累积了 8 张 INV-ODT-* ¥5.00 的假票。
+        if invoice is not None and invoice.status_code == 201:
+            client.delete(f"/api/v1/invoices/{invoice.json()['id']}")
+        client.delete(f"/api/v1/customers/{customer_id}")
         client.delete(f"/api/v1/products/{product_id}")

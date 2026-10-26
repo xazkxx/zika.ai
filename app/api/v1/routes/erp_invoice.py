@@ -13,13 +13,18 @@ import os
 import re
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 
 from app.core import file_storage
 from app.core.company_info import load_company
 from app.db.session import get_db
 from app.models.finance import FinancialTransaction
+from app.models.customer import Customer
+from app.models.purchase_order import PurchaseOrder
+from app.models.sales_order import SalesOrder, SalesOrderItem
 from app.models.invoice import (
     DIRECTION_LABELS,
+    DIRECTION_OUTPUT,
     DIRECTION_UNKNOWN,
     INVOICE_FLAG_LABELS,
     ISSUE_MODE_LABELS,
@@ -27,6 +32,18 @@ from app.models.invoice import (
     detect_direction,
 )
 from app.schemas import InvoiceCreate, InvoiceUpdate
+from app.services.invoice_match import (
+    STATUS_AMBIGUOUS,
+    STATUS_MATCHED,
+    STATUS_NONE,
+    STATUS_SKIPPED,
+    apply_match,
+    auto_attach,
+    match_invoice,
+    order_invoiced_amount,
+    order_net_amount,
+    order_uninvoiced_amount,
+)
 from datetime import date, datetime
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse
@@ -487,17 +504,28 @@ def _extract_qr_fields(text: str) -> dict[str, object]:
 
 
 
-def _pdf_page_pngs(payload: bytes, dpi: int = 200, zoom: float | None = None) -> list[bytes]:
+def _pdf_page_pngs(
+    payload: bytes,
+    dpi: int = 200,
+    zoom: float | None = None,
+    max_pages: int | None = None,
+) -> list[bytes]:
     """把 PDF 每页渲染成 PNG 图片字节（供二维码检测和 OCR 使用）。
 
     zoom 非空时用 fitz.Matrix(zoom, zoom) 放大渲染（扫描件 OCR 用 3 倍 ≈ 300 DPI，
     小字更清晰识别率更高）；否则按 dpi 渲染（二维码检测 200 DPI 已够且更快）。
+
+    max_pages 非空时**只渲染前 N 页**就停手。合同扫描件动辄几十页，按 zoom=3 一次性
+    全渲成 PNG 会吃掉几十 MB 内存（用户上传 6.5MB 的合同实测要渲出 40+ 页大图），
+    而 OCR 侧最多只认前 10 页 —— 多渲的页纯属浪费，还会拖慢甚至拖崩进程。
     """
     import fitz
 
     pages: list[bytes] = []
     with fitz.open(stream=payload, filetype="pdf") as doc:
         for page in doc:
+            if max_pages is not None and len(pages) >= max_pages:
+                break
             if zoom is not None:
                 pages.append(page.get_pixmap(matrix=fitz.Matrix(zoom, zoom)).tobytes("png"))
             else:
@@ -845,7 +873,111 @@ async def local_invoice_ocr(file: UploadFile = File(...)) -> dict[str, object]:
 
 
 
-def _invoice_to_dict(item: Invoice) -> dict[str, object]:
+def _normalize_party_name(value: str | None) -> str:
+    """比对单位名称时去掉空格与各类括号 —— 只做**归一化**，不做模糊匹配。"""
+    text = str(value or "")
+    for ch in " \t\r\n　()（）[]【】":
+        text = text.replace(ch, "")
+    return text
+
+
+def _resolve_customer_id(db: Session, name: str | None, tax_no: str | None) -> int | None:
+    """把发票的购买方对到客户档案：**税号唯一命中 → 名称归一化全等**，否则留空。
+
+    ⚠️ 刻意不用 ilike / 前缀匹配，也**不猜歧义**：
+       "陕西送变电工程有限公司" 与 "陕西送变电第一分公司" 是两个签约主体；
+       更麻烦的是同一个税号在客户档案里可能挂多条记录（本项目实测 #705 / #709 / #714
+       税号完全相同）。这时候任何"挑一个"的做法都会把发票算进别人的对账单 ——
+       比匹配不上更糟。匹配不上就留空，让人工在发票上指定。
+
+    2026-10-22：顺序从"名称优先"改成"税号优先"。原因见 `services/invoice_match`
+    文件头 —— 对方开票时把全称写成简称是常态，名称先手会把票挂错人。
+    """
+    tax = str(tax_no or "").strip()
+    if tax:
+        rows = db.query(Customer).filter(Customer.tax_no == tax).limit(2).all()
+        if len(rows) == 1:
+            return rows[0].id
+
+    target = _normalize_party_name(name)
+    if target:
+        for row in db.query(Customer).all():
+            if _normalize_party_name(row.name) == target:
+                return row.id
+    return None
+
+
+def _order_no_map(db: Session, invoices: list[Invoice]) -> dict[tuple[str, int], str]:
+    """批量取「关联单据」的单号，避免列表页 N+1 查询。
+
+    键是 `(方向, 单据id)` —— 销项挂 sales_orders、进项挂 purchase_orders，
+    同一个 id 在两张表里可能是完全不同的单，只用 id 做键会串。
+    """
+    sales_ids = {i.related_order_id for i in invoices if i.related_order_id and i.direction == DIRECTION_OUTPUT}
+    purchase_ids = {i.related_order_id for i in invoices if i.related_order_id and i.direction != DIRECTION_OUTPUT}
+    mapping: dict[tuple[str, int], str] = {}
+    if sales_ids:
+        for row in db.query(SalesOrder.id, SalesOrder.order_no).filter(SalesOrder.id.in_(sales_ids)).all():
+            mapping[("output", row[0])] = row[1]
+    if purchase_ids:
+        for row in db.query(PurchaseOrder.id, PurchaseOrder.order_no).filter(PurchaseOrder.id.in_(purchase_ids)).all():
+            mapping[("input", row[0])] = row[1]
+    return mapping
+
+
+def _related_order_no(db: Session, item: Invoice) -> str | None:
+    """单张发票的关联单号（详情/保存返回时用）。"""
+    if not item.related_order_id:
+        return None
+    key = ("output", int(item.related_order_id)) if item.direction == DIRECTION_OUTPUT else ("input", int(item.related_order_id))
+    return _order_no_map(db, [item]).get(key)
+
+
+def _validate_related_order(
+    db: Session, direction: str, related_order_id: object, customer_id: object
+) -> int | None:
+    """校验「关联单据」是否合法，返回要落库的 id（None = 不关联）。
+
+    为什么必须校验，而不是存进去让前端自己看：
+    这一列是**方向相关**的（销项指向销售单、进项指向采购单）。存错方向的 id，
+    对账单会拿着一张采购单去算客户应收，数字看起来正常但是错的 —— 这类错最致命，
+    因为没人会去怀疑它。所以宁可在录入时 400，也不要留一个"看起来有值"的脏指针。
+    """
+    raw = related_order_id
+    if raw in (None, "", 0):
+        return None
+    try:
+        order_id = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="关联单据 id 必须是整数") from exc
+
+    if direction == DIRECTION_OUTPUT:
+        order = db.get(SalesOrder, order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="关联的销售单不存在")
+        if customer_id not in (None, "") and int(order.customer_id) != int(customer_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"关联单据 {order.order_no} 的客户与这张发票的购买方不是同一个。"
+                    "请确认发票抬头，或改挂到正确的销售单。"
+                ),
+            )
+        return order_id
+
+    if direction == "input":
+        order = db.get(PurchaseOrder, order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="关联的采购单不存在")
+        return order_id
+
+    raise HTTPException(
+        status_code=400,
+        detail="这张发票的进销项还没判定，无法关联单据。请先选「进项」或「销项」。",
+    )
+
+
+def _invoice_to_dict(item: Invoice, order_no: str | None = None) -> dict[str, object]:
     """发票 → 前端结构。
 
     `has_source` 是**算出来的**而不是拿 `source_path` 直接当真：库里的路径可能指向
@@ -864,6 +996,8 @@ def _invoice_to_dict(item: Invoice) -> dict[str, object]:
         "tax_amount": item.tax_amount,
         "excl_tax_amount": item.excl_tax_amount,
         "deducted": bool(item.deducted),
+        # 认证抵扣时间（2026-10-24）：列表"抵扣状态"列与审计都要用
+        "deducted_at": item.deducted_at.isoformat() if item.deducted_at else None,
         "category": item.category,
         "status": item.status,
         "buyer_name": item.buyer_name,
@@ -880,6 +1014,14 @@ def _invoice_to_dict(item: Invoice) -> dict[str, object]:
         "issue_mode": item.issue_mode or "manual",
         "issue_mode_label": ISSUE_MODE_LABELS.get(item.issue_mode or "manual", "手工开票"),
         "handler": item.handler,
+        # 第 14 批：挂档案（对账单按 id 取数，不再按名字猜）
+        "customer_id": item.customer_id,
+        "contract_id": item.contract_id,
+        # 2026-10-22：关联销售/采购单据。**必须回传**——
+        # 完结闸的"未开票"就是按它统计的；前端列表也要显示"这张票挂在哪张单上"，
+        # 不返回的话界面只能显示空白，用户以为没挂上（E2E 自测就是这么发现的）。
+        "related_order_id": item.related_order_id,
+        "related_order_no": order_no,
         # 原件
         "source_name": item.source_name,
         "source_size": item.source_size,
@@ -927,6 +1069,15 @@ def create_invoice(payload: InvoiceCreate, db: Session = Depends(get_db)) -> dic
     if issue_mode not in ISSUE_MODE_LABELS:
         raise HTTPException(status_code=400, detail="开票方式只能是 手工开票 / 对接开票")
 
+    # 第 14 批：销项发票自动挂客户档案（税号优先、名称完全相等），
+    # 前端显式传了 customer_id 就以它为准（人工指定优先级最高）。
+    if direction == DIRECTION_OUTPUT and not data.get("customer_id"):
+        data["customer_id"] = _resolve_customer_id(
+            db,
+            data.get("buyer_name") or data.get("counterparty_name"),
+            data.get("buyer_tax_no"),
+        )
+
     item = Invoice(
         **data,
         direction=direction,
@@ -937,7 +1088,11 @@ def create_invoice(payload: InvoiceCreate, db: Session = Depends(get_db)) -> dic
     db.add(item)
     db.commit()
     db.refresh(item)
-    return _invoice_to_dict(item)
+    # 业财一体化（2026-10-22）：入库后立刻试一次自动挂单。
+    # 只有"唯一强证据"（金额一致 + 余量够 + 候选唯一）才会真写库，
+    # 其余情况把候选原样带回去，前端弹"选哪张单"。返回体多一个 `match` 键，纯增量。
+    match = auto_attach(db, item).as_dict()
+    return {**_invoice_to_dict(item), "match": match}
 
 
 
@@ -1015,6 +1170,16 @@ async def import_invoice(
         tax_rate=summary.get("tax_rate"),
         tax_amount=summary.get("tax_amount"),
         excl_tax_amount=summary.get("excl_tax_amount"),
+        # 第 14 批：识别入库时就把销项发票挂到客户档案上
+        customer_id=(
+            _resolve_customer_id(
+                db,
+                summary.get("buyer_name") or summary.get("counterparty_name"),
+                summary.get("buyer_tax_no"),
+            )
+            if direction == DIRECTION_OUTPUT
+            else None
+        ),
         buyer_name=summary.get("buyer_name"),
         buyer_tax_no=summary.get("buyer_tax_no"),
         seller_name=summary.get("seller_name"),
@@ -1034,7 +1199,14 @@ async def import_invoice(
     db.add(item)
     db.commit()
     db.refresh(item)
-    return {"saved": bool(source_path), "provider": provider, "invoice": _invoice_to_dict(item)}
+    # 与 create_invoice 同一套收尾：识别即尝试自动挂单（唯一强证据才落库）
+    match = auto_attach(db, item).as_dict()
+    return {
+        "saved": bool(source_path),
+        "provider": provider,
+        "invoice": {**_invoice_to_dict(item, _related_order_no(db, item)), "match": match},
+        "match": match,
+    }
 
 
 
@@ -1373,6 +1545,8 @@ def update_invoice(invoice_id: int, payload: InvoiceUpdate, db: Session = Depend
     if item is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
     data = payload.model_dump(exclude_unset=True)
+    # 记住改前的抵扣状态：下面要根据 False→True / True→False 跃迁落 deducted_at
+    was_deducted = bool(item.deducted)
     # 枚举值必须校验：写进一个拼错的方向，界面上会显示成一串英文，且筛选永远命中不到
     for field, allowed in (
         ("direction", DIRECTION_LABELS),
@@ -1381,12 +1555,310 @@ def update_invoice(invoice_id: int, payload: InvoiceUpdate, db: Session = Depend
     ):
         if field in data and data[field] is not None and data[field] not in allowed:
             raise HTTPException(status_code=400, detail=f"{field} 取值非法：{data[field]}")
+
+    # 票号是唯一键：改号必须查重，否则（a）数据库报 500，(b) 更糟的是顶掉别人的票。
+    # 注意 NULL/空串不参与：前端把空票号存成 None 时不该拦。
+    new_no = (data.get("invoice_no") or "").strip() if "invoice_no" in data else None
+    if new_no:
+        data["invoice_no"] = new_no
+        clash = (
+            db.query(Invoice)
+            .filter(Invoice.invoice_no == new_no, Invoice.id != invoice_id)
+            .first()
+        )
+        if clash is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"发票号码「{new_no}」已被另一条记录占用（#{clash.id}），请核实后再改",
+            )
+    elif "invoice_no" in data:
+        # 允许清空？不允许 —— 票号是这张票的身份，清空后会变成一条谁也认不出的记录
+        raise HTTPException(status_code=400, detail="发票号码不能为空")
+
     for key, value in data.items():
         setattr(item, key, value)
+
+    # 认证抵扣留痕（2026-10-24）：deducted 发生 False→True 跃迁时，由**服务器**落
+    # deducted_at，前端传什么都不认（抵扣时间是财务事实，不能由客户端随意填写）；
+    # True→False（取消抵扣）则清空，保证"已抵扣但没有时间"的脏状态不可能出现。
+    if "deducted" in data:
+        if data["deducted"] and not was_deducted:
+            item.deducted_at = datetime.now(timezone.utc)
+        elif not data["deducted"] and was_deducted:
+            item.deducted_at = None
+
     db.commit()
     db.refresh(item)
-    return _invoice_to_dict(item)
+    return _invoice_to_dict(item, _related_order_no(db, item))
 
+
+
+# ===========================================================================
+# 业财一体化（2026-10-22）：发票 ↔ 单据 自动匹配
+# ===========================================================================
+# 完整策略见 `app/services/invoice_match.py` 文件头，一句话概括：
+#   **只有唯一强证据（金额一致 + 未开票余量够 + 候选唯一）才自动落库，
+#     其余情况把候选原样返回让人点**；`related_order_id` 已有值时绝不覆盖。
+#
+# 三个入口的分工：
+#   GET  match-candidates  只算不写 —— 前端弹窗/批量预演都用它，随便调
+#   POST auto-match        落库版（apply=false 可预演）
+#   POST link-order        人工兜底：候选框选中后调它；传 order_id=null 就是解挂
+@router.get("/invoices/{invoice_id}/match-candidates", summary="算一次「这张票该挂哪张单」")
+def invoice_match_candidates(invoice_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    item = db.get(Invoice, invoice_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return match_invoice(db, item).as_dict()
+
+
+@router.post("/invoices/{invoice_id}/auto-match", summary="自动挂单（唯一强证据时才写库）")
+def invoice_auto_match(
+    invoice_id: int,
+    apply: bool = Query(True, description="false = 只算不写（预演）"),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    item = db.get(Invoice, invoice_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if not apply:
+        return match_invoice(db, item).as_dict()
+    return auto_attach(db, item).as_dict()
+
+
+@router.post("/invoices/{invoice_id}/link-order", summary="人工指定发票挂哪张单 / 解挂")
+def invoice_link_order(
+    invoice_id: int, payload: dict[str, object], db: Session = Depends(get_db)
+) -> dict[str, object]:
+    item = db.get(Invoice, invoice_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    raw = payload.get("order_id")
+    if raw in (None, ""):
+        # 解挂：挂错了必须能撤，否则一张错票会长期骗过完结闸（"已开票"其实是别人的）
+        previous = item.related_order_id
+        item.related_order_id = None
+        db.commit()
+        db.refresh(item)
+        return {"ok": True, "unlinked": previous, "invoice": _invoice_to_dict(item)}
+
+    try:
+        outcome = apply_match(db, item, int(raw), source="manual")
+    except ValueError as exc:
+        # 挂错方向/挂到别人头上 → 409，把原因原话给出去，别只丢"操作失败"
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        **outcome.as_dict(),
+        "invoice": _invoice_to_dict(item, _related_order_no(db, item)),
+    }
+
+
+@router.get("/orders/{kind}/{order_id}/invoice-status", summary="某张单据的票据状态（付款强提醒用）")
+def order_invoice_status(kind: str, order_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    """只读：这张单"应付/应收多少、已开票多少、还差多少票"。
+
+    付款弹窗靠它决定要不要弹"此笔付款暂无发票"的强提醒；
+    和完结闸、对账单共用 `invoice_match` 里的同一套口径（`order_uninvoiced_amount`）。
+    """
+    if kind not in ("sales", "purchase"):
+        raise HTTPException(status_code=400, detail="kind 只能是 sales / purchase")
+    model = SalesOrder if kind == "sales" else PurchaseOrder
+    order = db.get(model, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="单据不存在")
+
+    net = order_net_amount(order)
+    invoiced = order_invoiced_amount(db, order.id)
+    uninvoiced = order_uninvoiced_amount(db, order)
+    rows = (
+        db.query(Invoice)
+        .filter(Invoice.related_order_id == order.id)
+        .order_by(Invoice.issue_date.asc(), Invoice.id.asc())
+        .all()
+    )
+    return {
+        "kind": kind,
+        "order_id": order.id,
+        "order_no": order.order_no,
+        "doc_type": order.doc_type,
+        "net_amount": net,
+        "invoiced_amount": invoiced,
+        "uninvoiced_amount": uninvoiced,
+        "invoice_count": len(rows),
+        # none=一张没开 / partial=开了一部分 / full=开满（可以完结）
+        "status": "none" if not rows else ("full" if uninvoiced <= 0.005 else "partial"),
+        "need_invoice": bool(net > 0 and uninvoiced > 0.005),
+        "invoices": [
+            {
+                "id": row.id,
+                "invoice_no": row.invoice_no,
+                "invoice_type": row.invoice_type,
+                "issue_date": row.issue_date,
+                "total_amount": float(row.total_amount or 0),
+                "invoice_flag": row.invoice_flag,
+            }
+            for row in rows
+        ],
+    }
+
+
+# ===========================================================================
+# 业财一体化（2026-10-22）：销售单「一键开票」（先销后票）
+# ===========================================================================
+def _pending_invoice_no(db: Session, order_no: str) -> str:
+    """没填真实票号时给一个占位号：`KP-<单号>`，撞号就 `-2`/`-3`。
+
+    为什么不干脆强制填票号：这是**内部登记**，不是税局开票。现实里开票动作发生在
+    税控/数电平台，票号要等那边出票才拿得到；如果卡着票号不让登记，业务就会把
+    "已开票、钱也收了"的单子一直挂在"未开票"，完结闸永远拦着。
+    占位号刻意用 `KP-` 前缀（开票），和真实票号（20 位数字）形态上不可能撞，
+    拿到真号后到「发票管理」里改一次即可（PATCH 已支持改票号且查重）。
+    """
+    base = f"KP-{order_no}"
+    candidate = base
+    seq = 1
+    while db.query(Invoice).filter(Invoice.invoice_no == candidate).first() is not None:
+        seq += 1
+        candidate = f"{base}-{seq}"
+    return candidate
+
+
+@router.post("/sales-orders/{order_id}/issue-invoice", status_code=status.HTTP_201_CREATED,
+             summary="一键开票：按销售单明细生成销项发票并挂到该单")
+def issue_invoice_for_sales_order(
+    order_id: int, payload: dict[str, object] | None = None, db: Session = Depends(get_db)
+) -> dict[str, object]:
+    """「先销后票」闭环：点一下，票就有了，而且**已经挂在单上**。
+
+    以前的路径是"详情页点开票 → 手填票号和金额 → 落库"，三处都要人工，于是：
+    票号填错会顶掉真票、金额填错会让完结闸算错、忘钩 related_order_id 则对账单看不见这张票。
+    一键开票把这三点都交给服务端：金额取**未开票余额**、明细取**单据明细**、
+    挂单在同一事务里完成。
+
+    三条业务约束（都是为了防止"票开了但对不上账"）：
+      1. 单据不能是已作废（cancelled）；
+      2. 单据必须有明细 —— 空单开票等于凭空造一张票；
+      3. 未开票余额为 0 → 409（已经开齐了，再开就是重复开票）。
+    允许**分次开票**：不传金额就开剩余全部；传了就按传入的开，但不能超过剩余。
+    """
+    payload = payload or {}
+    order = db.get(SalesOrder, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="销售单不存在")
+    if (order.status or "") == "cancelled":
+        raise HTTPException(status_code=409, detail=f"{order.order_no} 已作废，不能开票")
+
+    items = (
+        db.query(SalesOrderItem)
+        .filter(SalesOrderItem.sales_order_id == order_id)
+        .order_by(SalesOrderItem.id.asc())
+        .all()
+    )
+    if not items:
+        raise HTTPException(status_code=400, detail="这张单没有明细，无法开票")
+
+    # 口径与完结闸一致（总额 − 已开票），见 services/invoice_match 文件头
+    total = round(float(order.total_amount or 0), 2)
+    invoiced = order_invoiced_amount(db, order.id)
+    remaining = round(max(0.0, total - invoiced), 2)
+    if remaining <= 0.005:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "already_invoiced",
+                "message": f"{order.order_no} 已开齐（¥{total:,.2f}），无需重复开票",
+                "invoiced_amount": invoiced,
+            },
+        )
+
+    try:
+        amount = round(float(payload.get("total_amount") or remaining), 2)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="开票金额不是数字") from exc
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="开票金额必须大于 0")
+    if amount > remaining + 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=f"本次开票 ¥{amount:,.2f} 超过未开票余额 ¥{remaining:,.2f}，请拆成多次或改小金额",
+        )
+
+    invoice_no = str(payload.get("invoice_no") or "").strip()
+    pending_no = False
+    if invoice_no:
+        if db.query(Invoice).filter(Invoice.invoice_no == invoice_no).first() is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"发票号码「{invoice_no}」已存在，请核实后重试（同号会被当成换票）",
+            )
+    else:
+        invoice_no = _pending_invoice_no(db, order.order_no or str(order.id))
+        pending_no = True
+
+    customer = db.get(Customer, order.customer_id) if order.customer_id else None
+    company = load_company()
+
+    # 明细按单据明细逐行搬过来，字段名与 OCR 解析结果对齐（invoice_layout.py 产出的同款），
+    # 这样打印/导出走的还是同一套模板，不需要为"系统开的票"单开一个分支。
+    lines = [
+        {
+            "item_name": row.product_name or "",
+            "spec": row.standards or None,
+            "unit": row.unit or None,
+            "quantity": float(row.quantity or 0),
+            "unit_price": float(row.unit_price or 0),
+            "amount": float(row.amount or 0),
+            "tax_rate": float(payload.get("tax_rate") or 0) or None,
+            "tax_amount": None,
+        }
+        for row in items
+    ]
+
+    invoice = Invoice(
+        invoice_no=invoice_no,
+        invoice_type=str(payload.get("invoice_type") or "普票"),
+        issue_date=str(payload.get("issue_date") or date.today().isoformat()),
+        # counterparty_name 是"对方单位"的历史字段（对账单按名称匹配时要用），
+        # 一键开票时它就是买方抬头。
+        counterparty_name=(customer.name if customer is not None else None) or payload.get("buyer_name"),
+        total_amount=amount,
+        tax_rate=float(payload["tax_rate"]) if payload.get("tax_rate") not in (None, "") else None,
+        buyer_name=(customer.name if customer is not None else None) or payload.get("buyer_name"),
+        buyer_tax_no=(getattr(customer, "tax_no", None) if customer is not None else None)
+        or payload.get("buyer_tax_no"),
+        seller_name=company.get("own_name"),
+        seller_tax_no=company.get("own_tax_no"),
+        category="销售",
+        status="已确认",
+        items_json=json.dumps(lines, ensure_ascii=False),
+        direction=DIRECTION_OUTPUT,
+        invoice_flag="blue",
+        issue_mode="manual",
+        handler=str(payload.get("handler") or "") or None,
+        customer_id=order.customer_id,
+        # ⭐ 这一行就是"先销后票"的锚点：不开它永远完结不了
+        related_order_id=order.id,
+    )
+    db.add(invoice)
+    # 同一事务里把单据的"已开票"标记同步掉，避免出现"票建了、单还显示未开票"的中间态
+    if hasattr(order, "is_invoiced"):
+        order.is_invoiced = bool(invoiced + amount + 0.005 >= total)
+    db.commit()
+    db.refresh(invoice)
+
+    return {
+        "invoice": _invoice_to_dict(invoice, order.order_no),
+        "pending_no": pending_no,
+        "order_no": order.order_no,
+        "invoiced_amount": round(invoiced + amount, 2),
+        "uninvoiced_amount": round(max(0.0, remaining - amount), 2),
+        "message": (
+            f"已生成销项发票 {invoice_no}"
+            + ("（票号待补：拿到真实票号后到「发票管理」里改）" if pending_no else "")
+        ),
+    }
 
 
 @router.delete("/invoices/batch", status_code=status.HTTP_204_NO_CONTENT)

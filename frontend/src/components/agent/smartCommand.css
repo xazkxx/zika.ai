@@ -1,0 +1,697 @@
+/* 🤖 智能指令搜索框（2026-10-23，21:40 胶囊化改版）
+   放在工作台最顶部。要点：
+   1. 结果面板是**悬浮**的（absolute 定在输入条下方），不能把下面的 KPI 卡片推下去 ——
+      一推就会让人以为整页刷新了。所以外层 section 不占额外高度，面板脱出文档流。
+   2. 面板层级要低于业务弹窗（1010）但高于页面内容；用 900。
+   3. 卡片里金额一律右对齐 + tabular-nums（对账场景要能竖着比大小）。
+
+   胶囊化（2026-10-23 晚）：
+   · 输入条整体**居中 + 最大 800px**（max-width + margin auto），
+     玻璃质感（半透明白 + backdrop blur）+ 大圆角胶囊 + 分层阴影；
+   · 「执行」按钮做成蓝色渐变胶囊，视觉上是"AI 对话框的发送键"；
+   · 面板 / 示例行跟着输入条对齐（同一个 800px 容器），不会左右跑偏；
+   · 结果面板从胶囊正下方 10px 处弹出，圆角放大到 16px 与胶囊呼应。 */
+
+.scb {
+  position: relative;
+  z-index: 30;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto 16px;
+}
+
+.scb__bar {
+  position: relative; /* 实时下拉的定位锚点 */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 18px;
+  border: 1px solid rgba(203, 213, 225, 0.85);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow:
+    0 10px 32px rgba(15, 23, 42, 0.1),
+    0 1px 3px rgba(15, 23, 42, 0.06);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* ================= 实时认人下拉（2026-10-24） =================
+   挂在胶囊正下方：跟左树搜索下拉同一套交互直觉——
+   输到哪、提示到哪，↑↓ 选中、回车/点击直接执行。 */
+.scb__sug {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 880; /* 高于页面内容，低于结果面板(900)与弹窗 */
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
+}
+
+.scb__sug-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  font-size: 14px;
+  color: #0f172a;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scb__sug-item.is-on {
+  background: #eff6ff;
+}
+
+.scb__sug-name {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scb__sug-contact {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scb__sug-hint {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #fef9c3;
+  color: #854d0e;
+  font-size: 11px;
+}
+
+.scb__sug-foot {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  color: #cbd5e1;
+  text-align: right;
+}
+
+/* 空态：请求通了但没认出人 —— 必须和"功能没生效"区分开 */
+.scb__sug-none {
+  padding: 12px 14px;
+  font-size: 13px;
+  color: #64748b;
+  background: #fffbeb;
+}
+
+.scb__bar:focus-within {
+  border-color: #2563eb;
+  box-shadow:
+    0 10px 32px rgba(15, 23, 42, 0.1),
+    0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.scb__icon {
+  flex: 0 0 auto;
+  font-size: 20px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.15));
+}
+
+.scb__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 40px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  font-size: 15px;
+  color: #0f172a;
+}
+
+.scb__input::placeholder {
+  color: #94a3b8;
+}
+
+.scb__input:focus {
+  outline: none;
+  /* 焦点态由 .scb__bar:focus-within 统一负责（描边 + 光圈），
+     输入框自己不再画边框 —— 否则胶囊里会出现一个嵌套的方框。 */
+  box-shadow: none;
+}
+
+/* 提高一级特异性（.scb .scb__run）：压过全局 .primary-btn 的底色，
+   否则谁后打包谁赢 —— 蓝色渐变会被全局按钮样式吃掉。 */
+.scb .scb__run {
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 24px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+.scb .scb__run:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.42);
+  transform: translateY(-1px);
+}
+
+.scb .scb__run:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+}
+
+.scb .scb__run:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.scb__examples {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.scb__example {
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #fff;
+  color: #475569;
+  font-size: 12px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.scb__example:hover {
+  border-color: #93c5fd;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.scb__error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #b91c1c;
+}
+
+/* ================= 结果面板（悬浮，跟胶囊同宽） ================= */
+.scb__panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 10px);
+  z-index: 900;
+  max-height: 62vh;
+  overflow: auto;
+  padding: 0 0 12px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+}
+
+.scb__panel-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #eef2f7;
+  background: #f8fafc;
+}
+
+.scb__panel-title {
+  font-size: 13px;
+  color: #0f172a;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scb__mark {
+  background: #fef08a;
+  color: #713f12;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+.scb__party-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #e0f2fe;
+  color: #075985;
+  font-size: 11px;
+}
+
+.scb__panel-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+  color: #64748b;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.scb__parser {
+  flex: 0 0 auto;
+  color: #94a3b8;
+}
+
+.scb__close {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.scb__close:hover {
+  color: #0f172a;
+}
+
+.scb__candidates {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 10px 14px 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.scb__candidate {
+  border: 1px dashed #cbd5e1;
+  border-radius: 999px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.scb__candidate:hover {
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+
+.scb__group {
+  padding: 10px 14px 0;
+}
+
+.scb__group h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #334155;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.scb__group-note {
+  font-weight: 400;
+  color: #94a3b8;
+}
+
+.scb__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 8px;
+}
+
+.scb__card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  min-width: 0;
+}
+
+.scb__card.is-doc {
+  border-style: dashed;
+  background: #fffdf5;
+}
+
+.scb__card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scb__card-head strong {
+  font-size: 13px;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scb__badge {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid transparent;
+}
+
+.scb__badge.is-gray {
+  background: #f1f5f9;
+  color: #475569;
+}
+.scb__badge.is-blue {
+  background: #e0f2fe;
+  color: #075985;
+}
+.scb__badge.is-teal {
+  background: #ccfbf1;
+  color: #115e59;
+}
+.scb__badge.is-green {
+  background: #dcfce7;
+  color: #166534;
+}
+.scb__badge.is-red {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.scb__badge.is-amber {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.scb__card-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 12px;
+  color: #64748b;
+  min-width: 0;
+}
+
+.scb__card-body b {
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.scb__card-body .is-owe {
+  color: #b91c1c;
+}
+
+.scb__card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scb__empty {
+  padding: 16px 14px;
+  margin: 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+/* 名下没单据的黄字提示：这不是错误，是"查到了但没货"——
+   用琥珀色而不是红色，别把用户吓去重查一遍 */
+.scb__empty.is-warn {
+  color: #92400e;
+  background: #fef9c3;
+  margin: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+/* ================= 预览弹窗 ================= */
+.scb__mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1100; /* 与智能识别核对框同级：必须高于 .modal-backdrop 的 1010 */
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.scb__dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(880px, 94vw);
+  max-height: 88vh;
+  background: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+}
+
+.scb__dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  background: #f8fafc;
+}
+
+.scb__dialog-head strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.scb__dialog-tag {
+  margin-left: auto;
+  margin-right: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.scb__dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px;
+}
+
+.scb__dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border, #e2e8f0);
+  background: #f8fafc;
+}
+
+.scb__doc-title {
+  margin: 0 0 4px;
+  font-size: 17px;
+  text-align: center;
+  color: #0f172a;
+}
+
+.scb__doc-sub {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #64748b;
+  text-align: center;
+}
+
+.scb__doc-parties {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.scb__doc-parties > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  background: #fbfdff;
+  font-size: 12px;
+  color: #64748b;
+  min-width: 0;
+}
+
+.scb__doc-parties b {
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scb__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.scb__table th,
+.scb__table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #f1f5f9;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scb__table thead th {
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.scb__table .is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.scb__table tfoot td {
+  font-weight: 700;
+  background: #fbfdff;
+}
+
+.scb__clauses {
+  margin: 14px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #334155;
+  line-height: 1.8;
+}
+
+.scb__clauses p {
+  margin: 2px 0 6px;
+  color: #475569;
+}
+
+@media (max-width: 900px) {
+  .scb {
+    max-width: none;
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+  .scb__panel {
+    max-height: 68vh;
+  }
+  .scb__cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .scb .scb__run {
+    padding: 0 16px;
+    letter-spacing: 0;
+  }
+}
+
+/* ================= 自动生成草稿高亮卡（2026-10-25） =================
+   后端静默落了一张真草稿时，面板顶部出这张卡片：
+   「⚡ 已自动生成草稿 DZ2026… · 期间 … · 总金额 ¥…」
+   + [预览 PDF]（页面内弹窗）+ [去确认生成]（跳对账单编辑页）。
+   绿调 —— 与黄字空态（is-warn）相对，表达"这次是真办成事了"。 */
+.scb__generated {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 60%, #f0fdf4 100%);
+  box-shadow: 0 2px 10px rgba(22, 163, 74, 0.08);
+}
+
+.scb__generated-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 13px;
+  color: #14532d;
+}
+
+.scb__generated-flag {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.scb__generated-main strong {
+  font-size: 14px;
+  color: #166534;
+}
+
+.scb__generated-meta b {
+  font-variant-numeric: tabular-nums;
+  color: #166534;
+}
+
+.scb__generated-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* 面板里唯一的 primary 按钮：提高特异性，避免被全局 .primary-btn 覆盖 */
+.scb .scb__generated .scb__generated-confirm {
+  padding: 4px 12px;
+  font-size: 12px;
+}

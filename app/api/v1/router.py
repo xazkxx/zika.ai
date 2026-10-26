@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.v1.routes.agent import router as agent_router
 from app.api.v1.routes.auth import router as auth_router
 from app.api.v1.routes.erp import router as erp_router
 from app.api.v1.routes.health import router as health_router
@@ -17,3 +18,8 @@ api_router.include_router(reports_router)
 api_router.include_router(ledger_router)
 # 系统管理（第 5 批）：组织机构 / 角色 / 用户，与业务单据零共享，单开一个模块
 api_router.include_router(system_router)
+# 智能体接口（第 4 批）：经营概览（给小程序/外部智能体）+ 智能指令派发（给系统内搜索框）。
+# ⚠️ 2026-10-23 修：这个 router 一直被 import 了却**没 include** —— /agent/summary
+#    在文档里写"已实现"，实际访问是 404。挂上不影响任何既有路径（前缀 /agent，
+#    目前全库没有任何前端/测试依赖它，`/agent/assistant` 是 erp_misc 里的另一个接口）。
+api_router.include_router(agent_router)

@@ -29,7 +29,14 @@ def _css() -> str:
 
 
 def _nav_theme_block() -> str:
-    source = _jsx()
+    """NAV_THEMES 清单所在片段。
+
+    2026-10-14 把 App.jsx 拆成 pages/* + lib/appLib.js 之后，这个常量**搬到了 appLib.js**；
+    只读 App.jsx 会 ValueError（列表根本没有），表现为"测试挂了但功能是好的"。
+    两个文件拼起来找，搬家不再导致误报。
+    """
+    lib = APP_JSX.parent / "lib" / "appLib.js"
+    source = _jsx() + "\n" + lib.read_text(encoding="utf-8")
     start = source.index("const NAV_THEMES = [")
     end = source.index("\n];", start)
     return source[start:end]

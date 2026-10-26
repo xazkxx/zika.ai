@@ -1,0 +1,258 @@
+/**
+ * ErpCard 样式 —— 命名空间 `.erp-card`，与 styles.css 零交叉
+ *
+ * ⚠️ 组件 CSS 会被 Vite 打包到 styles.css **之前**（2026-10-17 踩过，
+ *    当时 `.mgrid--split` 被 `.management-grid` 反压，手柄直接废掉）。
+ *    所以这里坚持两条：① 一律用 .erp-card 独有类名，不与任何既有选择器同特异性；
+ *    ② 需要覆盖自己时用 `.erp-card.erp-card--x` 双类，不靠加载顺序。
+ */
+
+.erp-card {
+  /* 内边距由变体类改这两个变量，head / body 各自取用 */
+  --card-px: var(--space-6);
+  --card-py: var(--space-5);
+
+  display: flex;
+  flex-direction: column;
+  min-width: 0;              /* grid 子项默认 min-width:auto，表格会把卡片撑破 */
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;          /* 让贴边的表格/表头被圆角裁掉，不出直角 */
+}
+
+/* ---------------------------------------------------------------- 内边距档位 */
+.erp-card--pad-sm {
+  --card-px: var(--space-4);
+  --card-py: var(--space-4);
+}
+
+.erp-card--pad-md {
+  --card-px: var(--space-6);
+  --card-py: var(--space-5);
+}
+
+.erp-card--pad-lg {
+  --card-px: var(--space-8);
+  --card-py: var(--space-6);
+}
+
+.erp-card--pad-none {
+  --card-px: 0px;
+  --card-py: 0px;
+}
+
+/* ------------------------------------------------------------------ 头部 */
+.erp-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--card-py) var(--card-px) 0;
+  flex: 0 0 auto;
+}
+
+/* 无内边距的卡片如果带了标题，标题不能真的贴到边框上 */
+.erp-card--pad-none > .erp-card__head {
+  padding: var(--space-4) var(--space-4) 0;
+}
+
+.erp-card__heading {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;              /* 长标题要能省略，不能把 extra 挤出去 */
+}
+
+.erp-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-8);
+  height: var(--space-8);
+  flex: 0 0 auto;
+  border-radius: var(--radius-lg);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.erp-card__titles {
+  min-width: 0;
+}
+
+.erp-card__title {
+  margin: 0;
+  font-size: var(--fs-md);          /* 16px —— 与现有 .panel h2 同口径 */
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.01em;          /* 中文 16px 加负字距会更"紧实"，是质感的细节 */
+  color: #111827;                   /* 现存标题色，与 tokens 的 slate-900 有 1% 色差，保持原值 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.erp-card__subtitle {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-sm);          /* 13px */
+  line-height: var(--lh-normal);
+  color: var(--fg-muted);
+}
+
+.erp-card__extra {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-inline);
+  flex: 0 0 auto;
+}
+
+/* 头部与内容之间画分隔线时，头部要有下内边距，否则线贴着标题 */
+.erp-card--divider > .erp-card__head {
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--divider);
+}
+
+/* ------------------------------------------------------------------ 内容 */
+.erp-card__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--card-py) var(--card-px);
+}
+
+/* body 归零、头部保留内边距 —— "带标题栏的表格卡"形态。
+   表格贴边才不会在卡片里缩一圈，视觉上表格线直接连到卡片边缘。 */
+.erp-card--flush > .erp-card__body {
+  padding: 0;
+}
+
+/* ------------------------------------------------------------------ 工具条 */
+/* 卡片内的工具条（搜索框 / 筛选 / 批量操作）。
+   左右内边距跟卡片对齐，所以它能在 flush 卡片的 body 里仍然"缩进得体"。 */
+.erp-card-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-inline);
+  flex-wrap: wrap;
+  padding: var(--space-4) var(--card-px);
+}
+
+/* 工具条紧跟表格时，下边距交给表格自己的表头分隔线，不再额外加 */
+.erp-card-toolbar + .erp-table-wrap {
+  border-top: 1px solid var(--divider);
+}
+
+/* ------------------------------------------------------------------ 悬停 */
+/* 只动 transform + box-shadow：`transition: all` 会把 padding / width
+   也拿去做动画，拖动改列宽时会明显掉帧。 */
+.erp-card--hover {
+  transition: var(--transition-lift);
+}
+
+.erp-card--hover:hover {
+  transform: translateY(var(--lift-y));
+  box-shadow: var(--shadow-lift);
+  border-color: var(--border);
+}
+
+/* 卡片内的输入框聚焦时，整张卡片描一圈极淡的品牌色 —— 眼睛能立刻定位到
+   正在操作的是哪一块。这是"质感"里最便宜也最有效的一笔。 */
+.erp-card:focus-within {
+  border-color: var(--color-primary-border);
+}
+
+.erp-card--hover:focus-within:hover {
+  transform: none;           /* 正在输入时不要浮起来，会晃眼 */
+}
+
+/* -------------------------------------------------------------- 液态玻璃 */
+/* 只给"浮在内容之上"的卡片（骨架屏、吸顶工具条），普通卡片别加：
+   满屏 backdrop-filter 会让滚动明显发涩。 */
+.erp-card--glass {
+  background: var(--glass-bg);
+  border-color: var(--glass-border);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+/* 不支持 backdrop-filter 时退回不透明底色，避免文字糊在透亮背景上看不清 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .erp-card--glass {
+    background: var(--glass-bg-strong);
+  }
+}
+
+/* ------------------------------------------------------------------ 响应式 */
+/* 窄屏统一收紧内边距：手机上一张卡片左右各留 32px 太浪费横向空间 */
+@media (max-width: 720px) {
+  .erp-card.erp-card--pad-md,
+  .erp-card.erp-card--pad-lg {
+    --card-px: var(--space-4);
+    --card-py: var(--space-4);
+  }
+}
+
+/* ============================================================================
+   响应式栅格工具类（第二步示范页会用）
+   ============================================================================
+
+   为什么不用瀑布流（Masonry）：
+   Masonry 在纯 CSS 里只有 `column-count` 一条路，而它有两个硬伤 ——
+   ① 内容按**列**填充，阅读顺序变成"竖着读"，键盘 Tab 顺序会跳来跳去；
+   ② 元素被拆进不同列后，跨列对齐（等高卡片）彻底失控。
+   卡片高度本来就接近（标题 + 两三行说明），auto-fit 栅格在视觉上已经是
+   "对齐的瀑布"，而且顺序天然正确、不需要 JS 测高。
+   真要不等高瀑布，等有具体页面再说 —— 现在上只会换来一堆测量代码。
+   ============================================================================ */
+.erp-grid {
+  display: grid;
+  gap: var(--gap-card);
+  /* minmax(0,1fr) 而不是 1fr：防止长英文/长数字把列撑破 */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--grid-card-min)), 1fr));
+  align-items: start;   /* 卡片各自按内容高度，不被拉齐成一样高 */
+}
+
+/* 数据看板那种小方块：更密 */
+.erp-grid--tile {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--grid-tile-min)), 1fr));
+}
+
+/* 固定列数的场景（比如"左表单 + 右列表"），窄屏自动落回单列 */
+.erp-grid--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.erp-grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.erp-grid--4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 1280px) {
+  .erp-grid--4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1080px) {
+  .erp-grid--3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .erp-grid--2,
+  .erp-grid--3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .erp-grid--4 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

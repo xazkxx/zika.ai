@@ -1,6 +1,7 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Float, Integer, String, func
+from sqlalchemy import DateTime, Float, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -21,7 +22,7 @@ class InventoryTransaction(Base):
     warehouse_id: Mapped[int] = mapped_column(Integer, nullable=False)
     transaction_type: Mapped[str] = mapped_column(String(30), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    unit_price: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=0, nullable=False)  # 成本单价（费率，4 位）
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # —— 溯源字段（融合改造新增，全部可空，不影响历史流水）——

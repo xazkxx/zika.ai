@@ -9,8 +9,14 @@
        products : SKU-<组>-<8位hex>   例如 SKU-PERF-dbd7c4f7
        customers: CUST-<组>-<8位hex>  例如 CUST-ORDER-3b5a6ba2
        suppliers: SUP-<8位hex>        例如 SUP-7639f1ac
+       warehouses: WH-<8位hex> / WH-<组>-<8位hex>  例如 WH-PD-2a0b5599
      另外兼容演示脚本的 DEMO-* / ZZ-TEST-*。
   2. 名称黑名单 —— 测试脚本写死的档案名（含中文），如「测试产品」「分析客户A」。
+
+删除前还有一道保护：
+  3. 引用保护 —— **被真实业务数据引用过的仓库一律不删**。
+     本库指向 `warehouses` 的外键是 0 个，裸删不会报错、只会静默留下孤儿引用，
+     所以必须靠扫列名自己挡（见 `referenced_warehouse_ids`）。
 
 非上述形态的记录不会被自动删除；脚本会把「疑似残留」单独列出来由人判断。
 
@@ -37,9 +43,16 @@ from app.db.session import engine  # noqa: E402
 from app.models.menu import MAX_MENU_DEPTH  # noqa: E402
 
 # ── 规则 1：编码签名（主要依据，覆盖 uuid 生成的全部测试档案）────────────────
-PRODUCT_CODE_RE = r"^(SKU(-[A-Z]+)?-[0-9a-f]{8}|DEMO-P\d+|SKU-[A-Z]+-\d+)$"
-CUSTOMER_CODE_RE = r"^(CUST(-[A-Z]+)?-[0-9a-f]{8}|CUST-ANALYSIS-\d+|DEMO-C\d+|ZZ-TEST-.*)$"
-SUPPLIER_CODE_RE = r"^(SUP(-[A-Z]+)?-[0-9a-f]{8}|DEMO-S\d+)$"
+# 形态统一成「<前缀>(-<段>)* - <8 位 hex 尾巴>」，允许任意数量的中段：
+#     SKU-1a2b3c4d / SKU-PD-1a2b3c4d / CUS-SRET-1a2b3c4d / SUP-ADJ-0f1e2d3c
+# 早期写成 `CUST(-[A-Z]+)?-` 这种"最多一段中段"的固定形态，
+# 于是 `CUS-SRET-<hex>`（销售退货夹具）既不被清理、又不被重名守卫放行，
+# 一次中断的 pytest 就让它活到下一轮，把 test_sales_return.py 全组打成 409。
+# 真实业务码是 CUS20261022001 / SKU-001 / WH-001，**不会**以「-8 位 hex」结尾。
+_TEST_CODE_TAIL = r"-[0-9a-f]{8}$"
+PRODUCT_CODE_RE = rf"^(?:SKU|DEMO-P)[A-Z0-9]*(?:-[A-Z0-9]{{1,10}})*{_TEST_CODE_TAIL}|^SKU-[A-Z]+-\d+$"
+CUSTOMER_CODE_RE = rf"^(?:CUS|DEMO-C)[A-Z0-9]*(?:-[A-Z0-9]{{1,10}})*{_TEST_CODE_TAIL}|^CUST-ANALYSIS-\d+$|^ZZ-TEST-.*$"
+SUPPLIER_CODE_RE = rf"^(?:SUP|DEMO-S)[A-Z0-9]*(?:-[A-Z0-9]{{1,10}})*{_TEST_CODE_TAIL}$"
 
 # ── 规则 2：名称黑名单（兜底，覆盖没走 uuid 的固定命名）────────────────────
 PRODUCT_NAME_LIKE = (
@@ -53,16 +66,84 @@ CUSTOMER_NAME_LIKE = (
 )
 SUPPLIER_NAME_LIKE = ("%测试供应商%", "订单供应商%", "%演示%", "探针%", "%--DEMO--%")
 
-# 仓库：只删测试生成的（WH-8位hex），保护 WH-001 这类正式编码
-WAREHOUSE_NAME_LIKE = ("主仓库%", "一号仓%", "停用仓%", "主仓%")
-WAREHOUSE_CODE_RE = r"^WH-[0-9a-f]{8}$"
+# ── 仓库 ──────────────────────────────────────────────────────────────
+# 测试仓库的编码一律由 uuid 生成，形态与业务编码（CK-001 / WH-001）不重叠：
+#     WH-<8位hex>          项目 / 组合 / 期初 / 报表 / 退货 / 销售退货 / 调拨
+#     WH-<TAG>-<8位hex>    FG 成品入库 / ADJ 报损报溢 / LL 领料 / TL 退料 /
+#                          WW 委外 / SCJH 生产计划 / PD 盘点 / MRP 物料需求
+#
+# ⚠️ 2026-10-15 修的历史洞：原来这里写成
+#       WAREHOUSE_NAME_LIKE = ("主仓库%", "一号仓%", "停用仓%", "主仓%")
+#       WAREHOUSE_CODE_RE   = r"^WH-[0-9a-f]{8}$"
+#    两句都用「名称命中 AND 编码命中」，于是：
+#      · 「项目测试仓-14f61a46」这类名字不在名单里 -> 每跑一轮 pytest 漏一行；
+#      · 「WH-PD-<hex>」「WH-FG-<hex>」等带 TAG 的编码压根不匹配 -> 全漏。
+#    累积到 118 个仓库里 115 个是残留（真实仓库只有 3 个）。
+#    现在改成**两条独立信号取并集**，任一条成立即删：
+#      ① 编码命中 uuid 签名（主要依据，本身已足够唯一）；
+#      ② 名称命中黑名单 且 编码尾部是 8 位 hex（兜底，防止将来新写测试换了名字）。
+WAREHOUSE_CODE_RE = r"^WH(-[A-Z]{2,5})?-[0-9a-f]{8}$"
+WAREHOUSE_CODE_TAIL_RE = r"-[0-9a-f]{8}$"
+WAREHOUSE_NAME_LIKE = (
+    # 原有
+    "主仓库%", "一号仓%", "停用仓%", "主仓%",
+    # 测试仓（项目 / 组合 / 期初 / 报表 / MRP）
+    "%测试仓%",
+    # 各业务模块测试自建的仓库名，一一对应 tests/ 下的 _new_warehouse()
+    "盘点主仓", "调拨主仓%", "退货主仓", "销售退货主仓", "成品主仓",
+    "报损主仓", "领料主仓", "领料仓%", "退料主仓", "委外主仓", "生产车间仓",
+)
 # 员工档案（基础资料收尾）：工号签名
 EMPLOYEE_CODE_RE = r"^(EMP(-[A-Z]+)?-[0-9a-f]{8}|TEST-EMP-.*)$"
 EMPLOYEE_NAME_LIKE = ("%测试员工%", "%验收员工%", "%导入员工%", "%校验员工%", "%引用检查员工%", "%部门占用员工%")
 
 
-def collect_ids(conn):
-    """返回 (product_ids, customer_ids, supplier_ids, warehouse_ids)。"""
+def warehouse_reference_columns(conn):
+    """找出所有「可能引用仓库」的列。
+
+    ⚠️ 为什么不用外键来判断：本库**指向 `warehouses` 的外键是 0 个**（全库总共才 3 个外键），
+    所以裸 `DELETE FROM warehouses` 不会报错，只会**静默**留下孤儿引用
+    （2026-10-15 实测：`public.production_plans.warehouse_id` 就指着 `WH-FG-04de8033`）。
+    删之前必须靠扫列名显式排除，否则「清理测试数据」会顺手破坏真实业务。
+    """
+    return [
+        tuple(r)
+        for r in conn.execute(
+            text(
+                "SELECT table_schema, table_name, column_name "
+                "FROM information_schema.columns "
+                "WHERE (column_name ILIKE '%warehouse%' OR column_name ILIKE '%_wh' "
+                "       OR column_name ILIKE 'wh_%') "
+                "  AND table_schema IN ('public', 'co_02', 'co_03') "
+                "  AND data_type IN ('integer', 'bigint', 'smallint', 'numeric')"
+            )
+        )
+    ]
+
+
+def referenced_warehouse_ids(conn, ids):
+    """返回被任何业务表引用到的仓库 id 集合（这些一律不删）。"""
+    if not ids:
+        return set()
+    used: set[int] = set()
+    for schema, table, column in warehouse_reference_columns(conn):
+        try:
+            rows = conn.execute(
+                text(f'SELECT DISTINCT {column} FROM {schema}."{table}" WHERE {column} = ANY(:ids)'),
+                {"ids": list(ids)},
+            )
+        except Exception:  # 表/列不适用就跳过，不影响其它列
+            continue
+        used.update(r[0] for r in rows if r[0] is not None)
+    return used
+
+
+def collect_ids(conn, report_protected: bool = True):
+    """返回 (product_ids, customer_ids, supplier_ids, warehouse_ids)。
+
+    `report_protected=False` 时不打印「已跳过被引用仓库」那行 —— pytest 的自动清理
+    走这个分支，免得污染测试输出。
+    """
     p_ids = [r[0] for r in conn.execute(
         text(
             "SELECT id FROM products WHERE sku ~ :re "
@@ -76,8 +157,19 @@ def collect_ids(conn):
         text("SELECT id FROM suppliers WHERE code ~ :re OR name LIKE ANY(:like)"),
         {"re": SUPPLIER_CODE_RE, "like": list(SUPPLIER_NAME_LIKE)})]
     w_ids = [r[0] for r in conn.execute(
-        text("SELECT id FROM warehouses WHERE (name LIKE ANY(:n) AND code ~ :re)"),
-        {"n": list(WAREHOUSE_NAME_LIKE), "re": WAREHOUSE_CODE_RE})]
+        text(
+            "SELECT id FROM warehouses "
+            "WHERE code ~ :re OR (name LIKE ANY(:n) AND code ~ :tail)"
+        ),
+        {"re": WAREHOUSE_CODE_RE, "n": list(WAREHOUSE_NAME_LIKE),
+         "tail": WAREHOUSE_CODE_TAIL_RE})]
+    # 被真实业务引用的仓库一律留下（本库没有外键兜底，只能自己挡）
+    protected = referenced_warehouse_ids(conn, w_ids)
+    if protected:
+        if report_protected:
+            print(f"  [clean] 有 {len(protected)} 个仓库被业务数据引用，已跳过："
+                  f"{sorted(protected)}")
+        w_ids = [w for w in w_ids if w not in protected]
     return p_ids, c_ids, s_ids, w_ids
 
 
@@ -96,6 +188,25 @@ def list_unmatched(conn, limit: int = 40):
             code = str(r.c or "")
             if any(ch.isspace() for ch in code) or any("\u4e00" <= ch <= "\u9fff" for ch in code) or "TEST" in code.upper():
                 rows.append((table, r.id, code, r.name))
+    return rows[:limit]
+
+
+def list_suspicious_warehouses(conn, limit: int = 40):
+    """列出「编码像机器生成、却没能被任何签名认出来」的仓库 —— 只提示，绝不自动删。
+
+    为什么单独给仓库加这一条：仓库的清理规则一旦再漏，就会像 2026-10-15 那样
+    静默堆积（当时 118 个仓库里 115 个是残留，跑了很久才被发现）。
+    凡是编码尾部是 8 位 hex 的，都能被这条捞出来示众。
+    """
+    rows = []
+    for r in conn.execute(
+        text(
+            "SELECT id, code, name FROM public.warehouses "
+            "WHERE code ~ :tail ORDER BY id"
+        ),
+        {"tail": WAREHOUSE_CODE_TAIL_RE},
+    ):
+        rows.append(("warehouses", r.id, r.code, r.name))
     return rows[:limit]
 
 
@@ -151,6 +262,17 @@ ORPHAN_RULES = [
     ("financial_transactions", "customer_id", "customers", "id"),
     ("financial_transactions", "supplier_id", "suppliers", "id"),
 ]
+
+# 销售订单（2026-10-21 补）：此前**没有**任何签名规则，所以 pytest 建的
+# `SO-<8位hex>` / `SO-STATUS-<8位hex>` 单会长期躺在正式库里（实测漏过 2 张）。
+# 业务单号格式恒为 `XS + 8位日期 + 3位流水`，与这两个形态绝不可能撞上。
+SALES_ORDER_TEST_CONDITION = (
+    "order_no ~ '^SO-([A-Z0-9]+-)?[0-9a-f]{8}$' "
+    # 合同转单：备注里带测试合同号（contract_no 以 TEST- 开头）
+    "OR note LIKE '由合同 TEST-%' "
+    # 客户已不存在（pytest 先删客户再删单，或上一轮清理只删了档案）→ 单据只剩空壳
+    "OR customer_id NOT IN (SELECT id FROM customers)"
+)
 
 # 合同（融合改造新增）：party_id 同时可能指向客户或供应商，按 id 匹配会误删真实合同，
 # 所以只认合同号签名与相对方名称黑名单 —— 这两条都不会命中真实业务数据。
@@ -273,7 +395,26 @@ MENU_TEST_CONDITION = "(label LIKE '临时%' OR label LIKE '验收%' OR label LI
 # 之前历次规则只清了发票**带出来的财务流水**，没清发票本身 ——
 # 于是库里留了两条 invoice_no='TEST-xxxx' 的垃圾记录（还有 'invoice TEST-' 的流水）。
 # 删记录时**必须连原件一起删**，否则 data/invoices 目录会积一堆没人认领的文件。
-INVOICE_TEST_CONDITION = "invoice_no LIKE '%TEST%'"
+# 2026-10-21 扩展：pytest 用 `INV-ODT-<8hex>` / `INV-STATUS-<8hex>` 建票，
+# 业务票号是纯数字（26612000001006203301），三者形态互不重叠。
+INVOICE_TEST_CONDITION = (
+    "invoice_no LIKE '%TEST%' OR invoice_no LIKE 'INV-ODT-%' "
+    "OR invoice_no LIKE 'INV-STATUS-%' OR invoice_no LIKE 'E2E-INV-%' "
+    # 单段签名：INV-<8位hex>（pytest 夹具）/ DBG-<hex>（一次性调试脚本）。
+    # 用正则而不是 `LIKE 'INV-%'`，是为了不给"以后真有人工编 INV- 开头的票号"留坑。
+    "OR invoice_no ~ '^(INV|DBG)-[0-9A-Za-z]{4,12}$'"
+)
+
+# 对账单测试数据（2026-10-22）：`tests/test_statement_generate.py` 每跑一次
+# 就用真实客户生成一张草稿对账单，并从库里取下一个 DZ 号。
+# 以前清理脚本完全不管 statements —— 三轮 pytest 下来库里多了 27 张
+# 「对账测试客户xxxx」的对账单、58 张 `INV-<8hex>` 发票，
+# 明细行还挂着，把「对账单台账」和发票列表都污染了。
+# 判据只看**往来单位名称**：测试客户名一定含"测试客户"/"对账测试"，真实客户不会。
+STATEMENT_TEST_CONDITION = (
+    "party_name LIKE '%测试客户%' OR party_name LIKE '%测试供应商%' "
+    "OR party_name LIKE '对账测试%' OR statement_no LIKE 'DZ-TEST%'"
+)
 
 # 操作日志（第 5 批第 3 轮）：只清测试账号留下的那部分。
 #
@@ -389,10 +530,12 @@ def run_cleanup(verbose: bool = True) -> int:
     pc = ",".join(map(str, p_ids)) or "NULL"
     cc = ",".join(map(str, c_ids)) or "NULL"
     sc = ",".join(map(str, s_ids)) or "NULL"
-    wc = ",".join(map(str, w_ids)) or "NULL"
     ec = ",".join(map(str, e_ids)) or "NULL"
+    # w_ids 这里只用于下面的"有没有活干"判断；真正的删除在函数末尾延后做
 
     # 先删"引用方"（明细、流水、单据），再删"被引用方"（档案），顺序不能颠倒
+    # ⚠️ warehouses 刻意不在这里 —— 它必须等到所有引用方都清干净之后再处理，
+    #    原因见函数末尾那段「仓库延后处理」的注释。
     steps = [
         ("table", "sales_order_items", "product_id", pc),
         ("table", "purchase_order_items", "product_id", pc),
@@ -408,7 +551,6 @@ def run_cleanup(verbose: bool = True) -> int:
         ("archive", "products", "id", pc),
         ("archive", "customers", "id", cc),
         ("archive", "suppliers", "id", sc),
-        ("archive", "warehouses", "id", wc),
     ]
 
     total = 0
@@ -565,6 +707,27 @@ def run_cleanup(verbose: bool = True) -> int:
         total += n
         if n:
             applied.append((f"{table}（签名）", n))
+
+    # 销售订单（2026-10-21 补）：先删明细、再删单头，最后扫它产生的流水。
+    # 顺序有讲究：明细外键指向单头，流水按 doc_no 关联（单头删了 doc_no 还在，
+    # 但已经没有单据可查，等于永久孤儿）。
+    sales_order_steps = [
+        ("sales_order_items", f"sales_order_id IN (SELECT id FROM sales_orders WHERE {SALES_ORDER_TEST_CONDITION})"),
+        ("inventory_transactions", f"doc_no IN (SELECT order_no FROM sales_orders WHERE {SALES_ORDER_TEST_CONDITION})"),
+        ("financial_transactions", f"doc_no IN (SELECT order_no FROM sales_orders WHERE {SALES_ORDER_TEST_CONDITION})"),
+        ("sales_orders", SALES_ORDER_TEST_CONDITION),
+    ]
+    for table, condition in sales_order_steps:
+        sql = f"DELETE FROM {table} WHERE {condition}"
+        try:
+            with engine.begin() as conn:
+                n = conn.execute(text(sql)).rowcount
+        except Exception as exc:
+            skipped.append((f"{table}（销售订单签名）", f"{type(exc).__name__}: {str(exc).splitlines()[0][:90]}"))
+            continue
+        total += n
+        if n:
+            applied.append((f"{table}（销售订单签名）", n))
 
     # 库存调拨表（融合改造新增）：先删明细再删调拨单头。调拨不写财务流水，
     # 但它会产生一对 inv_transfer 库存流水（调出 outbound / 调入 inbound），
@@ -740,6 +903,22 @@ def run_cleanup(verbose: bool = True) -> int:
     # 发票测试数据（第 11 批）：删行之前先把落盘的原件删掉，
     # 否则 data/invoices 里会留下再也对不上的文件。
     try:
+        # 批量同步会给每张票写一条 expense 流水（备注「发票 INV-ODT-… | 对方单位」）。
+        # 那条流水与"人工登记的日常支出"长得一模一样，会污染「日常收支」合计 —— 先删它。
+        with engine.begin() as conn:
+            n_flow = conn.execute(
+                text(
+                    # 发票同步出来的 expense 流水（备注「发票 <票号> | 对方单位 | …」）。
+                    # ⚠️ 2026-10-22 补 `发票 INV-%`：pytest 夹具用 `INV-<8hex>` 建票，
+                    #    票删了但同步流水还在，FT 会凭空多出 8 行（实测）。
+                    #    真实票号是 20 位纯数字，不会以 `INV-` 开头，这条签名不会误伤。
+                    "DELETE FROM financial_transactions WHERE note LIKE '发票 INV-%' "
+                    "OR note LIKE '发票 DBG-%' OR note LIKE '发票 TEST-%'"
+                )
+            ).rowcount
+        total += n_flow
+        if n_flow:
+            applied.append(("financial_transactions（发票流水）", n_flow))
         with engine.connect() as conn:
             test_files = [
                 row[0]
@@ -759,6 +938,62 @@ def run_cleanup(verbose: bool = True) -> int:
             print(f"  {'invoices 原件':<34} 删除 {removed_files:>5} 个文件")
     except Exception as exc:
         skipped.append(("invoices（发票）", f"{type(exc).__name__}: {str(exc).splitlines()[0][:90]}"))
+
+    # 孤儿发票 / 孤儿发票流水（2026-10-22）。
+    #
+    # ⚠️ 这里**不能**按票号签名删：`一键开票` 生成的 `KP-<单号>` 是**真实业务数据**，
+    #    只是测试时它挂的单据被删了才悬空。所以判据是"指向的对方不存在"，
+    #    与票号长什么样无关 —— 生产库里跑也只会删真正坏掉的记录。
+    #    顺序不能反：先删孤儿发票，再删"票号已经不存在"的流水。
+    try:
+        with engine.begin() as conn:
+            n_inv = conn.execute(
+                text(
+                    "DELETE FROM invoices i WHERE i.related_order_id IS NOT NULL AND ("
+                    " (i.direction = 'output' AND NOT EXISTS "
+                    "   (SELECT 1 FROM sales_orders o WHERE o.id = i.related_order_id))"
+                    " OR (i.direction <> 'output' AND NOT EXISTS "
+                    "   (SELECT 1 FROM purchase_orders o WHERE o.id = i.related_order_id))"
+                    ")"
+                )
+            ).rowcount
+            n_flow = conn.execute(
+                text(
+                    # 发票同步出来的流水，票号写在 note 里（「发票 <票号> | 对方 | …」）。
+                    # 票没了这条流水就是纯噪音，会把「日常收支」的合计撑大。
+                    "DELETE FROM financial_transactions f WHERE f.note LIKE '发票 %' "
+                    "AND NOT EXISTS (SELECT 1 FROM invoices v "
+                    f"  WHERE v.invoice_no = split_part(substr(f.note, {len('发票 ')} + 1), ' |', 1))"
+                )
+            ).rowcount
+        total += n_inv + n_flow
+        if n_inv:
+            applied.append(("invoices（孤儿·挂单已删）", n_inv))
+        if n_flow:
+            applied.append(("financial_transactions（孤儿·发票流水）", n_flow))
+    except Exception as exc:
+        skipped.append(("invoices（孤儿）", f"{type(exc).__name__}: {str(exc).splitlines()[0][:90]}"))
+
+    # 对账单测试数据：先删明细再删单头（statement_items.statement_id 是硬引用），
+    # 事务顺序反过来会因外键/悬空明细留下"点开就报错"的空壳对账单。
+    try:
+        with engine.begin() as conn:
+            n_items = conn.execute(
+                text(
+                    "DELETE FROM statement_items WHERE statement_id IN "
+                    f"(SELECT id FROM statements WHERE {STATEMENT_TEST_CONDITION})"
+                )
+            ).rowcount
+            n_stmt = conn.execute(
+                text(f"DELETE FROM statements WHERE {STATEMENT_TEST_CONDITION}")
+            ).rowcount
+        total += n_items + n_stmt
+        if n_stmt:
+            applied.append(("statements（对账单）", n_stmt))
+        if n_items:
+            applied.append(("statement_items（对账明细）", n_items))
+    except Exception as exc:
+        skipped.append(("statements（对账单）", f"{type(exc).__name__}: {str(exc).splitlines()[0][:90]}"))
 
     # 菜单（第 10 批）：自引用树，从叶子往上删。最多循环 MAX_MENU_DEPTH 轮就够了，
     # 多留一轮是因为"删完叶子后父节点才变成叶子"这件事需要下一轮才看得到。
@@ -830,6 +1065,30 @@ def run_cleanup(verbose: bool = True) -> int:
         total += n
         if n and verbose:
             print(f"  {table}（孤儿财务）{'':<12} 删除 {n:>5} 行")
+
+    # ── 仓库延后处理（2026-10-15 补）────────────────────────────────────────
+    # 为什么不能跟 products/customers/suppliers 一起放进上面的 steps：
+    # 测试造的单据（入库单、盘点单、调拨单…）在 steps 阶段**还挂在测试仓库上**，
+    # 引用保护会把仓库判成「被业务引用」而豁免它；单据要到后面的孤儿清理才被删掉。
+    # 结果是仓库被漏过这一轮，下一轮跑测试又漏一批 —— 库里的残留就是这么攒到 115 个的。
+    # 典型症状（当时就是这么发现的）：全量 pytest 后漏 13 个，单跑某几个测试却正常。
+    # 所以这里**等所有引用方都清完之后**，重新扫一遍候选、重新判引用，再删。
+    with engine.connect() as conn:
+        _, _, _, w_ids_late = collect_ids(conn, report_protected=False)
+    if w_ids_late:
+        wl = ",".join(map(str, w_ids_late))
+        try:
+            with engine.begin() as conn:
+                n = conn.execute(text(f"DELETE FROM warehouses WHERE id IN ({wl})")).rowcount
+        except Exception as exc:
+            skipped.append(("warehouses（延后）", f"{type(exc).__name__}: {str(exc).splitlines()[0][:90]}"))
+        else:
+            total += n
+            if n:
+                applied.append(("warehouses（延后）", n))
+                if verbose:
+                    print(f"  {'warehouses（延后）':<34} 删除 {n:>5} 行")
+
     return total
 
 
@@ -983,11 +1242,20 @@ def main() -> None:
     # 未自动删除、但编码形态可疑的记录 —— 仅提示，绝不自动删
     with engine.connect() as conn:
         odd = list_unmatched(conn)
+        suspicious_wh = list_suspicious_warehouses(conn)
     if odd:
         print("\n" + "-" * 62)
         print("以下记录不符合测试签名，未自动删除，请人工确认是否要保留：")
         for table, rid, code, name in odd:
             print(f"  {table:<10} id={rid:<6} code={code!r:<20} name={name!r}")
+    if suspicious_wh:
+        print("\n" + "-" * 62)
+        print("⚠️  下列仓库的编码尾部是 8 位 hex（机器生成形态），却没被任何签名认出来。")
+        print("    没删它们是对的，但请确认原因：")
+        print("      · 被真实业务引用（正常，见上面 [clean] 那行）")
+        print("      · 清理规则又漏了 —— 那就该把名字或编码形态补进 clean_test_data.py")
+        for table, rid, code, name in suspicious_wh:
+            print(f"    {table:<10} id={rid:<6} code={code!r:<24} name={name!r}")
 
 
 if __name__ == "__main__":

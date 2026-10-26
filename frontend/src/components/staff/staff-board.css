@@ -1,0 +1,18 @@
+/**
+ * StaffBoard 专属样式（只影响员工档案页，类名带 `staff-` 前缀，与全局零交叉）。
+ *
+ * 为什么不写进 styles.css：那是全站共用文件，任何一条新增规则都可能
+ * 和 `:has()` 那批页面级规则打架（踩过）。组件自己的样式跟着组件走。
+ */
+
+.staff-unassigned {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border, #e2e8f0);
+}
+
+/* 「未分配部门」是个可点选的行，选中态要和树里的行视觉一致 */
+.staff-unassigned .link-btn.is-active {
+  color: var(--primary, #2563eb);
+  font-weight: 600;
+}

@@ -166,6 +166,33 @@ def _create_entry(db: Session, flow, lines: list[tuple[str, float, float]]) -> J
     return entry
 
 
+def post_reversal_entry(db: Session, flow, original) -> JournalEntry | None:
+    """红冲凭证：把**原凭证的借贷方向对调**（借原贷、贷原借）。
+
+    为什么不直接走 `post_journal_entry`：
+      那里有一条 `if amount <= 0: return None` —— 而红字行的金额本来就是负数
+      （只有这样，`sum(amount)` 才会自动归零，报表不用特判）。
+      照那条规则走，红冲会**一条凭证都不生成**，总账里永远看不到这笔冲销，
+      但流水表里却明明白白多了一行负数 —— 账和凭证对不上，是财务最忌讳的事。
+
+    金额一律取绝对值：借方 200 / 贷方 200 才是合法分录，负数分录会被 `_create_entry`
+    当成"空分录"整张撤回（它只允许 debit/credit > 0）。
+    """
+    rule = POSTING_RULES.get(getattr(original, "transaction_type", None) or "")
+    if rule is None:
+        return None
+    debit_code = _resolve_account(db, rule[0], original)
+    credit_code = _resolve_account(db, rule[1], original)
+    if debit_code is None or credit_code is None:
+        return None
+
+    amount = abs(float(getattr(original, "amount", 0.0) or 0.0))
+    if amount <= 0:
+        return None
+    # 方向对调：原「借 debit / 贷 credit」→ 红冲「借 credit / 贷 debit」
+    return _create_entry(db, flow, [(credit_code, amount, 0.0), (debit_code, 0.0, amount)])
+
+
 def post_journal_entry(db: Session, flow) -> JournalEntry | None:
     """根据一笔财务流水自动生成凭证。返回凭证或 None（未登记/无需生成）。"""
     ttype = getattr(flow, "transaction_type", None)

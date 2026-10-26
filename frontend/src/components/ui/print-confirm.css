@@ -1,0 +1,33 @@
+/**
+ * 打印二次确认弹窗（PrintConfirmHost）—— 只写 `.print-confirm*`。
+ *
+ * 复用 `.modal-backdrop` / `.modal-card` / `.modal-header` / `.modal-actions` 的骨架，
+ * 这里只补"单据名"与"提示"两块的排版。不重定义卡片宽高：
+ * 全站弹窗宽度由 `.modal-card` 统一（窄屏会被 max-width 夹住，别在这写 width）。
+ */
+
+.print-confirm {
+  max-width: 420px;
+}
+
+/* 单据名单独一行、等宽、可换行：文件名里常有单号与客户名，长名字必须能断
+   （否则 420px 卡片会被一个长中文串顶破，右侧按钮跟着变形） */
+.print-confirm__name {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--gray-50, #f8fafc);
+  border: 1px solid var(--divider, #eef2f7);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--fg-strong, #0f172a);
+  overflow-wrap: anywhere;
+}
+
+.print-confirm__hint {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-muted, #64748b);
+}

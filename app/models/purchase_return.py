@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -76,6 +76,13 @@ class PurchaseReturnItem(Base):
     product_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     standards: Mapped[str | None] = mapped_column(String(100), nullable=True)  # 规格型号
     unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # —— 多单位换算快照（3b）——
+    # 「1 个录入单位 = 几个基本单位」。默认 1 = 不换算 = 与 3b 之前逐字节等价。
+    # ⚠️ 与 `purchase_order_items.unit_factor` 同口径；值一律服务端从 `unit` 现场解析，
+    #    绝不接受客户端传入（见 `erp_common._resolve_unit_factor`）。
+    unit_factor: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
     quantity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     unit_price: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     amount: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)

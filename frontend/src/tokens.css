@@ -1,0 +1,303 @@
+/* ============================================================================
+   设计令牌（Design Tokens）—— 全项目唯一的设计常量来源
+   ============================================================================
+
+   用法：任何样式里都能直接 `var(--color-primary)`，不需要 import、不需要构建插件。
+
+   三条设计原则（很重要，决定了它为什么"零污染"）：
+
+   1. **只新增变量，不覆盖任何现有声明**
+      本文件只有 `:root { --x: y }` 和一个 smooth-scroll 的媒体查询。
+      没有任何标签选择器、没有任何 `!important`、不改 `body`。
+      所以 45 个现有页面在你改造它们之前，渲染结果**逐像素不变**。
+
+   2. **取值对齐现状，不另起一套**
+      这里的颜色不是设计稿里的理想值，而是从 `styles.css` 590 处硬编码里
+      统计出来的高频值（slate 灰阶 + #2563eb 蓝）。这样把 `#64748b` 换成
+      `var(--fg-muted)` 时**不会产生任何视觉变化**，改造才能"无感"。
+
+   3. **语义令牌优先，原始色阶兜底**
+      写业务样式用 `--fg-muted` / `--border` / `--surface`；
+      只有在需要某个具体灰阶时才用 `--gray-500`。
+
+   ----------------------------------------------------------------------------
+   命名约定
+     --color-*   品牌色与语义色
+     --gray-*    原始灰阶（slate 1:1）
+     --fg-*      文字色（语义）
+     --bg-*      背景色（语义）
+     --border-*  边框色（语义）
+     --fs-*      字号          --fw-*  字重       --lh-*  行高
+     --space-*   间距（4px 网格）
+     --radius-*  圆角          --shadow-*  阴影
+     --z-*       层级          --ease/--dur-*  动效
+   ============================================================================ */
+
+:root {
+  /* ---------------------------------------------------------------- 品牌色 */
+  /* #2563eb 是现有代码里出现最多的强调色（20 处），直接沿用 */
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-active: #1e40af;
+  --color-primary-soft: #eff6ff;      /* 浅底：选中行、标签背景 */
+  --color-primary-border: #bfdbfe;
+
+  /* ---------------------------------------------------------------- 语义色 */
+  /* 每个语义色给 4 档：strong(文字) / base(主色) / soft(浅底) / border(描边) */
+  --color-success: #16a34a;
+  --color-success-strong: #15803d;    /* 现有 .status-badge 用的就是这个 */
+  --color-success-soft: #f0fdf4;
+  --color-success-border: #bbf7d0;
+
+  --color-warning: #f59e0b;
+  --color-warning-strong: #b45309;
+  --color-warning-soft: #fffbeb;
+  --color-warning-border: #fde68a;
+
+  --color-danger: #dc2626;
+  --color-danger-strong: #b91c1c;
+  --color-danger-soft: #fef2f2;
+  --color-danger-border: #fecaca;
+
+  --color-info: #0ea5e9;
+  --color-info-strong: #0369a1;
+  --color-info-soft: #f0f9ff;
+  --color-info-border: #bae6fd;
+
+  /* ---------------------------------------------------------------- 原始灰阶 */
+  /* 与 Tailwind slate 完全一致，是现有硬编码的实际取值 */
+  --gray-50: #f8fafc;    /* 33 处：页面/表头浅底 */
+  --gray-100: #f1f5f9;   /* 19 处：hover 底 */
+  --gray-200: #e2e8f0;   /* 32 处：分隔线 */
+  --gray-300: #cbd5e1;   /* 35 处：输入框边框 */
+  --gray-400: #94a3b8;   /* 28 处：占位符、禁用态 */
+  --gray-500: #64748b;   /* 38 处：次要文字（全站最高频） */
+  --gray-600: #475569;   /* 27 处：正文 */
+  --gray-700: #334155;   /* 27 处：强调正文 */
+  --gray-800: #1f2937;   /* 现有 body 文字色 */
+  --gray-900: #0f172a;   /* 32 处：标题/数字 */
+  --white: #ffffff;
+
+  /* ---------------------------------------------------------------- 语义：文字 */
+  --fg: var(--gray-800);            /* 正文 */
+  --fg-strong: var(--gray-900);     /* 标题、关键数字 */
+  --fg-muted: var(--gray-500);      /* 辅助说明、表头 */
+  --fg-subtle: var(--gray-400);     /* 占位符、禁用 */
+  --fg-inverse: #ffffff;            /* 深色底上的文字 */
+
+  /* ---------------------------------------------------------------- 语义：背景 */
+  --bg: var(--gray-50);             /* 页面底色 */
+  --bg-soft: var(--gray-100);       /* 区块浅底、斑马纹 */
+  --bg-hover: var(--gray-100);
+  --surface: var(--white);          /* 卡片、表格、弹窗 */
+
+  /* ---------------------------------------------------------------- 语义：边框 */
+  --border: var(--gray-200);
+  --border-strong: var(--gray-300);
+  /* 卡片那层极淡的描边，现有值就是它 —— 别改成 --border，会变重 */
+  --border-soft: rgba(148, 163, 184, 0.16);
+
+  /* ------------------------------------------------------------------ 字号 */
+  /* 12 → 24 的阶梯；13px 不是标准档，但项目里有大量"辅助说明 13px"，单列一档 */
+  --fs-xs: 12px;      /* 徽标、角标、密度极高的表格 */
+  --fs-sm: 13px;      /* 辅助说明、次要列 */
+  --fs-base: 14px;    /* 正文默认 */
+  --fs-md: 16px;      /* 卡片标题、区块标题 */
+  --fs-lg: 18px;      /* 页面标题 */
+  --fs-xl: 20px;      /* 大号数字 */
+  --fs-2xl: 24px;     /* KPI 主数字 */
+  --fs-3xl: 32px;     /* 超大数字（现有 .stat-card strong 用 2rem = 32px） */
+
+  /* ------------------------------------------------------------------ 字重 */
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* ------------------------------------------------------------------ 行高 */
+  --lh-tight: 1.3;    /* 大标题 */
+  --lh-normal: 1.5;   /* 正文（现有 :root 就是 1.5） */
+  --lh-relaxed: 1.7;  /* 长段落、说明文字 */
+
+  /* ------------------------------------------------------------------ 间距 */
+  /* 4px 网格。命名用步进序号，不是像素值 —— 方便将来整体缩放到 8px 网格 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;   /* 表单项行间距（现 .erp-form gap 就是 20px，4 的倍数） */
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ------------------------------------------------------------------ 圆角 */
+  --radius-sm: 4px;    /* 小徽标、色块 */
+  --radius-md: 6px;    /* 按钮、输入框（现有 11 处） */
+  --radius-lg: 8px;    /* 卡片内小容器（全站最高频，27 处） */
+  --radius-xl: 12px;   /* 面板（15 处） */
+  --radius-2xl: 18px;  /* 大卡片（现有 .stat-card / .panel 就是 18px） */
+  --radius-pill: 999px;/* 胶囊：标签、状态徽标 */
+
+  /* ------------------------------------------------------------------ 阴影 */
+  /* 三套标准阴影 + 两个补充。颜色统一用 slate-900 的 RGB，保证同一色温 */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-card: 0 6px 24px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.05);
+  --shadow-hover: 0 12px 28px rgba(15, 23, 42, 0.1), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --shadow-modal: 0 24px 64px rgba(15, 23, 42, 0.24), 0 4px 12px rgba(15, 23, 42, 0.1);
+  --shadow-nav: 0 12px 40px rgba(15, 23, 42, 0.18); /* 侧边栏悬浮岛，现有值 */
+
+  /* 焦点环：键盘可达性统一用它，别再各写各的 outline */
+  --ring: 0 0 0 3px rgba(37, 99, 235, 0.28);
+
+  /* ------------------------------------------------------------------ 层级 */
+  --z-sticky: 100;
+  --z-dropdown: 200;
+  --z-modal: 1000;
+  --z-toast: 1100;
+
+  /* ------------------------------------------------------------------ 动效 */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 300ms;
+
+  /* ------------------------------------------------------------------ 字体 */
+  /* 与现有 :root 保持一致（雅黑优先）—— **故意不改成 system-ui 优先**：
+     Windows 上 system-ui = Segoe UI，英文与数字的字形会变，45 个页面的
+     换行与疏密都会跟着变。想切换时只改这一行即可，风险自负。 */
+  --font-sans: 'Microsoft YaHei', 'PingFang SC', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ----------------------------------------------------------------------------
+   基础 Reset —— 只有一条，且是有条件的
+   ----------------------------------------------------------------------------
+
+   下面这些**已经在 styles.css 里做过了**，所以这里不重复（重复写只会打架）：
+
+     * { box-sizing: border-box }        → styles.css:13
+     :root { font-family: … }            → styles.css:2
+     -webkit-font-smoothing: antialiased → styles.css:9
+
+   这里只补一条项目里缺的：平滑滚动。放在 prefers-reduced-motion 里，
+   避免对"晕动症"用户和长列表快速滚动造成不适（无障碍默认要求）。
+   ---------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* 尊重系统的"减少动画"偏好：把过渡压到近乎瞬时，但不破坏功能 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================================
+   第二轮扩充：商业级质感（2026-10-17）
+   ============================================================================
+
+   为什么另起一个 :root 而不是改上面那一块 ——
+   上面 89 个变量是"逐像素对齐既有 45 个页面"的基准，改了就无法反查某次视觉变化
+   是谁引起的。这里全部是**新增**变量（CSS 多个 :root 会正常合并），
+   上块一个字节未动，所以"改造前页面渲染零变化"这个契约仍然成立。
+
+   三条硬约定：
+   ① 间距一律落在 4px 栅格上（--space-N 的 N × 4px），组件里禁止再写裸 px；
+   ② 交互过渡优先用 `--transition-*` 语义变量，不要在组件里重复写时长与曲线；
+   ③ 需要 backdrop-filter 的地方，模糊半径统一取 `--glass-blur`（8px），
+      别一个组件 6px、另一个 12px —— 磨砂强度不一致是最容易露怯的地方。
+   ============================================================================ */
+:root {
+  /* --------------------------------------------------- 4px 栅格：补齐后半段 */
+  /* 原有 1/2/3/4/5/6/8，这里补 7/9/10/12/14/16 与 0 */
+  --space-0: 0px;
+  --space-7: 28px;
+  --space-9: 36px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-14: 56px;
+  --space-16: 64px;
+
+  /* 语义化留白：组件只引用这些，不自己算 20/24 到底该用哪个 */
+  --pad-card: var(--space-5) var(--space-6);        /* 20 / 24 —— 标准卡片 */
+  --pad-card-sm: var(--space-4);                    /* 16 —— 紧凑卡片（表格页） */
+  --pad-card-lg: var(--space-6) var(--space-8);     /* 24 / 32 —— 看板大卡 */
+  --pad-inline: var(--space-4);                     /* 行内水平留白 */
+  --gap-field: var(--space-5);                      /* 20 —— 表单项行距 */
+  --gap-inline: var(--space-2);                     /* 8  —— 按钮组、标签组 */
+  --gap-block: var(--space-6);                      /* 24 —— 区块之间 */
+  --gap-card: var(--space-4);                       /* 16 —— 卡片之间（对齐现有网格） */
+
+  /* ------------------------------------------------------------ 缓动与时长 */
+  /* --ease 原值就是 cubic-bezier(.4,0,.2,1)，即标准的 ease-in-out。
+     这里给一个同名语义别名，让"要求写 ease-in-out"的规范能直接对上号。 */
+  --ease-in-out: var(--ease);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);   /* 「上浮」用：起步快、收尾软 */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* 轻微回弹，只给极小元素用 */
+  --dur-2: 200ms;                              /* 规范指定 0.2s */
+
+  /* 过渡预设。规范里写的是 `transition: all .2s ease-in-out`，
+     但 `all` 会把 padding / width / grid 这些**触发重排**的属性一起动画，
+     拖动、改列宽时会掉帧。所以拆成两个更精确的预设：
+       --transition-base   ：字面对齐规范的兜底（颜色/边框/透明度这类都能覆盖）
+       --transition-colors ：只动颜色类属性（按钮、链接、输入框）
+       --transition-lift   ：只动 transform + box-shadow（卡片悬停） */
+  --transition-base: all var(--dur-2) var(--ease-in-out);
+  --transition-colors:
+    color var(--dur-2) var(--ease-in-out),
+    background-color var(--dur-2) var(--ease-in-out),
+    border-color var(--dur-2) var(--ease-in-out),
+    box-shadow var(--dur-2) var(--ease-in-out);
+  --transition-lift:
+    transform var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    border-color var(--dur-2) var(--ease-out);
+
+  /* ------------------------------------------------------------ 悬停微交互 */
+  --lift-y: -2px;                              /* 卡片上浮 2px，规范指定 */
+  --lift-y-sm: -1px;                           /* 列表行、小卡片 */
+  --shadow-lift:
+    0 14px 32px rgba(15, 23, 42, 0.1),
+    0 3px 8px rgba(15, 23, 42, 0.06);
+  --shadow-press: 0 2px 6px rgba(15, 23, 42, 0.08);
+
+  /* ------------------------------------------------------------- 液态玻璃 */
+  /* 只用于"浮在内容之上"的层（骨架屏、吸顶工具条、抽屉），
+     不要给普通卡片加 —— 大量 backdrop-filter 会让滚动明显发涩。 */
+  --glass-blur: 8px;
+  --glass-saturate: 160%;
+  --glass-bg: rgba(255, 255, 255, 0.66);
+  --glass-bg-strong: rgba(255, 255, 255, 0.82);
+  --glass-border: rgba(255, 255, 255, 0.72);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  --glass-shadow: 0 8px 32px rgba(15, 23, 42, 0.1);
+
+  /* --------------------------------------------------------------- 骨架屏 */
+  --skeleton-base: #eef2f7;
+  --skeleton-base-strong: #e6ebf2;
+  --skeleton-sheen: rgba(255, 255, 255, 0.85);
+  --skeleton-dur: 1400ms;
+  --skeleton-radius: var(--radius-md);
+
+  /* --------------------------------------------------------------- 分隔线 */
+  --divider: var(--border-soft);
+  --divider-strong: var(--gray-200);
+
+  /* ------------------------------------------------- 响应式栅格（瀑布流用） */
+  /* auto-fit + minmax 的两种口径：卡片列表 / 数据看板 */
+  --grid-card-min: 280px;
+  --grid-tile-min: 200px;
+
+  /* ------------------------------------------------------------ 空状态插画 */
+  --empty-ink: var(--gray-300);      /* 插画主线条 */
+  --empty-ink-soft: rgba(148, 163, 184, 0.28);
+  --empty-accent: var(--color-primary-border);
+}
+

@@ -1,0 +1,361 @@
+/* 智能识别上传面板（2026-10-23）
+   挂在新增客户/供应商/商品弹窗顶部。要点：
+   1. 虚线框要"看起来能放东西"，但**不能抢走弹窗的主体感** —— 高度克制在 76px 左右；
+   2. 文件名可能很长（"克拉玛依储能项目…合同9.19（终稿）(1).docx"），
+      必须自己 ellipsis 收口，否则会把弹窗撑宽；
+   3. 核对弹窗层级要高于 `.modal-backdrop`（1010），否则被父弹窗盖住点不到。 */
+
+.smart-upload {
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.smart-upload__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.smart-upload__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.smart-upload__modes {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.smart-upload__mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 12px;
+  color: #475569;
+  cursor: pointer;
+  user-select: none;
+}
+
+.smart-upload__mode.is-on {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.smart-upload__mode input {
+  margin: 0;
+  accent-color: #2563eb;
+}
+
+.smart-upload__drop {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 74px;
+  padding: 10px;
+  border: 1.5px dashed #93c5fd;
+  border-radius: 8px;
+  background: #fff;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.smart-upload__drop:hover,
+.smart-upload__drop:focus-visible {
+  border-color: #2563eb;
+  background: #f0f7ff;
+  outline: none;
+}
+
+.smart-upload__drop.is-drag {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.smart-upload__drop.is-busy {
+  cursor: progress;
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+/* 文件框藏起来，但**不能用 display:none** —— 视觉上消失、仍在布局里，
+   `input.click()` 才会稳定弹出选择框（老版本 Safari 对 display:none 的 input 不响应）。 */
+.smart-upload__input {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.smart-upload__drop-main {
+  font-size: 13px;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.smart-upload__drop-sub {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.smart-upload__files {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.smart-upload__file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.smart-upload__file-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #334155;
+}
+
+.smart-upload__file-size {
+  flex: 0 0 auto;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.smart-upload__file-x {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.smart-upload__file-x:hover {
+  color: #b91c1c;
+}
+
+.smart-upload__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.smart-upload__hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #047857;
+}
+
+.smart-upload__error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #b91c1c;
+}
+
+/* ================= 核对弹窗 ================= */
+.smart-upload__mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1100; /* 必须高于 .modal-backdrop 的 1010 */
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.smart-upload__dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 92vw);
+  max-height: 86vh;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+  overflow: hidden;
+}
+
+.smart-upload__dialog-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  background: #f8fafc;
+}
+
+.smart-upload__dialog-head strong {
+  font-size: 15px;
+  color: #0f172a;
+}
+
+.smart-upload__dialog-sub {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.smart-upload__dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px;
+}
+
+.smart-upload__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: fixed;
+}
+
+.smart-upload__table th,
+.smart-upload__table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-all;
+}
+
+.smart-upload__table thead th {
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.smart-upload__table .is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.smart-upload__label {
+  color: #64748b;
+}
+
+/* 高亮：识别出来的值必须一眼能挑出来 */
+.smart-upload__mark {
+  background: #fef08a;
+  color: #713f12;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.smart-upload__evidence {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: #94a3b8;
+  word-break: break-all;
+}
+
+.smart-upload__items {
+  margin-top: 14px;
+}
+
+.smart-upload__items-head {
+  font-size: 12px;
+  color: #334155;
+  margin-bottom: 6px;
+}
+
+.smart-upload__warnings {
+  margin: 12px 0 0;
+  padding: 8px 12px 8px 28px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.smart-upload__raw {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.smart-upload__raw summary {
+  cursor: pointer;
+  color: #1d4ed8;
+}
+
+.smart-upload__raw-item {
+  margin-top: 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: #f8fafc;
+}
+
+.smart-upload__raw-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: #475569;
+  margin-bottom: 4px;
+}
+
+.smart-upload__raw pre {
+  margin: 0;
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.smart-upload__empty {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.smart-upload__dialog-actions {
+  display: flex;
+  gap: 10px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border, #e2e8f0);
+  background: #f8fafc;
+}
