@@ -317,6 +317,7 @@ export default function InvoicesPage({ ctx }) {
     handleSyncInvoicesToFinance,
     handleSystemUserChange,
     handleTemplateDraftChange,
+    handleToggleCertified,
     handleToggleDeducted,
     handleTransferChange,
     handleTransferItemChange,
@@ -1095,6 +1096,32 @@ export default function InvoicesPage({ ctx }) {
                       onChange={(event) => setInvoiceQuery((prev) => ({ ...prev, keyword: event.target.value }))}
                       placeholder="搜发票号码 / 抬头 / 税号 / 经手人"
                     />
+                    {/* 进项专项筛选（2026-10-26）：财务日常就按"哪家供应商 / 认证到哪一步"找票。
+                        供应商按**档案 id** 过滤（票面抬头是文本，同一家常有多个写法）；
+                        认证状态下拉只对进项专票生效 —— 否则选「未认证」会把全库普票都列出来。 */}
+                    <ErpSearchSelect
+                      options={suppliers || []}
+                      value={String(invoiceQuery.supplier_id ?? '')}
+                      onChange={(value) => setInvoiceQuery((prev) => ({ ...prev, supplier_id: value }))}
+                      placeholder="全部供应商"
+                      emptyText="没有匹配的供应商"
+                      getOptionValue={(o) => String(o.id)}
+                      getOptionLabel={(o) => o.name || o.code || String(o.id)}
+                      getSearchText={(o) => `${o.name || ''} ${o.code || ''} ${o.tax_no || ''}`}
+                    />
+                    <select
+                      value={invoiceQuery.deduction_state || ''}
+                      onChange={(event) =>
+                        setInvoiceQuery((prev) => ({ ...prev, deduction_state: event.target.value }))
+                      }
+                      aria-label="按认证状态筛选"
+                      title="认证 / 抵扣只对进项专票存在"
+                    >
+                      <option value="">全部认证状态</option>
+                      <option value="uncertified">未认证</option>
+                      <option value="certified">已认证待抵扣</option>
+                      <option value="deducted">已抵扣</option>
+                    </select>
                   </div>
 
                   {selectedInvoiceIds.length > 0 && (
@@ -1197,7 +1224,7 @@ export default function InvoicesPage({ ctx }) {
                           <th>发票日期</th>
                           <th>发票号码</th>
                           <th>类型</th>
-                          <th>抵扣状态</th>
+                          <th>认证 / 抵扣</th>
                           <th>购买方名称</th>
                           <th>购买方税号</th>
                           <th>销售方名称</th>
@@ -1264,13 +1291,18 @@ export default function InvoicesPage({ ctx }) {
                                       {item.direction_label}
                                     </span>
                                     {item.invoice_flag === 'red' && <span className="status-badge danger">红字</span>}
+                                    {/* OCR 认出来的进项票一律是「草稿」（后端 import 时落的）：
+                                        票号/税号/金额认错一项就会传导到认证抵扣和申报，
+                                        人工核对过再改成「已确认」是进项票的合规底线。 */}
+                                    {item.status === '草稿' && <span className="status-badge warn">草稿待核对</span>}
                                   </div>
                                 </td>
                                 <td className="nowrap">{item.invoice_type || '未知'}</td>
                                 <td className="nowrap">
-                                  {/* 抵扣状态（2026-10-24）：只对专票有意义，普票显示 —。
-                                      已抵扣显示绿色 + 抵扣时间（悬停可看），未抵扣灰色。 */}
-                                  {item.invoice_type === '专票' ? (
+                                  {/* 认证 / 抵扣（2026-10-26）：进项专票的三态。
+                                      未认证 → 已认证待抵扣 → 已抵扣，销项票与普票没有这两步，显示 —。
+                                      判"专票"用含不含"专票"两字，与条码里的「电子专票」写法解耦。 */}
+                                  {String(item.invoice_type || '').includes('专票') ? (
                                     item.deducted ? (
                                       <span
                                         className="status-badge ok"
@@ -1278,8 +1310,15 @@ export default function InvoicesPage({ ctx }) {
                                       >
                                         已抵扣
                                       </span>
+                                    ) : item.certified ? (
+                                      <span
+                                        className="status-badge warn"
+                                        title={item.certified_at ? `认证时间：${new Date(item.certified_at).toLocaleString('zh-CN')}` : undefined}
+                                      >
+                                        已认证待抵扣
+                                      </span>
                                     ) : (
-                                      <span className="status-badge muted">未抵扣</span>
+                                      <span className="status-badge muted">未认证</span>
                                     )
                                   ) : (
                                     '—'
@@ -1333,15 +1372,34 @@ export default function InvoicesPage({ ctx }) {
                                       </button>
                                     </>
                                   )}
-                                  {item.invoice_type === '专票' && (
-                                    <button
-                                      type="button"
-                                      className="link-btn"
-                                      disabled={invoiceBusy === `deduct-${item.id}`}
-                                      onClick={() => handleToggleDeducted(item)}
-                                    >
-                                      {item.deducted ? '取消抵扣' : '标记抵扣'}
-                                    </button>
+                                  {/* 认证 → 抵扣是一条单向链（2026-10-26）：
+                                      已抵扣的票不再给「取消认证」入口 —— 后端也会 400，
+                                      与其让人点一下看报错，不如干脆不提供这个按钮。 */}
+                                  {String(item.invoice_type || '').includes('专票') && (
+                                    <>
+                                      {!item.deducted && (
+                                        <button
+                                          type="button"
+                                          className="link-btn"
+                                          disabled={invoiceBusy === `certify-${item.id}`}
+                                          onClick={() => handleToggleCertified(item)}
+                                        >
+                                          {invoiceBusy === `certify-${item.id}`
+                                            ? '处理中…'
+                                            : item.certified
+                                              ? '取消认证'
+                                              : '认证'}
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        className="link-btn"
+                                        disabled={invoiceBusy === `deduct-${item.id}`}
+                                        onClick={() => handleToggleDeducted(item)}
+                                      >
+                                        {item.deducted ? '取消抵扣' : '标记抵扣'}
+                                      </button>
+                                    </>
                                   )}
                                   <button type="button" className="link-btn" onClick={() => openInvoicePreview(item)}>
                                     查看
@@ -1520,6 +1578,40 @@ export default function InvoicesPage({ ctx }) {
                               未抵扣 {invoiceAggregate.deduction.undeducted_count} 张 ¥{Number(invoiceAggregate.deduction.undeducted_amount || 0).toLocaleString()}
                             </div>
                           </div>
+                        </div>
+
+                        {/* 进项认证台账（2026-10-26）：三态分桶 + 本月已认证进项税额。
+                            「本月已认证」按**认证时间**落月，与驾驶舱 KPI 是同一份代码
+                            （`app/services/invoice_tax.py` 一处算法两处用），
+                            所以这里的数和首页那张卡片永远一致。 */}
+                        <div className="chart-card">
+                          <div className="chart-card-title">进项专票认证台账</div>
+                          {(() => {
+                            const tax = invoiceAggregate.input_tax || {};
+                            const month = tax.month || '';
+                            return (
+                              <div className="deduct-legend">
+                                <div className="deduct-line">
+                                  <i className="legend-dot" style={{ background: '#0ea5e9' }} />
+                                  本月已认证进项税额 ¥{Number(tax.certified_this_month_tax || 0).toLocaleString()}
+                                  （{tax.certified_this_month_count || 0} 张{month ? ` · ${month}` : ''}）
+                                </div>
+                                <div className="deduct-line">
+                                  <i className="legend-dot" style={{ background: '#16a34a' }} />
+                                  已抵扣 {tax.deducted_count || 0} 张 ¥{Number(tax.deducted_tax || 0).toLocaleString()}
+                                </div>
+                                <div className="deduct-line">
+                                  <i className="legend-dot" style={{ background: '#f59e0b' }} />
+                                  已认证待抵扣 {tax.certified_pending_count || 0} 张 ¥
+                                  {Number(tax.certified_pending_tax || 0).toLocaleString()}
+                                </div>
+                                <div className="deduct-line red-text">
+                                  <i className="legend-dot" style={{ background: '#dc2626' }} />
+                                  未认证 {tax.uncertified_count || 0} 张 ¥{Number(tax.uncertified_tax || 0).toLocaleString()}
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
 
                         <div className="chart-card">
@@ -1745,25 +1837,54 @@ export default function InvoicesPage({ ctx }) {
                             />
                           </label>
                           <label className="span-2">
-                            <span>关联出库单（销项）</span>
-                            {/* 完结闸的"未开票"就是按这个字段统计的：不挂单，单据永远结不了案。
-                                只列 doc_type=outbound 的销售单（订单/退货单不该出现在这里）。 */}
-                            <ErpSearchSelect
-                              options={(salesOrders || []).filter((o) => (o.doc_type || 'outbound') === 'outbound')}
-                              value={String(invoiceEditForm.related_order_id ?? '')}
-                              onChange={(value) =>
-                                setInvoiceEditForm((prev) => ({ ...prev, related_order_id: value }))
-                              }
-                              placeholder="搜索出库单号 / 客户名；留空表示不关联"
-                              emptyText="没有匹配的销售出库单"
-                              getOptionValue={(o) => String(o.id)}
-                              getOptionLabel={(o) =>
-                                `${o.order_no || o.id} · ${o.customer_name || o.customer_id || ''} · ¥${Number(
-                                  o.total_amount || 0,
-                                ).toLocaleString()}`
-                              }
-                              getSearchText={(o) => `${o.order_no || ''} ${o.customer_name || ''}`}
-                            />
+                            <span>{invoiceEditForm.direction === 'input' ? '关联入库单（进项）' : '关联出库单（销项）'}</span>
+                            {/* 方向决定这张票能挂哪张单据（2026-10-26）：
+                                进项 → 采购入库单，销项 → 销售出库单。混在一个下拉里，
+                                迟早有人把入库单挂到销项票上 —— 对账单照样算得出来，但是算错的。
+                                待判定的票不给下拉：后端一律拒绝挂单，先定性再挂。 */}
+                            {invoiceEditForm.direction === 'unknown' ? (
+                              <input value="请先把进销项定性，再关联单据" readOnly />
+                            ) : invoiceEditForm.direction === 'input' ? (
+                              <ErpSearchSelect
+                                options={(() => {
+                                  const all = purchaseOrders || [];
+                                  // 优先只给 doc_type=inbound 的入库单；本页还没拉到入库单时
+                                  // 退回全部采购单，总比给一个空下拉、让人以为"没有可挂的单"好。
+                                  const inbound = all.filter((o) => (o.doc_type || 'inbound') === 'inbound');
+                                  return inbound.length > 0 ? inbound : all;
+                                })()}
+                                value={String(invoiceEditForm.related_order_id ?? '')}
+                                onChange={(value) =>
+                                  setInvoiceEditForm((prev) => ({ ...prev, related_order_id: value }))
+                                }
+                                placeholder="搜索入库单号 / 供应商；留空表示不关联"
+                                emptyText="没有匹配的采购入库单"
+                                getOptionValue={(o) => String(o.id)}
+                                getOptionLabel={(o) =>
+                                  `${o.order_no || o.id} · ${o.supplier_name || o.supplier_id || ''} · ¥${Number(
+                                    o.total_amount || 0,
+                                  ).toLocaleString()}`
+                                }
+                                getSearchText={(o) => `${o.order_no || ''} ${o.supplier_name || ''}`}
+                              />
+                            ) : (
+                              <ErpSearchSelect
+                                options={(salesOrders || []).filter((o) => (o.doc_type || 'outbound') === 'outbound')}
+                                value={String(invoiceEditForm.related_order_id ?? '')}
+                                onChange={(value) =>
+                                  setInvoiceEditForm((prev) => ({ ...prev, related_order_id: value }))
+                                }
+                                placeholder="搜索出库单号 / 客户名；留空表示不关联"
+                                emptyText="没有匹配的销售出库单"
+                                getOptionValue={(o) => String(o.id)}
+                                getOptionLabel={(o) =>
+                                  `${o.order_no || o.id} · ${o.customer_name || o.customer_id || ''} · ¥${Number(
+                                    o.total_amount || 0,
+                                  ).toLocaleString()}`
+                                }
+                                getSearchText={(o) => `${o.order_no || ''} ${o.customer_name || ''}`}
+                              />
+                            )}
                           </label>
                           <label className="span-2">
                             <span>销售方名称</span>
@@ -1843,6 +1964,14 @@ export default function InvoicesPage({ ctx }) {
                               value={invoiceEditForm.handler}
                               onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, handler: event.target.value }))}
                             />
+                          </label>
+                          <label className="checkbox-field">
+                            <input
+                              type="checkbox"
+                              checked={invoiceEditForm.certified}
+                              onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, certified: event.target.checked }))}
+                            />
+                            <span>进项专票已认证</span>
                           </label>
                           <label className="checkbox-field">
                             <input

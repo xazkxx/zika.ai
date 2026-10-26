@@ -35,6 +35,20 @@ class Invoice(Base):
     # 认证抵扣时间（2026-10-24）：由 update_invoice 在 deducted False→True 时自动落
     # 服务器时间，取消抵扣时清空。审计口径："这张专票是什么时候抵的"必须能回答。
     deducted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # —— 认证（2026-10-26）：进项专票的税局"勾选确认" ——
+    # 为什么认证必须独立于抵扣：这是两个动作、两个时间点。
+    #   「已认证待抵扣」是月底最需要盯的真实状态 —— 认证了但还没在申报表里抵扣，
+    #   可能跨月、可能因为留抵暂不抵。压成一个 bool 后这个状态无处安放，
+    #   财务只能靠 Excel 另记一本账。
+    # 状态机（`update_invoice` 里强制）：
+    #   未认证 --认证--> 已认证 --抵扣--> 已抵扣
+    #   已抵扣时撤销认证 → 拒绝（税上不存在"没认证就抵扣"）；取消抵扣 → 认证保留。
+    certified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 认证时间：**服务器**写入，前端传什么都不认。
+    # KPI「本月已认证进项税额」按它的月份统计 —— 财务问的是"这个月认证了多少"，
+    # 那是申报动作口径，不是开票日口径（按开票日会把上月票重复算进本月）。
+    certified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     category: Mapped[str | None] = mapped_column(String(30), nullable=True)
     status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     buyer_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
@@ -57,10 +71,15 @@ class Invoice(Base):
     # 发票只有 `counterparty_name` 文本，而客户档案里同一家公司常有多个签约主体
     # （"XX公司""XX第一分公司""XX-某项目部"），字符串永远对不上。
     # 对账单曾经因此**一张发票都匹配不到**（见 REPORT-DIAG-TASK12.md）。
-    # 现在落成 id：销项发票挂客户，进项发票暂无对应字段（将来可加 supplier_id）。
-    # 两列都可空 —— 历史发票允许先不挂，由回填脚本按名字/税号尽力匹配。
+    # 现在落成 id：销项发票挂客户（customer_id），进项发票挂供应商（supplier_id）。
+    # 各列都可空 —— 历史发票允许先不挂，由回填脚本按名字/税号尽力匹配。
     customer_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     contract_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # 2026-10-26：进项发票挂供应商档案（镜像 customer_id）。
+    # 在此之前进项只有 `seller_name` / `seller_tax_no` 纯文本，后果是
+    # `services/invoice_match` 的候选打分对进项**永远拿不到**"按档案 id 命中"那一档，
+    # 同类金额的候选分不出高下，自动挂入库单的成功率天然偏低。
+    supplier_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     # —— 四流合一（2026-10-19）：发票挂到**具体单据** ——
     # 这是把"发票孤岛"接回业务流的唯一锚点。方向决定它指向哪张表：
@@ -90,6 +109,47 @@ class Invoice(Base):
             return json.loads(self.items_json)
         except (TypeError, ValueError):
             return []
+
+    @property
+    def deduction_state(self) -> str:
+        """认证/抵扣派生状态：`uncertified` / `certified` / `deducted`。
+
+        放在模型上而不是各处各算一遍：列表、详情、summary 三处都要用，
+        三处各写一次 `if deducted else if certified` 迟早在某一处写反
+        （比如把"已认证"当成"已抵扣"报给财务，直接影响申报）。
+        """
+        if self.deducted:
+            return DEDUCTION_DEDUCTED
+        if self.certified:
+            return DEDUCTION_CERTIFIED
+        return DEDUCTION_UNCERTIFIED
+
+
+# ===========================================================================
+# 认证 / 抵扣（2026-10-26）
+# ===========================================================================
+# 认证 = 在税局平台"勾选确认"这张进项专票；抵扣 = 在当期申报表里把它抵掉。
+# 顺序不可逆：没认证不能抵扣；但可以"认证了暂不抵扣"（留抵/跨期）。
+DEDUCTION_UNCERTIFIED = "uncertified"
+DEDUCTION_CERTIFIED = "certified"
+DEDUCTION_DEDUCTED = "deducted"
+
+DEDUCTION_STATE_LABELS = {
+    DEDUCTION_UNCERTIFIED: "未认证",
+    DEDUCTION_CERTIFIED: "已认证待抵扣",
+    DEDUCTION_DEDUCTED: "已抵扣",
+}
+
+
+def is_special_invoice(invoice_type: str | None) -> bool:
+    """票种是否为增值税**专用**发票（含电子专票）。
+
+    ⚠️ 不要写 `invoice_type == "专票"`：编辑弹窗的票种下拉里就有「电子专票」，
+    而 OCR 只产出「专票 / 普票 / 未知」。严格相等的后果是 —— 财务把票种改成
+    「电子专票」后，行内的抵扣按钮和 summary 里的抵扣统计**同时消失**，
+    而且不报任何错。判"专票"只认名称里含不含这两个字，与枚举写法解耦。
+    """
+    return "专票" in str(invoice_type or "")
 
 
 # ===========================================================================

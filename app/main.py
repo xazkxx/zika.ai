@@ -261,6 +261,14 @@ INVOICE_ADDITIONS = {
     # 认证抵扣时间（2026-10-24）：专票标记抵扣时由接口自动落服务器时间，取消抵扣清空。
     # 老库靠这里补列，新库靠模型建 —— 与 deducted 配套，缺了它"何时抵的"说不清。
     "deducted_at": "TIMESTAMP WITH TIME ZONE",
+    # 进项发票认证（2026-10-26）：认证是独立于抵扣的一步，"已认证待抵扣"必须能表达。
+    # 老库靠这里补列；新库靠模型建。`certified` 给了 DEFAULT FALSE ——
+    # 老库补列时既有行必须立即可读，不能留 NULL 让 bool 字段三态化。
+    # ⚠️ `_add_missing_columns` 只补列**不建索引**；supplier_id 的索引由
+    #    `_contract_module/migrate_20261026_input_invoice.py` 建（幂等）。
+    "supplier_id": "INTEGER",
+    "certified": "BOOLEAN NOT NULL DEFAULT FALSE",
+    "certified_at": "TIMESTAMP WITH TIME ZONE",
 }
 
 # 系统管理第 1 轮：用户挂部门 / 挂角色 / 联系方式 / 最后登录时间

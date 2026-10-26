@@ -689,6 +689,12 @@ class InvoiceCreate(BaseModel):
     # 第 14 批：挂档案 id（不传时，销项发票由后端按购买方名称/税号自动匹配客户）
     customer_id: Optional[int] = None
     contract_id: Optional[int] = None
+    # 2026-10-26：进项发票挂供应商（镜像 customer_id）。
+    # 不传时后端按**销售方税号唯一命中 → 名称归一化全等**自动匹配，歧义留空不猜。
+    supplier_id: Optional[int] = None
+    # 认证：默认未认证。置 True 时 certified_at 由服务器落，前端传什么都不认
+    # （与 deducted 同一套留痕规则：认证时间是财务事实，不接受客户端填写）。
+    certified: bool = False
     # 四流合一：发票挂到具体单据（销项→sales_orders / 进项→purchase_orders）。
     # 少了这个字段，完结闸永远算不到"已开票金额"，四流台账的发票流也是空的。
     related_order_id: Optional[int] = None
@@ -707,6 +713,12 @@ class InvoiceUpdate(BaseModel):
     # 第 14 批：允许把发票手工挂到客户 / 合同上（对账单按 id 取数）
     customer_id: Optional[int] = None
     contract_id: Optional[int] = None
+    # 2026-10-26：进项挂供应商 + 认证开关。
+    # `certified` 的状态机在 `update_invoice` 里强制（不能先抵扣后认证、
+    # 已抵扣不能撤销认证），这里只负责收字段 —— 校验绝不能写在 schema 里，
+    # 因为判断要读改前的状态。
+    supplier_id: Optional[int] = None
+    certified: Optional[bool] = None
     related_order_id: Optional[int] = None
     # 2026-10-22（业财一体化）：发票弹窗里本来就有这些输入框，前端也一直在提交，
     # 但 schema 里没有这几个字段 —— Pydantic 默认忽略未声明字段，于是「改了税号/票号，

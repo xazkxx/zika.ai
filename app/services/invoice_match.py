@@ -353,8 +353,10 @@ def _collect_candidates(db: Session, invoice: Invoice, party_id: int, party_name
 
     # 发票的 OK 号/单号线索：OCR 原文里出现单号是最硬的证据之一
     raw_text = invoice.raw_text or ""
-    # customer_id / supplier 是否本来就是 id 命中（而不是靠名字猜出来的）
-    party_by_id = bool(invoice.customer_id) if is_sales else False
+    # customer_id / supplier_id 是否本来就是 id 命中（而不是靠名字猜出来的）。
+    # 进项这一侧 2026-10-26 才有 supplier_id：在此之前 `party_by_id` 恒为 False，
+    # 进项候选永远少这一档加分，金额相同的候选分不出高下。
+    party_by_id = bool(invoice.customer_id) if is_sales else bool(invoice.supplier_id)
 
     candidates: list[Candidate] = []
     for order in orders:

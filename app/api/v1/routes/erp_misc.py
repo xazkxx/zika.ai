@@ -28,6 +28,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from urllib import request
 
+# 进项税额口径（2026-10-26）：驾驶舱 KPI 与发票汇总共用同一份算法。
+from app.services.invoice_tax import certified_tax_of_month
+
 router = APIRouter(prefix="", tags=["erp"])
 
 
@@ -435,6 +438,9 @@ def executive_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
         {"label": "销售额", "value": float(summary_data.get("sales_total") or 0.0), "unit": "CNY"},
         {"label": "采购额", "value": float(summary_data.get("purchase_total") or 0.0), "unit": "CNY"},
         {"label": "净利润", "value": float((summary_data.get("sales_total") or 0.0) - (summary_data.get("purchase_total") or 0.0)), "unit": "CNY"},
+        # 2026-10-26：财务申报口径。按**认证时间**落月、只统计进项专票，
+        # 与 `/invoices/summary` 的 `input_tax` 共用 `services.invoice_tax` 同一份算法。
+        {"label": "本月已认证进项税额", "value": certified_tax_of_month(db), "unit": "CNY"},
         {"label": "生产订单", "value": int(len(operations_data.get("production_orders") or [])), "unit": "orders"},
         {"label": "库存预警", "value": int(len(inventory_alerts)), "unit": "items"},
         {"label": "付款提醒", "value": int(len(payment_alerts)), "unit": "alerts"},

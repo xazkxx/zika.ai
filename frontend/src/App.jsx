@@ -458,7 +458,14 @@ function App() {
   // 第 11 批（发票归拢财务）：单据视角的筛选条件。
   // 筛选放在前端做 —— 发票总量不大，而且列表本来就已经整份加载了，
   // 再往后端要一次只会多一轮往返、还让"切 Tab 立刻响应"变成要等网络。
-  const [invoiceQuery, setInvoiceQuery] = useState({ direction: 'all', keyword: '' });
+  const [invoiceQuery, setInvoiceQuery] = useState({
+    direction: 'all',
+    keyword: '',
+    // 2026-10-26：进项专项筛选。supplier_id 按档案比对（抬头文本不可靠），
+    // deduction_state 只对进项专票生效（见 invoiceFiltered）。
+    supplier_id: '',
+    deduction_state: '',
+  });
   // ——— 第 13 批（发票管理页改造）———
   // 展开的明细子行（一张票的明细列不进主行，用子行展开 —— 列太多会横向挤爆）
   const [expandedInvoiceIds, setExpandedInvoiceIds] = useState([]);
@@ -484,11 +491,26 @@ function App() {
     return result;
   }, [invoiceItems]);
 
-  // 单据页的筛选：方向 Tab + 关键字。都只作用在视图上，不改数据。
+  // 单据页的筛选：方向 Tab + 关键字 + 供应商/认证状态。都只作用在视图上，不改数据。
   const invoiceFiltered = useMemo(() => {
     const keyword = invoiceQuery.keyword.trim().toLowerCase();
+    const stateFilter = invoiceQuery.deduction_state || '';
     return invoiceItems.filter((item) => {
       if (invoiceQuery.direction !== 'all' && item.direction !== invoiceQuery.direction) return false;
+      // 供应商筛选按档案 id 比对：票面上的抬头是文本，同一家常有多个写法。
+      if (
+        invoiceQuery.supplier_id &&
+        String(item.supplier_id ?? '') !== String(invoiceQuery.supplier_id)
+      ) {
+        return false;
+      }
+      if (stateFilter) {
+        // 认证/抵扣只对**进项专票**存在。不先挡掉销项票与普票的话，
+        // 选「未认证」会把这个库里所有普票都列出来 —— 等于没筛。
+        if (item.direction !== 'input') return false;
+        if (!String(item.invoice_type || '').includes('专票')) return false;
+        if (item.deduction_state !== stateFilter) return false;
+      }
       if (!keyword) return true;
       return [item.invoice_no, item.counterparty_name, item.seller_name, item.buyer_name, item.handler]
         .filter(Boolean)
@@ -500,7 +522,13 @@ function App() {
   // 不回到第 1 页的话，筛完之后可能停在一个已经没有数据的页码上，界面看着像"筛没了"。
   useEffect(() => {
     setInvoicePage(1);
-  }, [invoiceQuery.direction, invoiceQuery.keyword, invoicePageSize]);
+  }, [
+    invoiceQuery.direction,
+    invoiceQuery.keyword,
+    invoiceQuery.supplier_id,
+    invoiceQuery.deduction_state,
+    invoicePageSize,
+  ]);
 
   const invoicePageCount = Math.max(1, Math.ceil(invoiceFiltered.length / invoicePageSize));
   const invoiceSafePage = Math.min(invoicePage, invoicePageCount);
@@ -2553,6 +2581,9 @@ function App() {
       issue_mode: item.issue_mode || 'manual',
       handler: item.handler || '',
       deducted: Boolean(item.deducted),
+      // 2026-10-26：认证态（进项专票）。抵扣勾选框保持原样，
+      // 两者在弹窗里是两个框 —— 它们本来就是两个动作。
+      certified: Boolean(item.certified),
       // 2026-10-22：关联出库单。完结闸按它统计"已开票金额"，没有它这张单永远结不了案。
       related_order_id: item.related_order_id ?? '',
     });
@@ -2586,12 +2617,19 @@ function App() {
         issue_mode: form.issue_mode,
         handler: form.handler.trim() || null,
         deducted: Boolean(form.deducted),
-        // 关联销售出库单（完结闸的"未开票"口径就是按这个字段统计的）
-        related_order_id:
+        // 2026-10-26：认证态单独提交。**不传 supplier_id** —— 编辑弹窗里没有这个控件，
+        // 传上去只会把后端自动匹配好的供应商抹成 null，把三方匹配的证据毁掉。
+        certified: Boolean(form.certified),
+      };
+      // 关联单据是**方向相关**的，后端对待判定的票一律拒绝挂单（400）。
+      // 所以方向没定性时干脆不提交这个字段：否则历史脏指针会让
+      // "只想改个备注"直接 400，整张票卡死改不动。
+      if (form.direction !== 'unknown') {
+        body.related_order_id =
           form.related_order_id === '' || form.related_order_id === null || form.related_order_id === undefined
             ? null
-            : Number(form.related_order_id),
-      };
+            : Number(form.related_order_id);
+      }
       const response = await fetch(`${API_BASE}/invoices/${form.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -3087,6 +3125,16 @@ function App() {
     source_name: item.source_name || '',
     source_size: item.source_size || 0,
     deducted: Boolean(item.deducted),
+    // 2026-10-26：进项认证三态 + 供应商档案。
+    // `deduction_state` / `deduction_state_label` 优先用后端算好的（模型上的同一个属性），
+    // 这里只做**兜底**——销项票、老接口版本下没有这两个字段时前端不至于显示空白。
+    certified: Boolean(item.certified),
+    certified_at: item.certified_at || null,
+    deduction_state:
+      item.deduction_state || (item.deducted ? 'deducted' : item.certified ? 'certified' : 'uncertified'),
+    deduction_state_label:
+      item.deduction_state_label || (item.deducted ? '已抵扣' : item.certified ? '已认证待抵扣' : '未认证'),
+    supplier_id: item.supplier_id ?? null,
   });
 
   // 月份渲染统一入口：解析失败（空值/不规范格式）显示"未知月份"，绝不输出 NaN
@@ -3537,6 +3585,49 @@ function App() {
       }
     } catch {
       setNotice('更新抵扣状态失败：无法连接后端。');
+    } finally {
+      setInvoiceBusy('');
+    }
+  };
+
+  // 认证（2026-10-26）：进项专票在税局的"勾选确认"，与"申报抵扣"是**两个动作**。
+  // 拆开的理由见 `app/models/invoice.py`：月底最常见的真实状态是"已认证待抵扣"，
+  // 一个 bool 装不下它。后端会拦销项票 / 非专票 / 已抵扣时撤认证（400），
+  // 这里把 detail 原样弹出来 —— 那几句话就是给用户的操作指引。
+  const handleToggleCertified = async (item) => {
+    if (!item || item.id == null) return;
+    const nextCertified = !item.certified;
+    setInvoiceBusy(`certify-${item.id}`);
+    try {
+      const response = await fetch(`${API_BASE}/invoices/${item.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({ certified: nextCertified }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail ?? '更新认证状态失败。');
+      }
+      const updated = await response.json();
+      setInvoiceItems((prev) => prev.map((row) => (row.id === updated.id ? normalizeInvoiceRecord(updated) : row)));
+      // 汇总里的 `input_tax`（本月已认证进项税额）跟着变，必须一起刷，
+      // 否则图表和列表各说各话。
+      const summaryRes = await fetch(`${API_BASE}/invoices/summary`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      });
+      if (summaryRes.ok) setInvoiceAggregate(await summaryRes.json());
+      setNotice(
+        nextCertified
+          ? `进项专票「${updated.invoice_no || updated.id}」已认证${
+              updated.certified_at ? `（${new Date(updated.certified_at).toLocaleString('zh-CN')}）` : ''
+            }，下一步是申报抵扣。`
+          : `专票「${updated.invoice_no || updated.id}」已撤销认证。`
+      );
+    } catch (err) {
+      setNotice(err.message || '更新认证状态失败。');
     } finally {
       setInvoiceBusy('');
     }
@@ -10903,6 +10994,7 @@ function App() {
   handleSyncInvoicesToFinance,
   handleSystemUserChange,
   handleTemplateDraftChange,
+  handleToggleCertified,
   handleToggleDeducted,
   handleTransferChange,
   handleTransferItemChange,

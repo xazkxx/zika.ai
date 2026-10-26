@@ -992,6 +992,7 @@ export default function OverviewPage({ ctx }) {
                       '生产订单': { icon: '🏭', tone: 'green', sub: '在产订单', target: 'production' },
                       '库存预警': { icon: '⚠️', tone: 'sky', sub: '需补货 / 关注', target: 'inventory' },
                       '付款提醒': { icon: '💳', tone: 'emerald', sub: '待跟进付款', target: 'payable' },
+                      '本月已认证进项税额': { icon: '🧾', tone: 'amber', sub: '本月勾选确认', target: 'invoices' },
                       '商品数': { icon: '📦', tone: 'blue', sub: '商品档案', target: 'products' },
                       '客户数': { icon: '👥', tone: 'cyan', sub: '客户档案', target: 'customers' },
                       '供应商数': { icon: '🚚', tone: 'teal', sub: '供应商档案', target: 'suppliers' },

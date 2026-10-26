@@ -108,7 +108,7 @@
  *   stale-while-revalidate 会先把旧样式还给用户 —— 用户报告"断层修了还在"。
  *   bump 后 activate 直接删旧缓存，下次导航必然拿到最新构建。 */
 
-const CACHE_VERSION = 'erp-pwa-v262';
+const CACHE_VERSION = 'erp-pwa-v264';
 const CACHE_NAME = `${CACHE_VERSION}-shell`;
 
 // 应用外壳：离线打开至少要有的文件

@@ -22,14 +22,22 @@ from app.models.finance import FinancialTransaction
 from app.models.customer import Customer
 from app.models.purchase_order import PurchaseOrder
 from app.models.sales_order import SalesOrder, SalesOrderItem
+from app.models.supplier import Supplier
 from app.models.invoice import (
+    DEDUCTION_CERTIFIED,
+    DEDUCTION_DEDUCTED,
+    DEDUCTION_STATE_LABELS,
+    DEDUCTION_UNCERTIFIED,
+    DIRECTION_INPUT,
     DIRECTION_LABELS,
     DIRECTION_OUTPUT,
     DIRECTION_UNKNOWN,
     INVOICE_FLAG_LABELS,
     ISSUE_MODE_LABELS,
     Invoice,
+    _normalize_tax_no,
     detect_direction,
+    is_special_invoice,
 )
 from app.schemas import InvoiceCreate, InvoiceUpdate
 from app.services.invoice_match import (
@@ -44,6 +52,9 @@ from app.services.invoice_match import (
     order_net_amount,
     order_uninvoiced_amount,
 )
+# 进项税额口径（2026-10-26）：与 `/dashboard/executive` 的 KPI 共用同一份算法，
+# 不许在这里另写一份 —— 两个界面报出两个数比不报数还糟。
+from app.services.invoice_tax import input_tax_summary
 from datetime import date, datetime
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse
@@ -907,6 +918,59 @@ def _resolve_customer_id(db: Session, name: str | None, tax_no: str | None) -> i
     return None
 
 
+def _resolve_supplier_id(db: Session, name: str | None, tax_no: str | None) -> int | None:
+    """把发票的销售方对到供应商档案：**税号唯一命中 → 名称归一化全等**，否则留空。
+
+    与 `_resolve_customer_id` 是完全对称的一份，口径也必须一致：
+      · 税号先做「只留字母数字 + 大写」归一化再比 —— 票面上常带空格/分隔符，
+        直接等值比较会让同一张票两次识别后挂到不同的供应商；
+      · 同税号命中多条档案（库里真实存在）→ 视为歧义，退回名称，**不猜**。
+    档案里查不到就留空：挂错供应商会把这张票算进别人的应付对账，比不挂更糟。
+    """
+    tax = _normalize_tax_no(tax_no)
+    if tax:
+        hits = [
+            row
+            for row in db.query(Supplier).filter(Supplier.tax_no.isnot(None)).all()
+            if _normalize_tax_no(row.tax_no) == tax
+        ]
+        if len(hits) == 1:
+            return hits[0].id
+
+    target = _normalize_party_name(name)
+    if target:
+        for row in db.query(Supplier).all():
+            if _normalize_party_name(row.name) == target:
+                return row.id
+    return None
+
+
+def _assert_deductible(item: Invoice, action: str) -> None:
+    """认证 / 抵扣的前置校验：只有**进项专用发票**能走这两个动作。
+
+    为什么硬拦 400 而不是静默忽略：
+      · 销项票是对方抵扣，我方标"已抵扣"会把税负统计算反；
+      · 普票政策上不可抵扣，标了之后 KPI 会凭空多出一块进项税额。
+    这类脏数据落库后界面上看不出对错，所以宁可当场报错并把原因说清楚。
+
+    ⚠️ 方向为 `unknown`（待判定）时**放行**：这是历史票和新上传还没判定的票，
+       先拦下来会让人连票都改不了；KPI 口径只统计 `input`，不会被它们污染。
+    """
+    if (item.direction or "") == DIRECTION_OUTPUT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"这是销项发票，进项认证/抵扣不适用，不能{action}。",
+        )
+    if not is_special_invoice(item.invoice_type):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"只有增值税专用发票（含电子专票）才能{action}，"
+                f"这张的票种是「{item.invoice_type or '未知'}」，请先核对票种。"
+            ),
+        )
+
+
 def _order_no_map(db: Session, invoices: list[Invoice]) -> dict[tuple[str, int], str]:
     """批量取「关联单据」的单号，避免列表页 N+1 查询。
 
@@ -934,7 +998,7 @@ def _related_order_no(db: Session, item: Invoice) -> str | None:
 
 
 def _validate_related_order(
-    db: Session, direction: str, related_order_id: object, customer_id: object
+    db: Session, direction: str, related_order_id: object, customer_id: object, supplier_id: object = None
 ) -> int | None:
     """校验「关联单据」是否合法，返回要落库的 id（None = 不关联）。
 
@@ -942,6 +1006,11 @@ def _validate_related_order(
     这一列是**方向相关**的（销项指向销售单、进项指向采购单）。存错方向的 id，
     对账单会拿着一张采购单去算客户应收，数字看起来正常但是错的 —— 这类错最致命，
     因为没人会去怀疑它。所以宁可在录入时 400，也不要留一个"看起来有值"的脏指针。
+
+    2026-10-26：进项补上**往来单位一致**校验（原来只校验销项客户）。
+    进项以前没有 `supplier_id`，只能校验"单据存不存在"；现在有了这个字段，
+    就能拦住"把 A 供应商的票挂到 B 供应商的入库单上"——那会让应付对账串户。
+    任一侧为空则跳过（匹配不上不等于挂错了，不能因此拒绝保存）。
     """
     raw = related_order_id
     if raw in (None, "", 0):
@@ -965,10 +1034,18 @@ def _validate_related_order(
             )
         return order_id
 
-    if direction == "input":
+    if direction == DIRECTION_INPUT:
         order = db.get(PurchaseOrder, order_id)
         if order is None:
             raise HTTPException(status_code=404, detail="关联的采购单不存在")
+        if supplier_id not in (None, "") and order.supplier_id and int(order.supplier_id) != int(supplier_id):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"关联单据 {order.order_no} 的供应商与这张发票的销售方不是同一个。"
+                    "请确认发票抬头，或改挂到正确的采购单。"
+                ),
+            )
         return order_id
 
     raise HTTPException(
@@ -998,6 +1075,13 @@ def _invoice_to_dict(item: Invoice, order_no: str | None = None) -> dict[str, ob
         "deducted": bool(item.deducted),
         # 认证抵扣时间（2026-10-24）：列表"抵扣状态"列与审计都要用
         "deducted_at": item.deducted_at.isoformat() if item.deducted_at else None,
+        # 认证（2026-10-26）：状态机是 未认证 → 已认证待抵扣 → 已抵扣。
+        # `deduction_state` 由模型派生后**直接下发**，前端不再自己拼 if：
+        # 列表徽标、行内按钮、汇总三处各拼一次迟早会拼反。
+        "certified": bool(item.certified),
+        "certified_at": item.certified_at.isoformat() if item.certified_at else None,
+        "deduction_state": item.deduction_state,
+        "deduction_state_label": DEDUCTION_STATE_LABELS.get(item.deduction_state, "未认证"),
         "category": item.category,
         "status": item.status,
         "buyer_name": item.buyer_name,
@@ -1017,6 +1101,8 @@ def _invoice_to_dict(item: Invoice, order_no: str | None = None) -> dict[str, ob
         # 第 14 批：挂档案（对账单按 id 取数，不再按名字猜）
         "customer_id": item.customer_id,
         "contract_id": item.contract_id,
+        # 2026-10-26：进项挂供应商（销项侧此列为空，反之 customer_id 对进项为空）
+        "supplier_id": item.supplier_id,
         # 2026-10-22：关联销售/采购单据。**必须回传**——
         # 完结闸的"未开票"就是按它统计的；前端列表也要显示"这张票挂在哪张单上"，
         # 不返回的话界面只能显示空白，用户以为没挂上（E2E 自测就是这么发现的）。
@@ -1077,6 +1163,29 @@ def create_invoice(payload: InvoiceCreate, db: Session = Depends(get_db)) -> dic
             data.get("buyer_name") or data.get("counterparty_name"),
             data.get("buyer_tax_no"),
         )
+    # 2026-10-26：进项发票挂供应商，规则与销项对称。
+    # 同时把**另一侧**的档案 id 清掉：一张票不可能既是我们买进来的、又是我们卖出去的，
+    # 两个 id 同时有值说明前端传错了，留着会让应收、应付两套对账都认领这张票。
+    if direction == DIRECTION_INPUT:
+        if not data.get("supplier_id"):
+            data["supplier_id"] = _resolve_supplier_id(
+                db,
+                data.get("seller_name") or data.get("counterparty_name"),
+                data.get("seller_tax_no"),
+            )
+        data["customer_id"] = None
+    elif direction == DIRECTION_OUTPUT:
+        data["supplier_id"] = None
+
+    # 关联单据校验（2026-10-26 起真正生效）：方向决定它指向哪张表，
+    # 进项还要求单据的供应商与发票销售方一致 —— 挂错会让应付对账串户。
+    _validate_related_order(
+        db,
+        direction,
+        data.get("related_order_id"),
+        data.get("customer_id"),
+        data.get("supplier_id"),
+    )
 
     item = Invoice(
         **data,
@@ -1085,6 +1194,12 @@ def create_invoice(payload: InvoiceCreate, db: Session = Depends(get_db)) -> dic
         issue_mode=issue_mode,
         items_json=json.dumps(items, ensure_ascii=False),
     )
+    # 认证/抵扣（2026-10-26）：新建时就带这两个标记的走同一套校验，
+    # 且 certified_at 由服务器落 —— 与 PATCH 的规则完全一致，不留"建票时能绕过"的口子。
+    if item.deducted or item.certified:
+        _assert_deductible(item, "抵扣" if item.deducted else "认证")
+        item.certified = True  # 已抵扣必然已认证
+        item.certified_at = datetime.now(timezone.utc)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -1180,12 +1295,27 @@ async def import_invoice(
             if direction == DIRECTION_OUTPUT
             else None
         ),
+        # 2026-10-26：进项识别入库时同理挂供应商（镜像上面的销项挂客户）。
+        # 这一步同时喂给 `invoice_match` 的 `party_by_id` 加分档，
+        # 让"识别即自动挂入库单"从"基本挂不上"变成"有把握就挂上"。
+        supplier_id=(
+            _resolve_supplier_id(
+                db,
+                summary.get("seller_name") or summary.get("counterparty_name"),
+                summary.get("seller_tax_no"),
+            )
+            if direction == DIRECTION_INPUT
+            else None
+        ),
         buyer_name=summary.get("buyer_name"),
         buyer_tax_no=summary.get("buyer_tax_no"),
         seller_name=summary.get("seller_name"),
         seller_tax_no=summary.get("seller_tax_no"),
         category=_classify_invoice_record(summary),
-        status="已确认",
+        # 进项 OCR 结果先落「草稿」（2026-10-26）：识别出来的票必须**人工核对**才能入账，
+        # 这是进项专票的合规底线 —— 票号/税号/金额任何一项认错，都会传导到认证抵扣与申报。
+        # 销项票是我们自己开出去的，事实本来清楚，保持「已确认」不变。
+        status="草稿" if direction == DIRECTION_INPUT else "已确认",
         items_json=json.dumps(summary.get("items") or [], ensure_ascii=False),
         raw_text=summary.get("raw_text"),
         direction=direction,
@@ -1218,6 +1348,10 @@ def list_invoices(
     issue_date_from: str | None = Query(None),
     issue_date_to: str | None = Query(None),
     keyword: str | None = Query(None),
+    # 进项专项筛选（2026-10-26）：财务日常就按"哪家供应商 / 认证到哪一步"找票
+    supplier_id: int | None = Query(None, description="按供应商档案筛选（进项票）"),
+    certified: str | None = Query(None, description="yes=已认证（含已抵扣） / no=未认证"),
+    deduction_state: str | None = Query(None, description="uncertified / certified / deducted"),
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int | None = None,
@@ -1251,6 +1385,24 @@ def list_invoices(
                 Invoice.handler.ilike(like),
             )
         )
+
+    if supplier_id:
+        query = query.filter(Invoice.supplier_id == supplier_id)
+    if certified:
+        if certified not in ("yes", "no"):
+            raise HTTPException(status_code=400, detail="certified 只能是 yes / no")
+        query = query.filter(Invoice.certified.is_(certified == "yes"))
+    if deduction_state:
+        if deduction_state not in DEDUCTION_STATE_LABELS:
+            raise HTTPException(status_code=400, detail="deduction_state 只能是 uncertified / certified / deducted")
+        # 派生状态与 `Invoice.deduction_state` 同一套判定：已抵扣 > 已认证 > 未认证。
+        # 用 SQL 条件表达而不是查出来再过滤，是为了让筛选能和分页、合计一起工作。
+        if deduction_state == DEDUCTION_DEDUCTED:
+            query = query.filter(Invoice.deducted.is_(True))
+        elif deduction_state == DEDUCTION_CERTIFIED:
+            query = query.filter(Invoice.deducted.is_(False), Invoice.certified.is_(True))
+        elif deduction_state == DEDUCTION_UNCERTIFIED:
+            query = query.filter(Invoice.certified.is_(False))
 
     rows = query.order_by(Invoice.issue_date.desc().nullslast(), Invoice.id.desc()).all()
     counted = {"input": [0, 0.0], "output": [0, 0.0], "unknown": [0, 0.0]}
@@ -1545,8 +1697,10 @@ def update_invoice(invoice_id: int, payload: InvoiceUpdate, db: Session = Depend
     if item is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
     data = payload.model_dump(exclude_unset=True)
-    # 记住改前的抵扣状态：下面要根据 False→True / True→False 跃迁落 deducted_at
+    # 记住改前的三态：下面要根据跃迁决定要不要落/清时间戳
     was_deducted = bool(item.deducted)
+    was_certified = bool(item.certified)
+    was_direction = item.direction or ""
     # 枚举值必须校验：写进一个拼错的方向，界面上会显示成一串英文，且筛选永远命中不到
     for field, allowed in (
         ("direction", DIRECTION_LABELS),
@@ -1578,12 +1732,67 @@ def update_invoice(invoice_id: int, payload: InvoiceUpdate, db: Session = Depend
     for key, value in data.items():
         setattr(item, key, value)
 
-    # 认证抵扣留痕（2026-10-24）：deducted 发生 False→True 跃迁时，由**服务器**落
+    # —— 方向改了，档案挂载跟着重算（2026-10-26）——
+    # 进项/销项互切后若 customer_id 与 supplier_id 同时留着，应收、应付两套对账
+    # 都会认领这张票。所以切换时清掉旧方向那一侧，并尽力补上新方向那一侧。
+    if "direction" in data and (data.get("direction") or "") != was_direction:
+        if item.direction == DIRECTION_OUTPUT:
+            item.supplier_id = None
+            if not item.customer_id:
+                item.customer_id = _resolve_customer_id(
+                    db, item.buyer_name or item.counterparty_name, item.buyer_tax_no
+                )
+        elif item.direction == DIRECTION_INPUT:
+            item.customer_id = None
+            if not item.supplier_id:
+                item.supplier_id = _resolve_supplier_id(
+                    db, item.seller_name or item.counterparty_name, item.seller_tax_no
+                )
+
+    # 关联单据校验：**只在本次改了它时**校验 —— 历史脏指针不该因为"顺手改个备注"
+    # 就被拒绝保存（那会让人连错票都修不了）。
+    if "related_order_id" in data:
+        _validate_related_order(
+            db,
+            item.direction or "",
+            data.get("related_order_id"),
+            item.customer_id,
+            item.supplier_id,
+        )
+
+    now = datetime.now(timezone.utc)
+
+    # —— 认证 / 抵扣状态机（2026-10-26）——
+    # 合法路径只有一条：未认证 → 已认证待抵扣 → 已抵扣。
+    #   · 认证：过票种/方向校验，由服务器落 certified_at；
+    #   · 撤销认证：已抵扣时拒绝 —— 税上不存在"没认证就抵扣"，先取消抵扣再来；
+    #   · 取消抵扣：认证**保留**（票确实认证过），只清 deducted_at。
+    if "certified" in data:
+        if data["certified"] and not was_certified:
+            _assert_deductible(item, "认证")
+            item.certified = True
+            item.certified_at = now
+        elif not data["certified"] and was_certified:
+            if item.deducted:
+                raise HTTPException(
+                    status_code=400,
+                    detail="这张票已抵扣，不能撤销认证。请先取消抵扣，再撤销认证。",
+                )
+            item.certified = False
+            item.certified_at = None
+
+    # 认证抵扣留痕（2026-10-24）：deducted False→True 跃迁时，由**服务器**落
     # deducted_at，前端传什么都不认（抵扣时间是财务事实，不能由客户端随意填写）；
     # True→False（取消抵扣）则清空，保证"已抵扣但没有时间"的脏状态不可能出现。
+    # 2026-10-26：抵扣时**自动补认证** —— 财务实际操作就是"勾选认证 → 申报抵扣"，
+    # 让人先点认证再点抵扣是多余的；反过来先抵扣后认证在税上根本不成立。
     if "deducted" in data:
         if data["deducted"] and not was_deducted:
-            item.deducted_at = datetime.now(timezone.utc)
+            _assert_deductible(item, "抵扣")
+            item.deducted_at = now
+            if not item.certified:
+                item.certified = True
+                item.certified_at = now
         elif not data["deducted"] and was_deducted:
             item.deducted_at = None
 
@@ -1894,7 +2103,12 @@ def delete_invoice(invoice_id: int, db: Session = Depends(get_db)) -> Response:
 
 @router.get("/invoices/summary")
 def invoices_summary(db: Session = Depends(get_db)) -> dict[str, object]:
-    """发票汇总：类别对比、专票抵扣、普票/专票月度金额，供汇总页图表与分组表使用。"""
+    """发票汇总：类别对比、专票抵扣、普票/专票月度金额，供汇总页图表与分组表使用。
+
+    2026-10-26 起多返回一块 `input_tax`（进项认证/抵扣分桶 + 本月已认证进项税额）。
+    `deduction` 块保持原样（它是"专票未抵扣"的历史看板，含销项），
+    进项口径单独走 `input_tax` —— 两个口径混在一个块里，财务分不清哪个能对申报表。
+    """
     items = db.query(Invoice).order_by(Invoice.issue_date.asc(), Invoice.id.asc()).all()
     total_amount = sum(float(item.total_amount or 0) for item in items)
     total_tax = sum(float(item.tax_amount or 0) for item in items)
@@ -1920,7 +2134,7 @@ def invoices_summary(db: Session = Depends(get_db)) -> dict[str, object]:
             type_entry["amount"] = float(type_entry["amount"]) + amount
             type_entry["tax"] = float(type_entry["tax"]) + float(item.tax_amount or 0)
 
-        if invoice_type == "专票":
+        if is_special_invoice(invoice_type):
             if item.deducted:
                 deducted_count += 1
                 deducted_amount += amount
@@ -1939,6 +2153,9 @@ def invoices_summary(db: Session = Depends(get_db)) -> dict[str, object]:
             "undeducted_count": undeducted_count,
             "undeducted_amount": round(undeducted_amount, 2),
         },
+        # 进项专项（2026-10-26）：认证/抵扣分桶 + 「本月已认证进项税额」。
+        # 与驾驶舱 KPI 共用 `services/invoice_tax`，两边永远报同一个数。
+        "input_tax": input_tax_summary(items),
         "monthly": {month: data for month, data in sorted(monthly.items())},
     }
 
@@ -2017,6 +2234,9 @@ def sync_invoices_to_finance(db: Session = Depends(get_db)) -> dict[str, object]
                 # 在「日常收支」按日期筛选时会被整个漏掉。
                 occurred_at=issue_date,
                 period=(issue_date or "")[:7] or None,
+                # 2026-10-26：进项票的流水挂上供应商 —— 资金流和"跟谁结算"绑在一起，
+                # 否则只能在 note 里读名字，按供应商查应付时永远查不到票转来的支出。
+                supplier_id=item.supplier_id if (item.direction or "") == DIRECTION_INPUT else None,
             )
         )
         created += 1
