@@ -21,7 +21,9 @@ from pathlib import Path
 
 import psycopg
 
-DSN = "postgresql://erp:erp123456@127.0.0.1:5432/erp"
+from db_config import psycopg_dsn  # noqa: E402
+
+DSN = psycopg_dsn()
 
 TENANT_COLUMNS = [
     ("customers", "account_name", "VARCHAR(150)"),

@@ -107,7 +107,9 @@ def is_number(value):
 
 
 # ── 直连库的小工具：只读，用来确认"落库之后还是不是那个数"──────────────
-DSN = os.environ.get("ERP_DSN", "postgresql://erp:erp123456@127.0.0.1:5432/erp")
+from db_config import psycopg_dsn  # noqa: E402
+
+DSN = os.environ.get("ERP_DSN") or psycopg_dsn()
 DEC = __import__("decimal").Decimal
 
 

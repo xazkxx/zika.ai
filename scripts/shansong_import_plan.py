@@ -114,8 +114,10 @@ def load_db() -> dict:
     """把比对需要的档案一次性读进内存。全程 SELECT，绝不写。"""
     import psycopg
 
+    from db_config import psycopg_dsn  # noqa: E402
+
     conn = psycopg.connect(
-        "postgresql://erp:erp123456@127.0.0.1:5432/erp",
+        psycopg_dsn(),
         options="-c default_transaction_read_only=on",   # 双保险：连接层就禁写
     )
     cur = conn.cursor()

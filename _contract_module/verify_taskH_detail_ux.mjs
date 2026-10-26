@@ -88,9 +88,11 @@ function pyJson(script, args = []) {
 const dbOcrStatus = (id) =>
   pyJson(
     `
-import sys, json
+import os, sys, json
+from dotenv import load_dotenv
+load_dotenv('.env')  # pyJson 的 cwd 就是项目根
 import psycopg
-con = psycopg.connect("postgresql://erp:erp123456@127.0.0.1:5432/erp")
+con = psycopg.connect(os.environ['DATABASE_URL'].replace('postgresql+psycopg://', 'postgresql://'))
 cur = con.cursor()
 cur.execute("set search_path to public")
 cur.execute("select contract_no, status, ocr_status from contracts where id=%s", (int(sys.argv[1]),))

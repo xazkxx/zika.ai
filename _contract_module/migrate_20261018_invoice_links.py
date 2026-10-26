@@ -40,9 +40,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DSN = os.getenv("DATABASE_URL", "postgresql+psycopg://erp:erp123456@127.0.0.1:5432/erp").replace(
-    "postgresql+psycopg://", "postgresql://"
-)
+DSN = os.getenv("DATABASE_URL", "").replace("postgresql+psycopg://", "postgresql://")
+if not DSN:
+    raise SystemExit("DATABASE_URL 未配置：请在项目根 .env 里填写（脚本内不要写死密码）")
 
 COLUMNS: tuple[tuple[str, str], ...] = (
     ("customer_id", "INTEGER"),

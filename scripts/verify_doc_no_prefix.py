@@ -40,7 +40,9 @@ from app.core.doc_no import (  # noqa: E402  （必须在 sys.path 之后导入�
 )
 
 BASE = os.environ.get("ERP_BASE", "http://127.0.0.1:8010/api/v1").rstrip("/")
-DSN = "postgresql://erp:erp123456@127.0.0.1:5432/erp"
+from db_config import psycopg_dsn  # noqa: E402
+
+DSN = psycopg_dsn()
 
 PASS: list[str] = []
 FAIL: list[str] = []

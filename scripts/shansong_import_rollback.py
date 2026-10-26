@@ -51,7 +51,9 @@ def main() -> int:
 
     import psycopg
 
-    conn = psycopg.connect("postgresql://erp:erp123456@127.0.0.1:5432/erp")
+    from db_config import psycopg_dsn  # noqa: E402
+
+    conn = psycopg.connect(psycopg_dsn())
     cur = conn.cursor()
 
     only = [s.strip() for s in (args.only or "").split(",") if s.strip()]

@@ -58,7 +58,9 @@ product = next((p for p in products if p.get("sale_price")), products[0])
 print(f"用客户 {customer['id']} {customer['name']} / 商品 {product['id']} {product['name']}")
 
 
-DSN = "postgresql://erp:erp123456@127.0.0.1:5432/erp"
+from db_config import psycopg_dsn  # noqa: E402
+
+DSN = psycopg_dsn()
 
 
 def stock_rows(rid):

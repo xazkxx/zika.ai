@@ -23,9 +23,9 @@ import sys
 
 from sqlalchemy import create_engine, text
 
-DB_URL = os.environ.get(
-    "ERP_DB_URL", "postgresql+psycopg://erp:erp123456@127.0.0.1:5432/erp"
-)
+from db_config import database_url  # noqa: E402
+
+DB_URL = os.environ.get("ERP_DB_URL") or database_url()
 SCHEMAS = ("public", "co_02", "co_03")
 
 # 钱：两位小数。表 → 列

@@ -10,7 +10,9 @@ from app.db.base import Base
 from app.main import app  # noqa: F401  确保所有模型已注册到 Base.metadata
 
 SRC_URL = "sqlite:///./erp.db"
-DST_URL = "postgresql+psycopg://erp:erp123456@127.0.0.1:5432/erp"
+from db_config import database_url  # noqa: E402
+
+DST_URL = database_url()
 
 
 def main() -> None:

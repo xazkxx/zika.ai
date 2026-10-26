@@ -33,7 +33,9 @@ NOTE_TAG = "历史导入"
 def main() -> int:
     import psycopg
 
-    conn = psycopg.connect("postgresql://erp:erp123456@127.0.0.1:5432/erp")
+    from db_config import psycopg_dsn  # noqa: E402
+
+    conn = psycopg.connect(psycopg_dsn())
     cur = conn.cursor()
 
     cur.execute(

@@ -28,7 +28,7 @@
 --------------------------
     E:\\AI\\ERP软件\\.venv\\Scripts\\python.exe scripts\\normalize_statement_direction.py
     ... --apply          真的写库
-    ... --dsn "postgresql://erp:erp123456@127.0.0.1:5432/erp"
+    ... --dsn "postgresql://erp:<密码见项目根 .env>@127.0.0.1:5432/erp"
 """
 
 from __future__ import annotations
@@ -41,7 +41,9 @@ from pathlib import Path
 import psycopg
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DSN = "postgresql://erp:erp123456@127.0.0.1:5432/erp"
+from db_config import psycopg_dsn  # noqa: E402
+
+DEFAULT_DSN = psycopg_dsn()
 
 # 同义词 → 规范值。键一律小写、去空格后比较。
 TO_IN = {"in", "inbound", "purchase", "payable", "应付", "进项", "采购"}

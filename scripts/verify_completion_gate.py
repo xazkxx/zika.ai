@@ -40,7 +40,9 @@ def purge_payment_flows(order_id):
     + `receipt`（收款登记），不是 'sales_order' —— 写错一个都清不干净、删单 409。
     """
     import psycopg
-    conn = psycopg.connect("postgresql://erp:erp123456@127.0.0.1:5432/erp")
+    from db_config import psycopg_dsn  # noqa: E402
+
+    conn = psycopg.connect(psycopg_dsn())
     cur = conn.cursor()
     cur.execute(
         """

@@ -34,7 +34,11 @@ def _purge_sales_flows(order_id: int) -> None:
     """
     import psycopg
 
-    conn = psycopg.connect("postgresql://erp:erp123456@127.0.0.1:5432/erp")
+    from app.core.config import settings
+
+    conn = psycopg.connect(
+        str(settings.database_url).replace("postgresql+psycopg://", "postgresql://", 1)
+    )
     try:
         cur = conn.cursor()
         cur.execute(

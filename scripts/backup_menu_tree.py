@@ -47,7 +47,9 @@ from psycopg.sql import Literal
 # ── 路径与默认值 ────────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = ROOT / "backup" / "menu_tree" / "menu_tree.sql"
-DEFAULT_DSN = "host=127.0.0.1 port=5432 dbname=erp user=erp password=erp123456"
+from db_config import libpq_dsn  # noqa: E402
+
+DEFAULT_DSN = libpq_dsn()
 
 TABLE = "public.menus"
 COLUMNS = [
