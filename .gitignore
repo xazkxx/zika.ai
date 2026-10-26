@@ -92,3 +92,7 @@ coverage.xml
 .idea/
 Thumbs.db
 desktop.ini
+
+# ---- 10. 测试专用 PostgreSQL 实例（A5，scripts/test_db.py 生成）----
+.pgtest/
+
