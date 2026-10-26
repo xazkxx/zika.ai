@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { API_BASE } from '../../lib/appLib.js';
+import { saveBlob } from '../../lib/download.js';
 import {
   CATEGORY_ALL,
   base64ToBlob,
@@ -60,18 +61,9 @@ async function api(path, options = {}) {
   return response.json();
 }
 
-function saveBlob(blob, filename) {
-  if (!blob || blob.size === 0) throw new Error('下载到的文件是空的，请重试');
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  // 立刻 revoke 在 Chrome 上偶发"下载中断"，隔一拍更稳
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+// 落盘口原来在这里有一份本地实现（blob URL + a[download]），2026-10-26 起统一
+// 收到 `lib/download.js` 的 `saveBlob`：它能「另存为」直写磁盘，文件不带来源标记
+// （带标记的 Excel/Word/PDF 会被 Office 的受保护视图拦成"文件已损坏"）。
 
 /** meta 是全局字典（不随客户变），拉一次就够；失败不缓存，下次重开会重试。 */
 let metaCache = null;

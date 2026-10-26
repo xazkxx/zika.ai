@@ -1,4 +1,6 @@
 // 自动提取自 App.jsx（selectedTab='settings'）— 见 scripts/extract_pages.py
+import { saveBlobSmart } from '../lib/download.js';
+
 export default function SettingsPage({ ctx }) {
   const {
     ADJUSTMENT_STATUS_LABEL,
@@ -1036,15 +1038,13 @@ export default function SettingsPage({ ctx }) {
         throw new Error(`下载不完整：${bytes.length} / ${data.bytes} 字节`);
       }
       const blob = new Blob([bytes], { type: 'application/zip' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = data.filename || name;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
-      setStorageMsg(`已开始下载 ${data.filename || name}（${fmtBytes(bytes.length)}）`);
+      // 统一落盘口（见 lib/download.js 顶部）：能「另存为」就直写磁盘
+      const saved = await saveBlobSmart(blob, data.filename || name);
+      setStorageMsg(
+        saved.saved === 'cancelled'
+          ? '已取消下载备份包。'
+          : `已保存 ${data.filename || name}（${fmtBytes(bytes.length)}）`,
+      );
     } catch (err) {
       setStorageMsg(err.message || '下载失败');
     } finally {

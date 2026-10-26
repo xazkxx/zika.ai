@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE as DEFAULT_API_BASE } from '../../lib/appLib.js';
+import { saveBlobSmart } from '../../lib/download.js';
 import './smartCommand.css';
 
 const EXAMPLES = [
@@ -240,14 +241,9 @@ export default function SmartCommandBar({
       for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
       if (!bytes.length) throw new Error('生成的对账单 PDF 是空的');
       const blob = new Blob([bytes], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = data.filename || `${card.no}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      // 落盘统一口：PDF 被打上来源标记后，Edge/Acrobat 也会进受保护视图
+      // （用户看到的是"文件已损坏"，与 Excel 那次是同一个病，见 lib/download.js 顶部）。
+      await saveBlobSmart(blob, data.filename || `${card.no}.pdf`);
     } catch (err) {
       setError(err.message || '生成 PDF 失败');
     } finally {
@@ -264,14 +260,8 @@ export default function SmartCommandBar({
       if (!response.ok) throw new Error(`导出 Word 失败（HTTP ${response.status}）`);
       const blob = await response.blob();
       if (!blob.size) throw new Error('导出的 Word 是空文件');
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${card.no || 'contract'}.docx`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      // 合同 Word 同样走统一落盘口（Word 也做受保护视图）
+      await saveBlobSmart(blob, `${card.no || 'contract'}.docx`);
     } catch (err) {
       setError(err.message || '导出 Word 失败');
     } finally {

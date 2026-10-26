@@ -9,13 +9,18 @@
 //   ② `Content-Disposition` 里有两个名字（ASCII 兜底 + RFC 5987），**必须优先取后者**。
 //   ③ 0 字节的 blob 一定要报错：静默存一个空文件，用户会以为"下载成功了"。
 //
-// ⚠️ `lib/contractsLedger.js` 与 `lib/customerFiles.js` 里各有一份同类实现，
-//    是它们交付时还没有这个文件。收口需要两边一起改 + 双跑验证台，
-//    不在"新增对账单"这一步顺手做（改动已验收模块的风险大于收益）。
+// ⚠️ 收口已完成（2026-10-26）：`lib/contractsLedger.js`、`lib/customerFiles.js` 里那两份
+//    同类实现、以及 CustomerFilesDrawer 内部的那份"blob URL + a[download]"都已删掉，
+//    全仓只剩本文件里 `downloadViaAnchor` 一处 anchor 下载。新增落盘口请直接调
+//    `saveBlobSmart`（要区分"取消"）或 `saveBlob`（同步签名场合），**不要**自己拼 anchor。
 
-/** 0 字节直接抛错，别静默存一个空文件 */
-export function saveBlob(blob, filename) {
-  if (!blob || blob.size === 0) throw new Error('下载到的文件是空的，请重试');
+/**
+ * 唯一的"普通下载"实现：blob URL + a[download]。
+ *
+ * ⚠️ 只给 `saveBlob` / `saveBlobSmart` 内部用 —— 它落地的文件**一定带来源标记**
+ *    （见下面那段），业务代码不要直接调它。
+ */
+function downloadViaAnchor(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -25,6 +30,26 @@ export function saveBlob(blob, filename) {
   link.remove();
   // 立刻 revoke 在 Chrome 上偶发"下载中断"，隔一拍更稳
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * 老接口（**同步**签名，历史调用点 9 处：合同正文、对账单 PDF、合同模板、
+ * 付款计划回单、客户归档文件、Word 导出…）。2026-10-26 起它**也变成"能另存为就另存为"** ——
+ * 这样那批调用点不用逐个改成 `async`，就都享受"直写磁盘、不带来源标记"。
+ *
+ * 为什么是 fire-and-forget：这些调用点都是同步调用的，等不了 Promise；而
+ * "另存为"必须在**用户手势**里发起，所以这里同步发起、异步收尾。失败或用户取消
+ * 都在 `saveBlobSmart` 内部消化（回退下载 / 什么都不做），**不会**产生未处理的
+ * Promise 拒绝。0 字节仍然同步抛错，保住老调用点的既有语义。
+ */
+export function saveBlob(blob, filename) {
+  if (!blob || blob.size === 0) throw new Error('下载到的文件是空的，请重试');
+  if (!canSaveWithPicker()) {
+    downloadViaAnchor(blob, filename);
+    return;
+  }
+  // 回退分支由 saveBlobSmart 负责；这里只兜住"它自己抛出去"的极端情况
+  saveBlobSmart(blob, filename).catch(() => downloadViaAnchor(blob, filename));
 }
 
 /* ── 「另存为」直写磁盘：绕开浏览器的下载管道 ────────────────────────────────
@@ -89,7 +114,7 @@ export async function saveBlobSmart(blob, filename) {
   const name = String(filename || '下载文件');
   if (!blob || blob.size === 0) throw new Error('下载到的文件是空的，请重试');
   if (!canSaveWithPicker()) {
-    saveBlob(blob, name);
+    downloadViaAnchor(blob, name);
     return { saved: 'download', filename: name };
   }
 
@@ -107,7 +132,14 @@ export async function saveBlobSmart(blob, filename) {
   } catch (err) {
     // 用户主动取消：悄悄再下一次只会让人莫名其妙
     if (err && err.name === 'AbortError') return { saved: 'cancelled', filename: name };
-    saveBlob(blob, name);
+    // 回退不是"正常路径"，但也不能因此卡住导出 —— 留一条线索：
+    // 排查"为什么又报文件已损坏"时，F12 里看到这条就说明文件是被下载管道落地的（带标记）。
+    console.warn(
+      '[download] 另存为不可用，已退回普通下载（文件会带来源标记）：',
+      err && err.name,
+      err && err.message,
+    );
+    downloadViaAnchor(blob, name);
     return { saved: 'download', filename: name, reason: err && err.name };
   }
 
@@ -116,7 +148,8 @@ export async function saveBlobSmart(blob, filename) {
     await writable.write(blob);
     await writable.close();
   } catch (err) {
-    saveBlob(blob, name);
+    console.warn('[download] 写盘失败，已退回普通下载（文件会带来源标记）：', err && err.name);
+    downloadViaAnchor(blob, name);
     return { saved: 'download', filename: name, reason: err && err.name };
   }
   return { saved: 'picker', filename: handle.name || name };

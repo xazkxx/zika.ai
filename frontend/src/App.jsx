@@ -41,7 +41,7 @@ import { loadPdfjs, loadTesseract } from './lib/lazyLibs';
 // 落盘统一口：优先「另存为」直写磁盘（不带 Mark-of-the-Web），不支持才退回普通下载。
 // 为什么必须这样：浏览器下载的文件会被 Office 扔进「受保护视图」，那台机器沙箱起不来时
 // Excel 报的是"文件已损坏"（2026-10-26 定案，见 lib/download.js 顶部注释）。
-import { saveBlobSmart } from './lib/download.js';
+import { saveBlobSmart, fileNameFromDisposition } from './lib/download.js';
 
 /* ============================================================================
  * 首屏瘦身（2026-10-27，B4）：47 个页面从「静态 import」改为「路由级懒加载」。
@@ -1964,15 +1964,12 @@ function App() {
       if (blob.size === 0) {
         throw new Error('打印文件是空的，请重试');
       }
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = payload.filename || filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      setNotice(`打印文件「${filename}」已生成并开始下载。`);
+      // 落盘走统一口：能「另存为」就直写磁盘。PDF 同样会被打来源标记，
+      // Edge/Acrobat 打开时会进受保护视图（用户一样会以为文件坏了）。
+      const saved = await saveBlobSmart(blob, payload.filename || filename);
+      setNotice(
+        saved.saved === 'cancelled' ? '已取消保存打印文件。' : `打印文件「${filename}」已生成。`,
+      );
     } catch (err) {
       setNotice(err.message || '生成打印文件失败');
     }
@@ -2013,14 +2010,9 @@ function App() {
     const plainMatch = /filename="?([^";]+)"?/i.exec(disposition);
     if (utf8Match) filename = decodeURIComponent(utf8Match[1]);
     else if (plainMatch) filename = plainMatch[1];
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+    if (blob.size === 0) throw new Error('下载失败：服务端返回了空文件');
+    // 导入模板 / 导出数据都走统一落盘口：Excel 带来源标记就会进受保护视图
+    await saveBlobSmart(blob, filename);
     return filename;
   };
 
@@ -3791,7 +3783,7 @@ function App() {
     setNotice(result.saved === 'cancelled' ? '已取消导出。' : '发票报表已导出为 CSV。');
   };
 
-  const exportInvoiceReportHtml = () => {
+  const exportInvoiceReportHtml = async () => {
     if (invoiceItems.length === 0) {
       setNotice('当前没有可导出的发票记录。');
       return;
@@ -3885,13 +3877,19 @@ function App() {
 </html>`;
 
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `erp_invoice_report_${new Date().toISOString().slice(0, 10)}.html`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setNotice('发票汇总已导出为美观表格（HTML，可打印为 PDF）。');
+    try {
+      const result = await saveBlobSmart(
+        blob,
+        `erp_invoice_report_${new Date().toISOString().slice(0, 10)}.html`,
+      );
+      setNotice(
+        result.saved === 'cancelled'
+          ? '已取消导出。'
+          : '发票汇总已导出为美观表格（HTML，可打印为 PDF）。',
+      );
+    } catch (err) {
+      setNotice(err.message || '导出发票汇总失败');
+    }
   };
 
   const exportDailyReport = async () => {
@@ -3907,13 +3905,12 @@ function App() {
       }
 
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `erp_daily_report_${new Date().toISOString().slice(0, 10)}.csv`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-      setNotice('日报表已导出为 CSV。');
+      if (blob.size === 0) throw new Error('日报导出失败：服务端返回了空文件');
+      const result = await saveBlobSmart(
+        blob,
+        `erp_daily_report_${new Date().toISOString().slice(0, 10)}.csv`,
+      );
+      setNotice(result.saved === 'cancelled' ? '已取消导出。' : '日报表已导出为 CSV。');
     } catch (err) {
       setNotice(err.message || '日报导出失败');
     }
@@ -9648,15 +9645,35 @@ function App() {
     setReportKey(key);
   }
 
-  function exportReport() {
+  async function exportReport() {
     const query = { ...reportQuery };
     const params = new URLSearchParams();
     ['date_from', 'date_to', 'dimension', 'period', 'keyword'].forEach((field) => {
       if (query[field]) params.set(field, query[field]);
     });
     const suffix = params.toString() ? `?${params.toString()}` : '';
-    // 直接让浏览器下载（后端带 Content-Disposition 与 UTF-8 BOM）
-    window.open(`${API_BASE}/reports/export/${reportKey}${suffix}`, '_blank');
+    // 不再 `window.open(导出地址)`：那等于让浏览器走下载管道，落地文件会被打上
+    // "来自 Internet"标记（ZoneId=3），Excel 打开时先进受保护视图 —— 沙箱坏掉就报
+    // "文件已损坏"（见 lib/download.js 顶部）。改成取字节后走统一落盘口。
+    try {
+      const response = await fetch(`${API_BASE}/reports/export/${reportKey}${suffix}`, {
+        headers: authHeaders(),
+      });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(typeof detail.detail === 'string' ? detail.detail : '导出报表失败');
+      }
+      const blob = await response.blob();
+      if (blob.size === 0) throw new Error('导出的报表是空文件，请重试');
+      const name = fileNameFromDisposition(
+        response.headers.get('content-disposition'),
+        `${reportKey}.csv`,
+      );
+      const saved = await saveBlobSmart(blob, name);
+      setNotice(saved.saved === 'cancelled' ? '已取消导出。' : `报表已导出：${saved.filename}`);
+    } catch (err) {
+      setNotice(err.message || '导出报表失败');
+    }
   }
 
   const handleReportQueryChange = (field) => (event) => {

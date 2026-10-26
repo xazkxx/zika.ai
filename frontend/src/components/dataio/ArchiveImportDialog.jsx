@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { API_BASE } from '../../lib/appLib.js';
+import { saveBlobSmart } from '../../lib/download.js';
 import './archive-import.css';
 
 /** 类别 → 中文名。文案与后端 `excel_io.TITLES` 对齐（去掉"导入模板"四个字）。
@@ -114,14 +115,9 @@ export default function ArchiveImportDialog({
         : plainMatch
           ? plainMatch[1]
           : `${label}导入模板.xlsx`;
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = name;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      // 模板也是 Excel：走统一落盘口，否则用户下完模板填好、再导入时
+      // 我们自己的导出文件反而"打不开"（带来源标记 → 受保护视图）
+      await saveBlobSmart(blob, name);
     } catch (err) {
       setError(err.message || '模板下载失败');
     } finally {
