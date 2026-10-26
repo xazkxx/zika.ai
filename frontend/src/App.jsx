@@ -28,11 +28,20 @@ import jsQR from 'jsqr';
  * 它们只在「导出 Excel、解析 PDF 发票、图片 OCR」这几件事上出场，首屏不该为它们付流量。
  * 统一走 lib/lazyLibs.js 的 await loadXLSX() / loadPdfjs() / loadTesseract()（B4b）。
  *
- * ⚠️ 2026-10-26：**发票**的 Excel 导出已搬到后端（openpyxl 直出标准 xlsx），
- *    原因见 `app/services/invoice_export.py` —— 前端 SheetJS 出的文件 WPS 能开、
- *    Microsoft Office 报"文件已损坏"。所以本文件不再需要 loadXLSX，
+ * ⚠️ 2026-10-26：**发票**的 Excel 导出已搬到后端（openpyxl 直出标准 xlsx）。
+ *    当天最初把"Office 报文件已损坏"归因于前端 SheetJS 的 `t="str"` 写法 ——
+ *    **那个结论后来被推翻了**：真凶是浏览器下载打上的来源标记（ZoneId=3），
+ *    Office 会把它送进「受保护视图」，那台机器沙箱起不来才报"损坏"；
+ *    WPS 不做受保护视图，所以一直能开。落盘侧已由 lib/download.js 的
+ *    `saveBlobSmart` 从源头解决（另存为直写磁盘，不带标记）。
+ *    后端直出仍然保留：金额真数字、冻结首行、自动筛选、脏字符清洗，
+ *    且生成逻辑只剩一处实现。本文件因此不再需要 loadXLSX，
  *    仍在前端用 xlsx 的只剩往来单位导出（PartnersBoard）。 */
 import { loadPdfjs, loadTesseract } from './lib/lazyLibs';
+// 落盘统一口：优先「另存为」直写磁盘（不带 Mark-of-the-Web），不支持才退回普通下载。
+// 为什么必须这样：浏览器下载的文件会被 Office 扔进「受保护视图」，那台机器沙箱起不来时
+// Excel 报的是"文件已损坏"（2026-10-26 定案，见 lib/download.js 顶部注释）。
+import { saveBlobSmart } from './lib/download.js';
 
 /* ============================================================================
  * 首屏瘦身（2026-10-27，B4）：47 个页面从「静态 import」改为「路由级懒加载」。
@@ -1840,15 +1849,11 @@ function App() {
     const blob = new Blob([bytes], { type: payload.content_type || 'application/octet-stream' });
     // 兜底：宁可报错，也不要静默下载一个空文件
     if (blob.size === 0) throw new Error('下载到的文件是空的，请重试');
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = payload.filename || fallbackName;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    return payload;
+    // 落盘：优先「另存为」直写磁盘。走浏览器下载管道的文件会被打上"来自 Internet"标记，
+    // Office 会把它送进「受保护视图」，沙箱坏掉时就报"文件已损坏"（WPS 不受影响 → 一直能用）。
+    // 非安全上下文（同事用局域网 IP 访问）或不支持该 API 的浏览器，会自动退回普通下载。
+    const result = await saveBlobSmart(blob, payload.filename || fallbackName);
+    return { ...payload, saved: result.saved, saved_name: result.filename };
   };
 
   const downloadInvoiceSource = async (item) => {
@@ -3758,7 +3763,7 @@ function App() {
     }
   };
 
-  const exportInvoiceReport = () => {
+  const exportInvoiceReport = async () => {
     if (invoiceItems.length === 0) {
       setNotice('当前没有可导出的发票记录。');
       return;
@@ -3779,14 +3784,11 @@ function App() {
       .concat(rows.map((row) => headers.map((key) => `"${String(row[key] ?? '').replace(/"/g, '""')}"`).join(',')))
       .join('\n');
 
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = 'erp_invoice_report.csv';
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setNotice('发票报表已导出为 CSV。');
+    // 前面补 BOM：不补的话 Excel 按本地代码页猜编码，中文列名会变乱码
+    const blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8;' });
+    // 与 Excel 一样优先「另存为」直写磁盘：带来源标记的 CSV 在 Excel 里同样会进受保护视图
+    const result = await saveBlobSmart(blob, 'erp_invoice_report.csv');
+    setNotice(result.saved === 'cancelled' ? '已取消导出。' : '发票报表已导出为 CSV。');
   };
 
   const exportInvoiceReportHtml = () => {

@@ -53,6 +53,9 @@ import {
   partnerExportFileName,
 } from '../../lib/partnerExport.js';
 import { UNCLASSIFIED, subtreeIds } from '../../lib/partnerTree.js';
+// 落盘统一口（见 lib/download.js 顶部）：能力允许时「另存为」直写磁盘，
+// 文件不带 Mark-of-the-Web，Office 才不会把它丢进坏掉的「受保护视图」里。
+import { saveBlobSmart } from '../../lib/download.js';
 import { ALL, isAll, isPicked, pickPrompt } from '../../lib/treeSelection.js';
 import { pruneSelection } from '../../lib/selection.js';
 import './partners.css';
@@ -347,10 +350,19 @@ export default function PartnersBoard({
     xlsx.utils.book_append_sheet(workbook, worksheet, kind === 'supplier' ? '供应商' : '客户');
     // `bookSST: true` = 字符串写进 `xl/sharedStrings.xml`、单元格用 `t="s"` 引用。
     // 默认（false）会把每个字符串写成 `t="str"`（ECMA-376 里的**公式字符串**），
-    // WPS 容错、Microsoft Office 却当成不规范包，可能提示"文件已损坏"。
-    // 发票导出已整条搬到后端 openpyxl（见 app/services/invoice_export.py），
-    // 这里留在前端，但至少要用 Excel 原生的共享字符串写法。
-    xlsx.writeFile(workbook, partnerExportFileName(kind), { bookSST: true });
+    // 不是 xlsx 的正经写法，能用共享字符串就用。
+    //
+    // 2026-10-26：不再用 `xlsx.writeFile()` —— 它直接走浏览器下载管道，落地文件会被打上
+    // "来自 Internet"标记（ZoneId=3），Excel 2019 会先丢进「受保护视图」沙箱；那台机器
+    // 的沙箱起不来（火绒干扰），Excel 报的却是"文件已损坏"，用户白白以为导出坏了。
+    // 改为先 `write()` 拿字节，再由 `saveBlobSmart` 优先「另存为」直写磁盘。
+    const buffer = xlsx.write(workbook, { bookType: 'xlsx', type: 'array', bookSST: true });
+    await saveBlobSmart(
+      new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }),
+      partnerExportFileName(kind),
+    );
     setExportOpen(false);
   };
 

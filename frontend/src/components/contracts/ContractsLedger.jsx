@@ -22,6 +22,9 @@ import PartyQuickCreate from './PartyQuickCreate.jsx';
 import { API_BASE } from '../../lib/appLib.js';
 import { exportWord } from '../../lib/wordExport.js';
 import { confirmDanger } from '../../lib/printConfirm.js';
+// 落盘统一口（见 lib/download.js 顶部）：能直写磁盘就不走下载管道，
+// 否则文件带"来自 Internet"标记，Excel 会送进受保护视图、坏掉时报"文件已损坏"。
+import { saveBlobSmart } from '../../lib/download.js';
 import {
   CONTRACT_TABS,
   OCR_STATUS_LABELS,
@@ -93,16 +96,14 @@ function isWordFile(file) {
   return WORD_MIME_TYPES.has(String(file.type || '').toLowerCase());
 }
 
-function saveBlob(blob, filename) {
-  if (!blob || blob.size === 0) throw new Error('下载到的文件是空的，请重试');
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+/**
+ * 本组件的落盘口。原来是"blob URL + a[download]"，现在统一委托给 `saveBlobSmart`：
+ * 能「另存为」直写磁盘就直写（文件不带 Mark-of-the-Web），不支持才退回普通下载。
+ * ⚠️ 副作用是变成**异步**了，调用处必须 `await` —— 否则空文件校验抛出的错误
+ *    会变成未处理的 Promise 拒绝，用户那边就是"点了没反应"。
+ */
+async function saveBlob(blob, filename) {
+  return saveBlobSmart(blob, filename);
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +266,7 @@ export default function ContractsLedger() {
         response.headers.get('Content-Disposition'),
         `合同台账_${tab.shortLabel}_${new Date().toISOString().slice(0, 10)}.xlsx`,
       );
-      saveBlob(blob, filename);
+      await saveBlob(blob, filename);
       setNotice(`已导出「${tab.label}」台账：${filename}（主表 + 明细两张工作表）`);
     } catch (err) {
       setNotice(err.message || '导出失败');
@@ -723,7 +724,7 @@ export default function ContractsLedger() {
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
       const blob = new Blob([bytes], { type: payload.content_type || 'application/octet-stream' });
-      saveBlob(blob, payload.filename || target.source_file_name || 'contract-source');
+      await saveBlob(blob, payload.filename || target.source_file_name || 'contract-source');
     } catch (err) {
       setNotice(err.message || '原件下载失败');
     }
@@ -808,7 +809,7 @@ export default function ContractsLedger() {
       }
       const blob = await response.blob();
       const no = String(docPreview.document.contract_no || '').replace(/[\\/:*?"<>|]/g, '');
-      saveBlob(blob, `合同正文-${no || '草稿'}.docx`);
+      await saveBlob(blob, `合同正文-${no || '草稿'}.docx`);
       setNotice('Word 版已下载：请先与客户确认修改，确认无误后再生成 PDF 盖章版');
     } catch (err) {
       setNotice(err.message || '生成 Word 失败');
@@ -839,8 +840,8 @@ export default function ContractsLedger() {
       const binary = atob(payload.content_base64 || '');
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-      saveBlob(new Blob([bytes], { type: payload.content_type || 'application/pdf' }), payload.filename);
-      setNotice('合同正文 PDF 已生成并开始下载');
+      await saveBlob(new Blob([bytes], { type: payload.content_type || 'application/pdf' }), payload.filename);
+      setNotice('合同正文 PDF 已生成');
     } catch (err) {
       setNotice(err.message || '生成 PDF 失败');
     } finally {
@@ -864,8 +865,8 @@ export default function ContractsLedger() {
       const binary = atob(payload.content_base64 || '');
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-      saveBlob(new Blob([bytes], { type: payload.content_type || 'application/pdf' }), payload.filename);
-      setNotice(`合同 ${target.contract_no} 的 PDF 已生成并开始下载`);
+      await saveBlob(new Blob([bytes], { type: payload.content_type || 'application/pdf' }), payload.filename);
+      setNotice(`合同 ${target.contract_no} 的 PDF 已生成`);
     } catch (err) {
       setNotice(err.message || '打印失败');
     }
