@@ -345,7 +345,12 @@ export default function PartnersBoard({
     worksheet['!cols'] = picked.map((column) => ({ wch: column.width || 16 }));
     const workbook = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(workbook, worksheet, kind === 'supplier' ? '供应商' : '客户');
-    xlsx.writeFile(workbook, partnerExportFileName(kind));
+    // `bookSST: true` = 字符串写进 `xl/sharedStrings.xml`、单元格用 `t="s"` 引用。
+    // 默认（false）会把每个字符串写成 `t="str"`（ECMA-376 里的**公式字符串**），
+    // WPS 容错、Microsoft Office 却当成不规范包，可能提示"文件已损坏"。
+    // 发票导出已整条搬到后端 openpyxl（见 app/services/invoice_export.py），
+    // 这里留在前端，但至少要用 Excel 原生的共享字符串写法。
+    xlsx.writeFile(workbook, partnerExportFileName(kind), { bookSST: true });
     setExportOpen(false);
   };
 

@@ -40,6 +40,9 @@ from app.models.invoice import (
     is_special_invoice,
 )
 from app.schemas import InvoiceCreate, InvoiceUpdate
+# Excel 导出（2026-10-26）：生成搬到后端用 openpyxl 直出标准 xlsx。
+# 前端 SheetJS 出的文件 WPS 能开、Microsoft Office 报损坏（详见该模块文档）。
+from app.services import invoice_export
 from app.services.invoice_match import (
     STATUS_AMBIGUOUS,
     STATUS_MATCHED,
@@ -1642,6 +1645,89 @@ def export_invoice_qrcodes(
         response.headers[f"X-Invoice-{key}"] = str(value)
     return response
 
+
+def _invoice_export_record(item: Invoice) -> dict[str, object]:
+    """发票 → 导出行（扁平 dict，键与 `invoice_export` 的列定义一一对应）。"""
+    return {
+        "id": item.id,
+        "invoice_no": item.invoice_no,
+        "invoice_code": item.invoice_code,
+        "invoice_type": item.invoice_type,
+        "issue_date": item.issue_date,
+        "direction_label": DIRECTION_LABELS.get(item.direction or DIRECTION_UNKNOWN, "待判定"),
+        "flag_label": INVOICE_FLAG_LABELS.get(item.invoice_flag or "blue", "蓝字"),
+        "buyer_name": item.buyer_name,
+        "buyer_tax_no": item.buyer_tax_no,
+        "seller_name": item.seller_name,
+        "seller_tax_no": item.seller_tax_no,
+        "total_amount": item.total_amount,
+        "excl_tax_amount": item.excl_tax_amount,
+        "tax_amount": item.tax_amount,
+        "tax_rate": item.tax_rate,
+        "category": item.category,
+        "deducted": bool(item.deducted),
+        "items": item.items,
+    }
+
+
+@router.get("/invoices/export/xlsx")
+def export_invoices_xlsx(
+    request: Request,
+    ids: str | None = Query(None, description="逗号分隔的发票 id，只导这些；与界面上勾选/筛选的行对应"),
+    direction: str | None = Query(None, description="只导出某个方向的发票"),
+    layout: str = Query("ledger", description="ledger=清单+明细；report=勾选报表"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """导出 Excel —— **后端 openpyxl 直出标准 xlsx**（2026-10-26 热修）。
+
+    为什么不在前端生成：原来用 SheetJS 现算现写，用户实测「WPS 能正常打开，
+    Microsoft Office 报文件已损坏」。SheetJS CE 把所有字符串写成 `t="str"`
+    （ECMA-376 里那是公式缓存值，不是普通文本），包结构也不是 Excel 自己的写法；
+    WPS 容错，Office 的 OPC 校验直接拒绝。发票要归档进财务，Office 打不开
+    等于不能用，所以生成整体搬到后端（`app/services/invoice_export.py`），
+    前端只负责把返回的字节存成文件。
+
+    通道与原件/二维码导出同一条：`Accept: application/json` 拿 base64，
+    否则走二进制（留给 curl / 外部脚本）。
+    """
+    if layout not in invoice_export.LAYOUTS:
+        raise HTTPException(
+            status_code=400,
+            detail="layout 只能是 ledger（清单+明细）或 report（勾选报表）",
+        )
+    if direction and direction not in DIRECTION_LABELS:
+        raise HTTPException(status_code=400, detail="direction 只能是 input / output / unknown")
+
+    query = db.query(Invoice)
+    id_list = [int(part) for part in (ids or "").split(",") if part.strip().isdigit()]
+    if id_list:
+        query = query.filter(Invoice.id.in_(id_list))
+    elif direction:
+        query = query.filter(Invoice.direction == direction)
+    # 排序口径与界面一致：开票日期升序（空日期排最后），同日按 id
+    rows = query.order_by(Invoice.issue_date.asc().nullslast(), Invoice.id.asc()).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="没有符合条件的发票可导出。")
+
+    data = invoice_export.build(layout, [_invoice_export_record(row) for row in rows])
+    filename = invoice_export.filename(layout)
+    line_count = sum(len(row.items) for row in rows)
+    if _wants_json(request):
+        return JSONResponse(
+            {
+                "filename": filename,
+                "content_type": invoice_export.XLSX_MEDIA,
+                "content_base64": base64.b64encode(data).decode("ascii"),
+                "size": len(data),
+                "invoices": len(rows),
+                "lines": line_count,
+                "layout": layout,
+            }
+        )
+    response = _attachment_response(data, filename, invoice_export.XLSX_MEDIA)
+    response.headers["X-Invoice-Invoices"] = str(len(rows))
+    response.headers["X-Invoice-Lines"] = str(line_count)
+    return response
 
 
 @router.get("/invoices/{invoice_id}/qrcode")

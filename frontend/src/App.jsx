@@ -25,9 +25,14 @@ import { ProductCategoryTree } from './components/product-category';
 import { ProductEditModal } from './components/product-edit';
 import jsQR from 'jsqr';
 /* 重型依赖（xlsx ~860 KB / pdfjs-dist ~640 KB / tesseract.js ~65 KB）不再静态 import：
- * 它们只在「导出 Excel、解析 PDF 发票、图片 OCR」这三件事上出场，首屏不该为它们付流量。
- * 统一走 lib/lazyLibs.js 的 await loadXLSX() / loadPdfjs() / loadTesseract()（B4b）。 */
-import { loadPdfjs, loadTesseract, loadXLSX } from './lib/lazyLibs';
+ * 它们只在「导出 Excel、解析 PDF 发票、图片 OCR」这几件事上出场，首屏不该为它们付流量。
+ * 统一走 lib/lazyLibs.js 的 await loadXLSX() / loadPdfjs() / loadTesseract()（B4b）。
+ *
+ * ⚠️ 2026-10-26：**发票**的 Excel 导出已搬到后端（openpyxl 直出标准 xlsx），
+ *    原因见 `app/services/invoice_export.py` —— 前端 SheetJS 出的文件 WPS 能开、
+ *    Microsoft Office 报"文件已损坏"。所以本文件不再需要 loadXLSX，
+ *    仍在前端用 xlsx 的只剩往来单位导出（PartnersBoard）。 */
+import { loadPdfjs, loadTesseract } from './lib/lazyLibs';
 
 /* ============================================================================
  * 首屏瘦身（2026-10-27，B4）：47 个页面从「静态 import」改为「路由级懒加载」。
@@ -2721,88 +2726,39 @@ function App() {
       ? invoiceItems.filter((item) => selectedInvoiceIds.includes(item.id))
       : invoiceFiltered;
 
+  // 导出「发票清单 + 发票明细」。
+  //
+  // ⚠️ 生成在**后端**（openpyxl 直出标准 xlsx，`GET /invoices/export/xlsx`）：
+  //    前端 SheetJS 出的文件 WPS 能开、**Microsoft Office 报"文件已损坏"** ——
+  //    它把字符串写成公式字符串 `t="str"`，包结构也不是 Excel 自己的写法。
+  //    发票要归档进财务，Office 打不开等于不能用，所以这里只负责把字节存成文件。
+  //    走 base64 JSON 通道（`Accept: application/json`），避免浏览器接管二进制响应。
   const exportInvoiceDetailExcel = async () => {
-    let XLSX;
-    try {
-      // 首次点导出才下载 Excel 引擎（~860 KB，B4b）
-      XLSX = await loadXLSX();
-    } catch {
-      setNotice('Excel 引擎加载失败（网络或缓存异常），请刷新页面后重试。');
-      return;
-    }
     const rows = invoiceExportTargets();
     if (rows.length === 0) {
       setNotice('没有可导出的发票。');
       return;
     }
-    const normalized = rows.map(normalizeInvoiceRecord);
-    const sorted = [...normalized].sort((a, b) => {
-      const cmp = String(a.date || '').localeCompare(String(b.date || ''));
-      return cmp !== 0 ? cmp : String(a.invoice_no || '').localeCompare(String(b.invoice_no || ''));
-    });
-
-    // 两张表：清单（一张票一行）+ 明细（一条明细一行）。
-    // 用户要的"明细单价/数量/合计"只有拆到明细行才填得下，塞进清单会一行变一坨。
-    const sheetRows = sorted.map((item, index) => {
-      const lines = Array.isArray(item.items) ? item.items : [];
-      return {
-        序号: index + 1,
-        发票日期: item.date || '—',
-        发票号码: item.invoice_no || '—',
-        发票类型: item.invoice_type || '未知',
-        进销项: item.direction_label || '待判定',
-        红蓝字: item.invoice_flag_label || '蓝字',
-        购买方名称: item.buyer_name || '—',
-        购买方税号: item.buyer_tax_no || '—',
-        销售方名称: item.seller_name || '—',
-        销售方税号: item.seller_tax_no || '—',
-        明细品种数: lines.length,
-        数量合计: lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0),
-        不含税合计: Number(item.excl_tax_amount ?? 0),
-        税额: Number(item.tax_amount ?? 0),
-        价税合计: Number(item.amount || 0),
-      };
-    });
-
-    const workbook = XLSX.utils.book_new();
-    const sheet = XLSX.utils.json_to_sheet(sheetRows);
-    sheet['!cols'] = [
-      { wch: 6 }, { wch: 12 }, { wch: 22 }, { wch: 8 }, { wch: 8 }, { wch: 8 },
-      { wch: 28 }, { wch: 22 }, { wch: 28 }, { wch: 22 },
-      { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 },
-    ];
-    XLSX.utils.book_append_sheet(workbook, sheet, '发票清单');
-
-    const detailRows = [];
-    sorted.forEach((item, index) => {
-      (Array.isArray(item.items) ? item.items : []).forEach((line) => {
-        detailRows.push({
-          发票序号: index + 1,
-          发票号码: item.invoice_no || '—',
-          发票日期: item.date || '—',
-          品名: line.item_name || '—',
-          规格型号: line.spec || '',
-          单位: line.unit || '',
-          数量: Number(line.quantity || 0),
-          单价: Number(line.unit_price || 0),
-          金额: Number(line.amount || 0),
-          税率: line.tax_rate != null ? `${line.tax_rate}%` : '',
-          税额: Number(line.tax_amount || 0),
-        });
-      });
-    });
-    if (detailRows.length > 0) {
-      const detailSheet = XLSX.utils.json_to_sheet(detailRows);
-      detailSheet['!cols'] = [
-        { wch: 10 }, { wch: 22 }, { wch: 12 }, { wch: 26 }, { wch: 14 },
-        { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 8 }, { wch: 10 },
-      ];
-      XLSX.utils.book_append_sheet(workbook, detailSheet, '发票明细');
+    const ids = rows.map((item) => item.id).filter((id) => id != null);
+    if (ids.length === 0) {
+      setNotice('这些发票还没有保存到后端，无法导出。');
+      return;
     }
-
-    const fileName = `发票清单_${new Date().toISOString().slice(0, 10)}.xlsx`;
-    XLSX.writeFile(workbook, fileName);
-    setNotice(`已导出 ${sorted.length} 张发票（含 ${detailRows.length} 条明细）到 ${fileName}`);
+    try {
+      const query = new URLSearchParams({ layout: 'ledger', ids: ids.join(',') });
+      const response = await fetch(`${API_BASE}/invoices/export/xlsx?${query.toString()}`, {
+        headers: { Accept: 'application/json', ...authHeaders() },
+      });
+      const payload = await downloadBase64File(
+        response,
+        `发票清单_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      );
+      setNotice(
+        `已导出 ${payload.invoices ?? ids.length} 张发票（含 ${payload.lines ?? 0} 条明细）到 ${payload.filename}`,
+      );
+    } catch (err) {
+      setNotice(err.message || '导出 Excel 失败');
+    }
   };
 
   const exportInvoiceDetailPdf = () => {
@@ -3768,15 +3724,9 @@ function App() {
   };
 
   // 勾选导出 Excel：只导出勾选的发票，按开票日期升序 + 同日期按购买方名称拼音排序
+  // 勾选导出 Excel：只导出勾选的发票，按开票日期升序 + 同日期按购买方名称拼音排序。
+  // 与清单导出同一条后端通道（openpyxl 直出，Office 一定能打开），只是 layout=report。
   const exportInvoiceReportXlsx = async () => {
-    let XLSX;
-    try {
-      // 首次点导出才下载 Excel 引擎（~860 KB，B4b）
-      XLSX = await loadXLSX();
-    } catch {
-      setNotice('Excel 引擎加载失败（网络或缓存异常），请刷新页面后重试。');
-      return;
-    }
     if (selectedInvoiceIds.length === 0) {
       setNotice('请先在发票列表里勾选要导出的条目。');
       return;
@@ -3787,42 +3737,25 @@ function App() {
       setNotice('没有找到勾选的发票记录。');
       return;
     }
+    const ids = selected.map((item) => item.id).filter((id) => id != null);
+    if (ids.length === 0) {
+      setNotice('这些发票还没有保存到后端，无法导出。');
+      return;
+    }
 
-    // 双重排序：日期升序（空日期排最后），同一日期按购买方名称首字母（拼音）排序
-    const sorted = [...selected].sort((a, b) => {
-      const dateA = String(a.date || '');
-      const dateB = String(b.date || '');
-      const cmp = dateA === dateB ? 0 : dateA ? (dateB ? dateA.localeCompare(dateB) : -1) : 1;
-      if (cmp !== 0) return cmp;
-      return String(a.buyer_name || '').localeCompare(String(b.buyer_name || ''), 'zh-Hans-CN');
-    });
-
-    const sheetRows = sorted.map((item) => ({
-      开票日期: item.date || '—',
-      发票号码: item.invoice_no || item.id || '—',
-      销售方名称: item.seller_name || '—',
-      购买方名称: item.buyer_name || '—',
-      发票代码: item.invoice_code || '—',
-      发票类型: item.invoice_type || '未知',
-      分类: item.category || inferInvoiceCategory(item),
-      税价合计: Number(item.amount || 0),
-      税率: item.tax_rate != null ? `${item.tax_rate}%` : '—',
-      不含税额: Number(item.excl_tax_amount || 0),
-      税额: Number(item.tax_amount || 0),
-      已抵扣: item.invoice_type === '专票' ? (item.deducted ? '是' : '否') : '—',
-    }));
-
-    const worksheet = XLSX.utils.json_to_sheet(sheetRows);
-    worksheet['!cols'] = [
-      { wch: 12 }, { wch: 24 }, { wch: 28 }, { wch: 28 }, { wch: 14 }, { wch: 10 },
-      { wch: 10 }, { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 8 },
-    ];
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, '发票报表');
-
-    const fileName = `erp_invoice_report_${new Date().toISOString().slice(0, 10)}.xlsx`;
-    XLSX.writeFile(workbook, fileName);
-    setNotice(`已导出 ${sorted.length} 张发票到 ${fileName}`);
+    try {
+      const query = new URLSearchParams({ layout: 'report', ids: ids.join(',') });
+      const response = await fetch(`${API_BASE}/invoices/export/xlsx?${query.toString()}`, {
+        headers: { Accept: 'application/json', ...authHeaders() },
+      });
+      const payload = await downloadBase64File(
+        response,
+        `erp_invoice_report_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      );
+      setNotice(`已导出 ${payload.invoices ?? ids.length} 张发票到 ${payload.filename}`);
+    } catch (err) {
+      setNotice(err.message || '导出 Excel 失败');
+    }
   };
 
   const exportInvoiceReport = () => {
