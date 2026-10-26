@@ -24,9 +24,10 @@ import { buildUnitOptions } from './lib/salesUnits';
 import { ProductCategoryTree } from './components/product-category';
 import { ProductEditModal } from './components/product-edit';
 import jsQR from 'jsqr';
-import * as pdfjsLib from 'pdfjs-dist';
-import Tesseract from 'tesseract.js';
-import * as XLSX from 'xlsx';
+/* 重型依赖（xlsx ~860 KB / pdfjs-dist ~640 KB / tesseract.js ~65 KB）不再静态 import：
+ * 它们只在「导出 Excel、解析 PDF 发票、图片 OCR」这三件事上出场，首屏不该为它们付流量。
+ * 统一走 lib/lazyLibs.js 的 await loadXLSX() / loadPdfjs() / loadTesseract()（B4b）。 */
+import { loadPdfjs, loadTesseract, loadXLSX } from './lib/lazyLibs';
 
 /* ============================================================================
  * 首屏瘦身（2026-10-27，B4）：47 个页面从「静态 import」改为「路由级懒加载」。
@@ -160,7 +161,8 @@ const WarehousesPage = lazy(() => import('./pages/WarehousesPage'));
 export const readChangeValue = (input) =>
   (input && typeof input === 'object' && 'target' in input ? input.target.value : input);
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
+// PDF worker 路径已挪进 lib/lazyLibs.js 的 loadPdfjs()（B4b：为了设一个静态属性
+// 而把 640 KB 的 pdfjs 拉进首屏不值当）。要改 worker 路径去那边改，别在这里加回来。
 const menuGroups = [
   {
     key: 'workspace',
@@ -2719,7 +2721,15 @@ function App() {
       ? invoiceItems.filter((item) => selectedInvoiceIds.includes(item.id))
       : invoiceFiltered;
 
-  const exportInvoiceDetailExcel = () => {
+  const exportInvoiceDetailExcel = async () => {
+    let XLSX;
+    try {
+      // 首次点导出才下载 Excel 引擎（~860 KB，B4b）
+      XLSX = await loadXLSX();
+    } catch {
+      setNotice('Excel 引擎加载失败（网络或缓存异常），请刷新页面后重试。');
+      return;
+    }
     const rows = invoiceExportTargets();
     if (rows.length === 0) {
       setNotice('没有可导出的发票。');
@@ -3276,6 +3286,8 @@ function App() {
   };
 
   const readPdfInvoiceText = async (file) => {
+    // 首次解析 PDF 时才下载 pdfjs（~640 KB，B4b）；失败由上层 handleInvoiceUpload 的 catch 兜住
+    const pdfjsLib = await loadPdfjs();
     const buffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
     let extractedText = '';
@@ -3321,6 +3333,8 @@ function App() {
 
   const readImageInvoiceText = async (file) => {
     try {
+      // 首次识别图片才下载 tesseract.js（B4b）
+      const Tesseract = await loadTesseract();
       const { data } = await Tesseract.recognize(file, 'chi_sim+eng');
       const textFromOcr = data?.text || '';
       const qrItems = await readQrFromImage(file);
@@ -3754,7 +3768,15 @@ function App() {
   };
 
   // 勾选导出 Excel：只导出勾选的发票，按开票日期升序 + 同日期按购买方名称拼音排序
-  const exportInvoiceReportXlsx = () => {
+  const exportInvoiceReportXlsx = async () => {
+    let XLSX;
+    try {
+      // 首次点导出才下载 Excel 引擎（~860 KB，B4b）
+      XLSX = await loadXLSX();
+    } catch {
+      setNotice('Excel 引擎加载失败（网络或缓存异常），请刷新页面后重试。');
+      return;
+    }
     if (selectedInvoiceIds.length === 0) {
       setNotice('请先在发票列表里勾选要导出的条目。');
       return;

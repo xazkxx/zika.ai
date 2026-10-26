@@ -33,9 +33,9 @@
  */
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-// Excel 引擎：导出档案时才用得到。与 App.jsx 共用同一个包（那边是静态 import），
-// 所以这里再静态引一次不会再增加体积。
-import * as xlsx from 'xlsx';
+// Excel 引擎（~860 KB）改为按需加载：导出档案的那一刻才下载（B4b，2026-10-27）。
+// 与 App.jsx 共用 lib/lazyLibs.js 的同一份缓存，先导过的再导不会重复下载。
+import { loadXLSX } from '../../lib/lazyLibs';
 
 import ResizableLayout from '../resizable-layout/ResizableLayout.jsx';
 import PartnerTree from '../partner-tree/PartnerTree.jsx';
@@ -325,10 +325,17 @@ export default function PartnersBoard({
   const pickedSomething = treeMode === 'category' ? isPicked(categoryId) : isPicked(group);
   const exportRows = pickedSomething ? visible : list;
 
-  /** 把勾选的列写成 xlsx 并下载。没有 XLSX 实例时明确报错，不要静默什么都不做。 */
-  const runExport = (keys) => {
-    if (!xlsx) {
-      window.alert('导出组件还没加载好（缺少 Excel 引擎），请刷新页面后重试。');
+  /**
+   * 把勾选的列写成 xlsx 并下载。
+   * Excel 引擎按需加载（B4b）：第一次导出才下载那个 ~860 KB 的 chunk。
+   * 下载失败必须明说，不能静默什么都不做（用户会以为"点了没反应"）。
+   */
+  const runExport = async (keys) => {
+    let xlsx;
+    try {
+      xlsx = await loadXLSX();
+    } catch {
+      window.alert('Excel 引擎加载失败（网络或缓存异常），请刷新页面后重试。');
       return;
     }
     const sheetRows = buildPartnerSheet(exportRows, kind, keys);
