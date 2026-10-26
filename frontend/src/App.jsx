@@ -10807,8 +10807,10 @@ function App() {
   STOCK_STATUS_LABEL,
   SYSTEM_TABS,
   TRANSFER_STATUS_LABEL,
-  Tesseract,
-  XLSX,
+  // 重型库（XLSX / Tesseract / pdfjsLib）**不进 appCtx**：
+  // 它们是按需 import 的，页面要用就自己 `const XLSX = await loadXLSX()`。
+  // 2026-10-27 教训：这里曾留着 `Tesseract,` / `XLSX,` 两个简写键，静态 import 拆掉后
+  // 简写属性在 render 时求值 → ReferenceError → 整屏白（门禁当时因函数内局部同名变量而漏报）。
   accountLedger,
   activeCompany,
   activeDictType,
@@ -11234,7 +11236,7 @@ function App() {
   passwordDraft,
   passwordTarget,
   payables,
-  pdfjsLib,
+  // pdfjsLib 同 Tesseract/XLSX：按需 import，不进 ctx（见 TRANSFER_STATUS_LABEL 上方注释）
   permissionDraft,
   plain,
   planTypeLabel,

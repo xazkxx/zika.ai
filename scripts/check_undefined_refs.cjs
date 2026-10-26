@@ -1,35 +1,45 @@
 /**
  * 静态体检：找出"被调用/被引用但本文件没定义"的标识符。
  *
- * 为什么需要这个脚本（真实事故）：
- *   2026-10-20 清理「导入导出」死代码时，`const authHeaders = ...` 因为紧挨在
- *   被删代码块的第一行，被一起删掉了。后果是**整个主界面白屏**
- *   （ReferenceError: authHeaders is not defined）。
+ * 为什么需要这个脚本（真实事故 ×2）：
+ *   ① 2026-10-20 清理「导入导出」死代码时，`const authHeaders = ...` 因为紧挨在
+ *      被删代码块的第一行，被一起删掉了。后果是**整个主界面白屏**
+ *      （ReferenceError: authHeaders is not defined）。
+ *   ② 2026-10-27 B4b 把 xlsx / pdfjs-dist / tesseract.js 改成按需 import，静态 import
+ *      删了，但 `appCtx` 里的 `Tesseract,` / `XLSX,` 两个**简写属性**忘了删 ——
+ *      对象字面量在 render 期间求值 → ReferenceError → 又一次整屏白。
+ *      当时这个脚本**没报**：旧版按"文件里出现过同名定义就算有定义"判断，而
+ *      `readImageInvoiceText` 里正好有局部 `const Tesseract = await loadTesseract()`，
+ *      把顶层漏掉的键洗白了。
  *   而 `vite build` 照样成功 —— esbuild 只做语法/打包，**不做未定义变量检查**；
- *   日常也没人开控制台。于是"构建通过 + 页面全白"这种最坏组合发生了。
+ *   日常也没人开控制台。于是"构建通过 + 页面全白"这种最坏组合反复发生。
  *
  * 判定策略（宁可漏报，绝不误报 —— 误报会让这个脚本被无视）：
- *   只盯两种高置信度形态：
- *     ① `foo(...)` —— 标识符作为 CallExpression 的 callee；
- *     ② `<Foo />` —— 大驼峰 JSX 组件。
- *   并且要满足"本文件里没有同名绑定"。绑定来源包括：
- *     import、函数/类声明、const/let/var（含解构）、函数参数、catch 参数。
- *   ⚠️ 对象键、字符串、属性访问 `obj.foo` 的 foo 都不算 —— 这是上一版误报的根源。
- *
- * 作用域：**按文件算，不按块算**。"本文件任何地方定义过 foo"就算有定义，
- *   所以函数 A 里调用、函数 B 里定义的情况会漏报。这是有意的取舍：
- *   漏报的后果是"下次真出事还得靠浏览器"，误报的后果是"这个脚本被关掉"。
+ *   只盯四种高置信度形态：
+ *     ① `foo(...)` —— 标识符作为 CallExpression / OptionalCallExpression 的 callee；
+ *     ② `<Foo />` —— 大驼峰 JSX 组件；
+ *     ③ `{ foo }` —— 对象字面量的**简写属性**（事故 ② 的形态）；
+ *     ④ `[foo, bar]` —— 数组里的裸标识符。
+ *   判定"有没有定义"用 **@babel/traverse 的真实作用域链**（`scope.hasBinding`），
+ *   而不是"这个文件里某处出现过"：
+ *     - 函数内局部 `const Tesseract = ...` **不能**给顶层的 `{ Tesseract }` 背书；
+ *     - `import`、函数/类声明、`const/let/var`、函数参数、catch 参数、解构都算绑定；
+ *     - 解构模式里的 `{ foo }` 是**声明**，不是引用，直接跳过。
+ *   ⚠️ 字符串、属性访问 `obj.foo`、JSX `<Foo.Bar />` 都不算。
  *
  * 跑法：
  *   node scripts/check_undefined_refs.cjs
- * 退出码：0 = 干净，1 = 有可疑引用（逐条打印 文件:行 名字）
+ * 退出码：0 = 干净，1 = 有可疑引用（逐条打印 文件:行 名字 类型）
  */
 const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const SRC = path.join(ROOT, 'frontend', 'src');
-const parser = require(path.join(ROOT, 'frontend', 'node_modules', '@babel', 'parser'));
+const NM = path.join(ROOT, 'frontend', 'node_modules');
+const parser = require(path.join(NM, '@babel', 'parser'));
+const traverseMod = require(path.join(NM, '@babel', 'traverse'));
+const traverse = traverseMod.default || traverseMod;
 
 // 全局白名单：浏览器 / ES 内置里会被"当函数调用"的那些
 const GLOBALS = new Set([
@@ -49,130 +59,68 @@ const GLOBALS = new Set([
   'Fragment', 'StrictMode',
 ]);
 
-function walk(node, visit) {
-  if (!node || typeof node !== 'object') return;
-  if (Array.isArray(node)) {
-    node.forEach((child) => walk(child, visit));
-    return;
-  }
-  if (typeof node.type !== 'string') return;
-  visit(node);
-  for (const key of Object.keys(node)) {
-    if (key === 'loc' || key === 'start' || key === 'end') continue;
-    const value = node[key];
-    if (value && typeof value === 'object') walk(value, visit);
-  }
-}
-
-/** 从解构/参数模式里抽绑定名。 */
-function namesFromPattern(pattern, out) {
-  if (!pattern) return;
-  switch (pattern.type) {
-    case 'Identifier':
-      out.add(pattern.name);
-      break;
-    case 'ObjectPattern':
-      pattern.properties.forEach((prop) => {
-        if (prop.type === 'RestElement') namesFromPattern(prop.argument, out);
-        else namesFromPattern(prop.value, out);
-      });
-      break;
-    case 'ArrayPattern':
-      pattern.elements.forEach((el) => namesFromPattern(el, out));
-      break;
-    case 'AssignmentPattern':
-      namesFromPattern(pattern.left, out);
-      break;
-    case 'RestElement':
-      namesFromPattern(pattern.argument, out);
-      break;
-    default:
-      break;
-  }
-}
-
 function analyseFile(file) {
   const code = fs.readFileSync(file, 'utf8');
   const ast = parser.parse(code, {
     sourceType: 'module',
-    plugins: ['jsx', 'classProperties', 'optionalChaining', 'nullishCoalescingOperator'],
-  });
-
-  const bound = new Set();
-  const suspects = [];
-
-  // ── 第一遍：绑定 ──
-  walk(ast.program, (node) => {
-    switch (node.type) {
-      case 'ImportDeclaration':
-        node.specifiers.forEach((spec) => bound.add(spec.local.name));
-        break;
-      case 'FunctionDeclaration':
-      case 'FunctionExpression':
-      case 'ArrowFunctionExpression':
-        if (node.id) bound.add(node.id.name);
-        node.params.forEach((p) => namesFromPattern(p, bound));
-        break;
-      case 'VariableDeclarator':
-        namesFromPattern(node.id, bound);
-        break;
-      case 'ClassDeclaration':
-      case 'ClassExpression':
-        if (node.id) bound.add(node.id.name);
-        break;
-      case 'CatchClause':
-        if (node.param) namesFromPattern(node.param, bound);
-        break;
-      case 'ImportDefaultSpecifier':
-      case 'ImportNamespaceSpecifier':
-      case 'ImportSpecifier':
-        if (node.local) bound.add(node.local.name);
-        break;
-      default:
-        break;
-    }
-  });
-
-  // ── 第二遍：高置信度引用 ──
-  walk(ast.program, (node) => {
-    // ① foo(...)
-    if (node.type === 'CallExpression' && node.callee && node.callee.type === 'Identifier') {
-      suspects.push({ name: node.callee.name, line: node.loc.start.line, kind: '调用' });
-    }
-    // ② <Foo />
-    if (node.type === 'JSXOpeningElement' && node.name && node.name.type === 'JSXIdentifier') {
-      const name = node.name.name;
-      if (/^[A-Z]/.test(name)) {
-        suspects.push({ name, line: node.loc.start.line, kind: '组件' });
-      }
-    }
-    // ③ { foo } 简写属性 —— 这是最容易漏的一类：
-    //    删掉 `const [excelBusy, setExcelBusy] = useState(false)` 之后，
-    //    ctx 里的 `setExcelBusy,` 只是**裸标识符**，既不是调用也不是组件，
-    //    构建不报错、检查器也看不见，直到页面渲染到那个对象才炸。
-    //    真实事故里就是这样连炸两块（authHeaders 之后是 setExcelBusy）。
-    if (node.type === 'ObjectProperty' && node.shorthand && node.key && node.key.type === 'Identifier') {
-      suspects.push({ name: node.key.name, line: node.loc.start.line, kind: '简写属性' });
-    }
-    // ④ 数组里的裸标识符：[foo, bar] —— ctx 导出列表常见形态
-    if (node.type === 'ArrayExpression') {
-      node.elements.forEach((el) => {
-        if (el && el.type === 'Identifier') {
-          suspects.push({ name: el.name, line: el.loc.start.line, kind: '数组元素' });
-        }
-      });
-    }
+    // 各级调用都在用：jsx / 可选链 / 空值合并 / 对象展开 / 顶层 await / 动态 import
+    plugins: [
+      'jsx', 'classProperties', 'classPrivateProperties', 'classPrivateMethods',
+      'optionalChaining', 'nullishCoalescingOperator', 'objectRestSpread',
+      'dynamicImport', 'topLevelAwait', 'importMeta',
+    ],
+    errorRecovery: false,
   });
 
   const missing = [];
   const seen = new Set();
-  for (const item of suspects) {
-    const { name, line, kind } = item;
-    if (bound.has(name) || GLOBALS.has(name)) continue;
-    if (seen.has(name)) continue; // 同一个名字只报一次，附带首次出现行
-    seen.add(name);
-    missing.push({ name, line, kind });
-  }
+
+  /** 高置信度引用点：只做"这个作用域链里有没有同名绑定"这一件事。 */
+  const check = (p, name, kind) => {
+    if (!name || GLOBALS.has(name)) return;
+    if (p.scope.hasBinding(name, true)) return; // true = 不把真正的全局当绑定
+    const key = name + '@' + p.node.loc.start.line;
+    if (seen.has(key)) return;
+    seen.add(key);
+    missing.push({ name, line: p.node.loc.start.line, kind });
+  };
+
+  traverse(ast, {
+    // ① foo(...)
+    CallExpression(p) {
+      const callee = p.node.callee;
+      if (callee && callee.type === 'Identifier') check(p, callee.name, '调用');
+    },
+    // ①' foo?.(...)
+    OptionalCallExpression(p) {
+      const callee = p.node.callee;
+      if (callee && callee.type === 'Identifier') check(p, callee.name, '调用');
+    },
+    // ② <Foo />
+    JSXOpeningElement(p) {
+      const name = p.node.name;
+      if (name && name.type === 'JSXIdentifier' && /^[A-Z]/.test(name.name)) {
+        check(p, name.name, '组件');
+      }
+    },
+    // ③ { foo } 简写属性 —— 2026-10-27 白屏事故的形态：
+    //    静态 import 删了，`appCtx` 里的 `Tesseract,` / `XLSX,` 还在，
+    //    render 时求值 → ReferenceError。旧版因为文件里有同名局部变量而漏报。
+    ObjectProperty(p) {
+      if (!p.node.shorthand) return;
+      if (!p.node.key || p.node.key.type !== 'Identifier') return;
+      // 解构里的简写是「声明」不是「引用」：`const { foo } = ctx`
+      if (p.findParent((pp) => pp.isObjectPattern())) return;
+      check(p, p.node.key.name, '简写属性');
+    },
+    // ④ 数组里的裸标识符：[foo, bar] —— ctx 导出列表常见形态
+    ArrayExpression(p) {
+      p.node.elements.forEach((el) => {
+        if (el && el.type === 'Identifier') check(p, el.name, '数组元素');
+      });
+    },
+  });
+
   return missing;
 }
 
@@ -215,11 +163,11 @@ for (const file of files) {
 }
 
 if (report.length) {
-  console.log('⚠️ 发现"被调用/被当成组件，但本文件没有定义"的标识符：');
+  console.log('⚠️ 发现"被调用/被当成组件/被简写引用，但作用域里没有定义"的标识符：');
   console.log(report.join('\n'));
   console.log(`\n合计 ${bad} 处。这类问题 vite build **不会**报错，但运行时会白屏。`);
   process.exit(1);
 }
 
-console.log(`OK  ${files.length} 个源文件，被调用的标识符全部都有定义。`);
+console.log(`OK  ${files.length} 个源文件，高置信度引用全部都有定义（作用域级检查）。`);
 process.exit(0);
