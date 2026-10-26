@@ -9,7 +9,7 @@ import OrderPaymentDialog from './components/docs/OrderPaymentDialog.jsx';
 // 这样 `printPdf`（唯一收敛点）和 StatementEditor 自带的打印都能共用同一个确认框。
 import PrintConfirmHost from './components/ui/PrintConfirmHost.jsx';
 import { confirmPrint, confirmDanger } from './lib/printConfirm.js';
-import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Component, Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { countProductsByCategory, filterProductsByCategory } from './lib/productCategory';
 // 接口错误文案统一解析（422 的 detail 是数组，直接渲染会白屏 —— v76 事故）
 import { parseApiDetail } from './lib/apiDetail.js';
@@ -27,12 +27,75 @@ import jsQR from 'jsqr';
 import * as pdfjsLib from 'pdfjs-dist';
 import Tesseract from 'tesseract.js';
 import * as XLSX from 'xlsx';
-import AgentPage from './pages/AgentPage';
-import AnalysisPage from './pages/AnalysisPage';
-import AssemblyPage from './pages/AssemblyPage';
-import BankPage from './pages/BankPage';
-import BomPage from './pages/BomPage';
-import ContractsPage from './pages/ContractsPage';
+
+/* ============================================================================
+ * 首屏瘦身（2026-10-27，B4）：47 个页面从「静态 import」改为「路由级懒加载」。
+ *
+ * 之前的样子：47 条 `import XxxPage from './pages/XxxPage'` 全压在入口里，Vite 必须
+ *   把它们（连同页面用的表格/图表/OCR/打印逻辑）打进同一个 index-*.js。
+ *   实测 index-js = 2579 KB，gzip 667 KB —— 用户只想看首屏，却要先下载并解析 47 页代码。
+ * 现在的样子：每页独立 chunk，切到哪页才下载哪页；真正用到 Excel/PDF/OCR 的页
+ *   也不会再拖累首页。
+ *
+ * `pageLoadingFallback` 是该页 chunk 还没到位时的占位（只占内容区，不动侧边栏/顶部，
+ * 所以不会出现「整屏白一下」）。它是同一个 React 元素对象，被 47 个边界复用 —— 元素不可变，
+ * 复用完全安全。
+ *
+ * ⚠️ 新增页面请沿用：`const XxxPage = lazy(() => import('./pages/XxxPage'));`
+ *    再加 `{selectedTab === 'xxx' && <PageBoundary><XxxPage ctx={appCtx} /></PageBoundary>}`
+ *    别写回静态 import，否则首屏体积会悄悄涨回去（这类回归没人会主动发现）。
+ * ============================================================================ */
+const pageLoadingFallback = <section className="panel">页面加载中…</section>;
+
+/**
+ * 页面边界 = 错误边界 + Suspense，合在一个组件里，所以每个页签只多一层标签。
+ *
+ * 为什么需要错误边界（懒加载带来的新失败模式，别删）：
+ *   `React.lazy` 的 import 是**网络请求**。发版后 chunk 的 hash 全变了，而用户手上那份
+ *   index.html 可能还是旧的（SW 缓存 / 没整页刷新），于是点进某个页签 → 请求一个
+ *   已经被清掉的文件 → 404 → lazy 抛错。**没有错误边界时 React 会卸载整棵树**：
+ *   侧边栏、顶部、当前页全没，用户只看到一片白，而且不知道该刷新。
+ *   有了它，坏的只有这一页，还给了明确的下一步（刷新）。
+ *
+ * 顺带也兜住「某页自己 render 时抛异常」——以前那种情况同样是整站白屏。
+ */
+class PageBoundary extends Component {
+  state = { error: null };
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    // 留在控制台里，方便照截图排查；别改成 throw（会再次穿透到上层）
+    console.error('[page-boundary] 页面加载失败：', error, info && info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <section className="panel">
+          <h3>这个页面没能加载出来</h3>
+          <p>
+            多半是系统刚更新过，浏览器里还留着旧版本的文件。刷新一次就好；
+            要是刷新后仍然打不开，请把这条提示发给管理员（控制台里有详细报错）。
+          </p>
+          <button type="button" className="primary-btn" onClick={() => window.location.reload()}>
+            刷新页面
+          </button>
+        </section>
+      );
+    }
+    return <Suspense fallback={pageLoadingFallback}>{this.props.children}</Suspense>;
+  }
+}
+
+const AgentPage = lazy(() => import('./pages/AgentPage'));
+const AnalysisPage = lazy(() => import('./pages/AnalysisPage'));
+const AssemblyPage = lazy(() => import('./pages/AssemblyPage'));
+const BankPage = lazy(() => import('./pages/BankPage'));
+const BomPage = lazy(() => import('./pages/BomPage'));
+const ContractsPage = lazy(() => import('./pages/ContractsPage'));
 // 第 13 批（第三阶段）：合同台账 —— 独立自包含组件，不依赖 appCtx。
 // 与上面的「购销合同」是两个页面：那个逐条填 A2 条款、开单；这个看/筛/导出/挂原件。
 // ⚠️ 懒加载：本页带着明细编辑表 + OCR 面板，静态引入会把约 10KB gzip 塞进首屏主包，
@@ -42,47 +105,47 @@ const ContractsLedger = lazy(() => import('./components/contracts/ContractsLedge
 // 同样是自包含组件（自己取数、不读 ctx），懒加载 —— 这一页带 6 张汇总卡 + 明细编辑表，
 // 只有「销售管理 → 增强对账单」这条路径用得到，不该进首屏主包。
 const StatementEditor = lazy(() => import('./components/statements/StatementEditor.jsx'));
-import CustomersPage from './pages/CustomersPage';
-import DataioPage from './pages/DataioPage';
-import DictionariesPage from './pages/DictionariesPage';
-import FinancePage from './pages/FinancePage';
-import ThreeWayMatchPage from './pages/ThreeWayMatchPage';
-import FinishedGoodsPage from './pages/FinishedGoodsPage';
-import IncomeExpensePage from './pages/IncomeExpensePage';
-import InventoryPage from './pages/InventoryPage';
-import InvoicesPage from './pages/InvoicesPage';
-import LogsPage from './pages/LogsPage';
-import LossOverflowPage from './pages/LossOverflowPage';
-import MaterialIssuePage from './pages/MaterialIssuePage';
-import MaterialReturnPage from './pages/MaterialReturnPage';
-import MenusPage from './pages/MenusPage';
-import MobilePage from './pages/MobilePage';
-import MrpPage from './pages/MrpPage';
-import OpeningStockPage from './pages/OpeningStockPage';
-import OutsourcingPage from './pages/OutsourcingPage';
-import OverviewPage from './pages/OverviewPage';
-import ParamsPage from './pages/ParamsPage';
-import PrintTemplatesPage from './pages/PrintTemplatesPage';
-import ProductionPage from './pages/ProductionPage';
-import ProductionPlanPage from './pages/ProductionPlanPage';
-import ProductsPage from './pages/ProductsPage';
-import ProjectsPage from './pages/ProjectsPage';
-import PurchaseOrderPage from './pages/PurchaseOrderPage';
-import PurchasePage from './pages/PurchasePage';
-import PurchaseReturnPage from './pages/PurchaseReturnPage';
-import QuotationPage from './pages/QuotationPage';
-import ReportsPage from './pages/ReportsPage';
-import SalesOrderPage from './pages/SalesOrderPage';
-import SalesPage from './pages/SalesPage';
-import SalesReturnPage from './pages/SalesReturnPage';
-import SettingsPage from './pages/SettingsPage';
-import StaffPage from './pages/StaffPage';
-import StockAlertPage from './pages/StockAlertPage';
-import StocktakingPage from './pages/StocktakingPage';
-import SuppliersPage from './pages/SuppliersPage';
-import TransferPage from './pages/TransferPage';
-import UsersPage from './pages/UsersPage';
-import WarehousesPage from './pages/WarehousesPage';
+const CustomersPage = lazy(() => import('./pages/CustomersPage'));
+const DataioPage = lazy(() => import('./pages/DataioPage'));
+const DictionariesPage = lazy(() => import('./pages/DictionariesPage'));
+const FinancePage = lazy(() => import('./pages/FinancePage'));
+const ThreeWayMatchPage = lazy(() => import('./pages/ThreeWayMatchPage'));
+const FinishedGoodsPage = lazy(() => import('./pages/FinishedGoodsPage'));
+const IncomeExpensePage = lazy(() => import('./pages/IncomeExpensePage'));
+const InventoryPage = lazy(() => import('./pages/InventoryPage'));
+const InvoicesPage = lazy(() => import('./pages/InvoicesPage'));
+const LogsPage = lazy(() => import('./pages/LogsPage'));
+const LossOverflowPage = lazy(() => import('./pages/LossOverflowPage'));
+const MaterialIssuePage = lazy(() => import('./pages/MaterialIssuePage'));
+const MaterialReturnPage = lazy(() => import('./pages/MaterialReturnPage'));
+const MenusPage = lazy(() => import('./pages/MenusPage'));
+const MobilePage = lazy(() => import('./pages/MobilePage'));
+const MrpPage = lazy(() => import('./pages/MrpPage'));
+const OpeningStockPage = lazy(() => import('./pages/OpeningStockPage'));
+const OutsourcingPage = lazy(() => import('./pages/OutsourcingPage'));
+const OverviewPage = lazy(() => import('./pages/OverviewPage'));
+const ParamsPage = lazy(() => import('./pages/ParamsPage'));
+const PrintTemplatesPage = lazy(() => import('./pages/PrintTemplatesPage'));
+const ProductionPage = lazy(() => import('./pages/ProductionPage'));
+const ProductionPlanPage = lazy(() => import('./pages/ProductionPlanPage'));
+const ProductsPage = lazy(() => import('./pages/ProductsPage'));
+const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
+const PurchaseOrderPage = lazy(() => import('./pages/PurchaseOrderPage'));
+const PurchasePage = lazy(() => import('./pages/PurchasePage'));
+const PurchaseReturnPage = lazy(() => import('./pages/PurchaseReturnPage'));
+const QuotationPage = lazy(() => import('./pages/QuotationPage'));
+const ReportsPage = lazy(() => import('./pages/ReportsPage'));
+const SalesOrderPage = lazy(() => import('./pages/SalesOrderPage'));
+const SalesPage = lazy(() => import('./pages/SalesPage'));
+const SalesReturnPage = lazy(() => import('./pages/SalesReturnPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const StaffPage = lazy(() => import('./pages/StaffPage'));
+const StockAlertPage = lazy(() => import('./pages/StockAlertPage'));
+const StocktakingPage = lazy(() => import('./pages/StocktakingPage'));
+const SuppliersPage = lazy(() => import('./pages/SuppliersPage'));
+const TransferPage = lazy(() => import('./pages/TransferPage'));
+const UsersPage = lazy(() => import('./pages/UsersPage'));
+const WarehousesPage = lazy(() => import('./pages/WarehousesPage'));
 
 /**
  * 明细行 / 表单字段的取值统一入口。
@@ -10665,7 +10728,8 @@ function App() {
    * appCtx —— **全局唯一的跨页依赖投递口**（2026-10-27 加锁，勿绕过）
    * ============================================================================
    * 页面组件一律写成 `function XxxPage({ ctx })`，再由下面的
-   * `{selectedTab === 'xxx' && <XxxPage ctx={appCtx} />}` 传进来。
+   * `{selectedTab === 'xxx' && <PageBoundary><XxxPage ctx={appCtx} /></PageBoundary>}` 传进来。
+   * （`PageBoundary` = 错误边界 + Suspense，页面是 lazy 的，少了它出任何错都是整屏白。）
    * 页面里**禁止**直接 import App.jsx 的任何东西 —— 那是循环依赖，也是白屏的经典来源。
    *
    * 【加东西的规矩】
@@ -11825,13 +11889,13 @@ function App() {
                 <div className="todo-tip">需要优先建设这个模块的话，直接告诉我，我把它排到前面。</div>
               </section>
             )}
-            {selectedTab === 'mobile' && <MobilePage ctx={appCtx} />}
+            {selectedTab === 'mobile' && <PageBoundary><MobilePage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'bom' && <BomPage ctx={appCtx} />}
+            {selectedTab === 'bom' && <PageBoundary><BomPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'overview' && <OverviewPage ctx={appCtx} />}
+            {selectedTab === 'overview' && <PageBoundary><OverviewPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'customers' && <CustomersPage ctx={appCtx} />}
+            {selectedTab === 'customers' && <PageBoundary><CustomersPage ctx={appCtx} /></PageBoundary>}
 
             {/* —— 新增 / 编辑客户弹窗（UI 在 components/partners/PartnerModal.jsx） —— */}
             <PartnerModal
@@ -11850,7 +11914,7 @@ function App() {
               onSmartFiles={setCustomerSmartFiles}
             />
 
-            {selectedTab === 'suppliers' && <SuppliersPage ctx={appCtx} />}
+            {selectedTab === 'suppliers' && <PageBoundary><SuppliersPage ctx={appCtx} /></PageBoundary>}
 
             {/* —— 新增 / 编辑供应商弹窗（UI 在 components/partners/PartnerModal.jsx） —— */}
             <PartnerModal
@@ -11898,7 +11962,7 @@ function App() {
                 调用口见 lib/printConfirm.js —— 任何模块 import 后即可 await confirmPrint()。 */}
             <PrintConfirmHost />
 
-            {selectedTab === 'bank' && <BankPage ctx={appCtx} />}
+            {selectedTab === 'bank' && <PageBoundary><BankPage ctx={appCtx} /></PageBoundary>}
 
             {/* —— 新增/编辑账户弹窗 —— */}
             {bankAccountModalOpen && (
@@ -12028,13 +12092,13 @@ function App() {
               </div>
             )}
 
-            {selectedTab === 'income-expense' && <IncomeExpensePage ctx={appCtx} />}
+            {selectedTab === 'income-expense' && <PageBoundary><IncomeExpensePage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'assembly' && <AssemblyPage ctx={appCtx} />}
+            {selectedTab === 'assembly' && <PageBoundary><AssemblyPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'staff' && <StaffPage ctx={appCtx} />}
+            {selectedTab === 'staff' && <PageBoundary><StaffPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'opening-stock' && <OpeningStockPage ctx={appCtx} />}
+            {selectedTab === 'opening-stock' && <PageBoundary><OpeningStockPage ctx={appCtx} /></PageBoundary>}
 
             {/* —— 新增/编辑员工弹窗 —— */}
             {employeeModalOpen && (
@@ -12150,7 +12214,7 @@ function App() {
               </div>
             )}
 
-            {selectedTab === 'warehouses' && <WarehousesPage ctx={appCtx} />}
+            {selectedTab === 'warehouses' && <PageBoundary><WarehousesPage ctx={appCtx} /></PageBoundary>}
 
             {/* —— 新增/编辑仓库弹窗 —— */}
             {warehouseModalOpen && (
@@ -12206,7 +12270,7 @@ function App() {
               </div>
             )}
 
-            {selectedTab === 'products' && <ProductsPage ctx={appCtx} />}
+            {selectedTab === 'products' && <PageBoundary><ProductsPage ctx={appCtx} /></PageBoundary>}
 
             {/* —— 商品弹窗（新增 / 编辑）——
                 弹窗本体已抽成独立组件 src/components/product-edit/ProductEditModal.jsx。
@@ -12362,29 +12426,29 @@ function App() {
               </div>
             )}
 
-            {selectedTab === 'dataio' && <DataioPage ctx={appCtx} />}
+            {selectedTab === 'dataio' && <PageBoundary><DataioPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'purchase-order' && <PurchaseOrderPage ctx={appCtx} />}
+            {selectedTab === 'purchase-order' && <PageBoundary><PurchaseOrderPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'purchase' && <PurchasePage ctx={appCtx} />}
+            {selectedTab === 'purchase' && <PageBoundary><PurchasePage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'sales-order' && <SalesOrderPage ctx={appCtx} />}
+            {selectedTab === 'sales-order' && <PageBoundary><SalesOrderPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'sales' && <SalesPage ctx={appCtx} />}
+            {selectedTab === 'sales' && <PageBoundary><SalesPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'production' && <ProductionPage ctx={appCtx} />}
+            {selectedTab === 'production' && <PageBoundary><ProductionPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'projects' && <ProjectsPage ctx={appCtx} />}
+            {selectedTab === 'projects' && <PageBoundary><ProjectsPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'reports' && <ReportsPage ctx={appCtx} />}
+            {selectedTab === 'reports' && <PageBoundary><ReportsPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'invoices' && <InvoicesPage ctx={appCtx} />}
+            {selectedTab === 'invoices' && <PageBoundary><InvoicesPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'analysis' && <AnalysisPage ctx={appCtx} />}
+            {selectedTab === 'analysis' && <PageBoundary><AnalysisPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'finance' && <FinancePage ctx={appCtx} />}
+            {selectedTab === 'finance' && <PageBoundary><FinancePage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'three-way-match' && <ThreeWayMatchPage ctx={appCtx} />}
+            {selectedTab === 'three-way-match' && <PageBoundary><ThreeWayMatchPage ctx={appCtx} /></PageBoundary>}
 
             {selectedTab === 'stock-logs' && renderStockLogsPage()}
 
@@ -12396,7 +12460,7 @@ function App() {
 
             {selectedTab === 'general-ledger' && renderGeneralLedgerPage()}
 
-            {selectedTab === 'contracts' && <ContractsPage ctx={appCtx} />}
+            {selectedTab === 'contracts' && <PageBoundary><ContractsPage ctx={appCtx} /></PageBoundary>}
 
             {/* 第 13 批：合同台账。组件自己取数（token 走 localStorage），
                 所以这里**不传 ctx** —— 传了反而会诱使人往里加 ctx 依赖。
@@ -12420,49 +12484,49 @@ function App() {
               </Suspense>
             )}
 
-            {selectedTab === 'quotation' && <QuotationPage ctx={appCtx} />}
+            {selectedTab === 'quotation' && <PageBoundary><QuotationPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'purchase-return' && <PurchaseReturnPage ctx={appCtx} />}
+            {selectedTab === 'purchase-return' && <PageBoundary><PurchaseReturnPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'sales-return' && <SalesReturnPage ctx={appCtx} />}
+            {selectedTab === 'sales-return' && <PageBoundary><SalesReturnPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'transfer' && <TransferPage ctx={appCtx} />}
+            {selectedTab === 'transfer' && <PageBoundary><TransferPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'stocktaking' && <StocktakingPage ctx={appCtx} />}
+            {selectedTab === 'stocktaking' && <PageBoundary><StocktakingPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'loss-overflow' && <LossOverflowPage ctx={appCtx} />}
+            {selectedTab === 'loss-overflow' && <PageBoundary><LossOverflowPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'production-plan' && <ProductionPlanPage ctx={appCtx} />}
+            {selectedTab === 'production-plan' && <PageBoundary><ProductionPlanPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'mrp' && <MrpPage ctx={appCtx} />}
+            {selectedTab === 'mrp' && <PageBoundary><MrpPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'material-issue' && <MaterialIssuePage ctx={appCtx} />}
+            {selectedTab === 'material-issue' && <PageBoundary><MaterialIssuePage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'material-return' && <MaterialReturnPage ctx={appCtx} />}
+            {selectedTab === 'material-return' && <PageBoundary><MaterialReturnPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'finished-goods' && <FinishedGoodsPage ctx={appCtx} />}
+            {selectedTab === 'finished-goods' && <PageBoundary><FinishedGoodsPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'outsourcing' && <OutsourcingPage ctx={appCtx} />}
+            {selectedTab === 'outsourcing' && <PageBoundary><OutsourcingPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'users' && <UsersPage ctx={appCtx} />}
+            {selectedTab === 'users' && <PageBoundary><UsersPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'params' && <ParamsPage ctx={appCtx} />}
+            {selectedTab === 'params' && <PageBoundary><ParamsPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'dictionaries' && <DictionariesPage ctx={appCtx} />}
+            {selectedTab === 'dictionaries' && <PageBoundary><DictionariesPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'print-templates' && <PrintTemplatesPage ctx={appCtx} />}
+            {selectedTab === 'print-templates' && <PageBoundary><PrintTemplatesPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'logs' && <LogsPage ctx={appCtx} />}
+            {selectedTab === 'logs' && <PageBoundary><LogsPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'menus' && <MenusPage ctx={appCtx} />}
+            {selectedTab === 'menus' && <PageBoundary><MenusPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'settings' && <SettingsPage ctx={appCtx} />}
+            {selectedTab === 'settings' && <PageBoundary><SettingsPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'inventory' && <InventoryPage ctx={appCtx} />}
+            {selectedTab === 'inventory' && <PageBoundary><InventoryPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'stock-alert' && <StockAlertPage ctx={appCtx} />}
+            {selectedTab === 'stock-alert' && <PageBoundary><StockAlertPage ctx={appCtx} /></PageBoundary>}
 
-            {selectedTab === 'agent' && <AgentPage ctx={appCtx} />}
+            {selectedTab === 'agent' && <PageBoundary><AgentPage ctx={appCtx} /></PageBoundary>}
 
             {notice && (
               <div className={`notice-box${noticeTone ? ` notice-box--${noticeTone}` : ''}`}>{notice}</div>
