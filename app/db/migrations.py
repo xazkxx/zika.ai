@@ -115,3 +115,33 @@ def _migration_0001_invoice_attributes(conn) -> None:
 
 
 MIGRATIONS.append((1, "invoice business attributes & source file", _migration_0001_invoice_attributes))
+
+
+def _migration_0002_product_attributes(conn) -> None:
+    """C1-2a：产品档案补列（原 `PRODUCT_ADDITIONS`，含后追加的 tax_rate）。"""
+    from app.main import PRODUCT_ADDITIONS
+
+    _add_columns_if_missing(conn, "products", PRODUCT_ADDITIONS)
+
+
+def _migration_0003_customer_attributes(conn) -> None:
+    """C1-2a：客户档案补列（原 `CUSTOMER_ADDITIONS`）。"""
+    from app.main import CUSTOMER_ADDITIONS
+
+    _add_columns_if_missing(conn, "customers", CUSTOMER_ADDITIONS)
+
+
+def _migration_0004_supplier_attributes(conn) -> None:
+    """C1-2a：供应商档案补列（原 `SUPPLIER_ADDITIONS`）。"""
+    from app.main import SUPPLIER_ADDITIONS
+
+    _add_columns_if_missing(conn, "suppliers", SUPPLIER_ADDITIONS)
+
+
+MIGRATIONS.extend(
+    [
+        (2, "product attributes", _migration_0002_product_attributes),
+        (3, "customer attributes", _migration_0003_customer_attributes),
+        (4, "supplier attributes", _migration_0004_supplier_attributes),
+    ]
+)

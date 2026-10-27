@@ -130,3 +130,29 @@ def test_migration_adds_columns_to_legacy_table():
     finally:
         with engine.begin() as conn:
             conn.execute(text(f"DROP TABLE IF EXISTS {probe}"))
+
+
+def test_master_data_migrations_registered_and_applied():
+    """C1-2a：产品/客户/供应商三组补列迁移已注册并已应用，列均在。"""
+    assert {2, 3, 4} <= {mid for mid, _, _ in MIGRATIONS}
+
+    apply_pending(engine)  # 幂等，确保已应用
+    with engine.begin() as conn:
+        applied = {
+            row[0]
+            for row in conn.execute(
+                text(f"SELECT id FROM {_TRACKING_TABLE} WHERE id IN (2, 3, 4)")
+            ).fetchall()
+        }
+    assert applied == {2, 3, 4}
+
+    from app.main import CUSTOMER_ADDITIONS, PRODUCT_ADDITIONS, SUPPLIER_ADDITIONS
+
+    for table, additions in (
+        ("products", PRODUCT_ADDITIONS),
+        ("customers", CUSTOMER_ADDITIONS),
+        ("suppliers", SUPPLIER_ADDITIONS),
+    ):
+        with engine.begin() as conn:
+            cols = {column["name"] for column in inspect(conn).get_columns(table)}
+        assert set(additions) <= cols, f"{table} 缺列：{set(additions) - cols}"
