@@ -4,6 +4,7 @@
 
 ## 当前版本
 
+- 版本：**1.82.0**（2026-10-27 · C1 迁移机制统一完成，启动迁移入口已收敛）
 - 后端：Python + FastAPI + SQLAlchemy
 - 数据库：SQLite（本地开发，可切换 PostgreSQL）
 - 权限：JWT 登录认证
@@ -110,6 +111,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\rotate_db_passwo
 - 计划任务「ERP数据库备份」（每日 21:37）入口仍是 `backup\backup.ps1`，
   它现在只是 3 行转发器，真正的脚本是版本化的 `scripts\ops\backup_db.ps1`，任务本身无需改动。
 - `backup/` 整个目录被 .gitignore 忽略，所以脚本的权威副本放在 `scripts/ops/`。
+
+## 数据库迁移（C1 · v1.82.0）
+
+启动时的 schema 迁移已**统一为一套版本化迁移**：
+
+- `app/db/migrations.py`：迁移注册表 + `erp_migrations` 记录表 + `apply_pending()`
+  （按 id 升序、只跑未应用过的、每个迁移与记录同一事务，失败整条回滚）；
+- `app/db/migration_columns.py`：列定义唯一来源（由 `scripts/gen_migration_columns.py`
+  从运行期 dict 生成并自校验，零手抄）；
+- `create_app()` 与各账套初始化只调用 `apply_pending()`；`main.py` 已无任何补列 / 转列 /
+  建索引 / 纠偏代码（`ensure_schema_in` / `ensure_contract_module` 已删除）；
+- `scripts/` 下的历史一次性补丁保留为手动工具，**不在启动路径上**。
 
 ## 下一步计划
 
