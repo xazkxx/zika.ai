@@ -14,6 +14,7 @@ from app.api.v1.router import api_router
 from app.core.auth_gate import auth_gate_middleware
 from app.core.security import get_password_hash
 from app.db.base import Base
+from app.db.migrations import apply_pending
 from app.db.session import SessionLocal, engine
 from app.models.user import User
 
@@ -685,6 +686,10 @@ def ensure_all_tenant_schemas() -> None:
             # 第 13 批：同样要给账套 schema 补列 / 转金额列 / 建索引 ——
             # 只在 public 上做的话，新账套的合同方向过滤与对账单金额精度都会出问题。
             ensure_contract_module(tenant_router.engine_for(schema))
+            # C1（2026-10-27）：账套也要跑版本化迁移。用 ddl_engine_for（search_path 不带
+            # public），否则 has_table("erp_migrations") 会先看到 public 里的同名表，
+            # 把 public 的迁移历史误当成这个账套自己的 —— 那是串账。
+            apply_pending(tenant_router.ddl_engine_for(schema))
             # 每个账套都要有自己的根部门：部门是账套表，
             # 新账套没有这一层的话「员工档案」连可选部门都没有
             ensure_default_departments(tenant_router.engine_for(schema))
@@ -1361,6 +1366,9 @@ def create_app() -> FastAPI:
     # 第 13 批：合同 / 客户文件 / 对账单。
     # 必须在 create_all 之后（新表靠它建）—— 它只补列、转列、建索引。
     ensure_contract_module()
+    # C1（2026-10-27）：版本化迁移 —— 新机制先于旧机制之前跑（空注册表时是 no-op）。
+    # 它只应用「还没跑过」的迁移，幂等由 erp_migrations 记录表保证。
+    apply_pending(engine)
     ensure_default_admin_user()
     ensure_default_departments()
     ensure_default_roles()
