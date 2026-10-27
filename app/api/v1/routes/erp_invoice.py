@@ -1827,6 +1827,51 @@ def download_invoice_qrcode(
 
 
 
+def _validate_amount_consistency(item: Invoice, data: dict) -> None:
+    """发票金额三要素一致性校验：不含税额 + 税额 = 价税合计（分位容差）。
+
+    为什么在保存时硬拦 400 而不是前端只做提示：`total_amount` 会流入进项税抵扣、
+    对账单、完结闸、自动挂单 —— 「不含税 + 税额 ≠ 价税合计」的脏数据一旦落库，
+    界面上看不出对错，却会静默污染下游所有统计。所以宁可当场报错把原因说清。
+
+    只有「不含税额」「税额」都有值时才校验恒等式（历史票可能只存了价税合计，无从校验）。
+    红字票用 `invoice_flag` 表达，金额本身仍存绝对值，因此一律拒绝负数。
+    """
+
+    # 只在本次真的改了金额字段时才校验 —— 改 handler / certified / direction 等
+    # 无关字段时，历史票里既有的「不含税 + 税额 ≠ 价税合计」脏数据不该挡住这次编辑。
+    amount_fields = ("total_amount", "excl_tax_amount", "tax_amount")
+    if not any(key in data for key in amount_fields):
+        return
+
+    def pick(key: str, current) -> float | None:
+        value = data[key] if key in data else current
+        return None if value is None else float(value)
+
+    total = pick("total_amount", item.total_amount or 0)
+    excl = pick("excl_tax_amount", item.excl_tax_amount)
+    tax = pick("tax_amount", item.tax_amount)
+
+    for label, value in (("价税合计", total), ("不含税额", excl), ("税额", tax)):
+        if value is not None and value < 0:
+            raise HTTPException(status_code=400, detail=f"{label}不能为负数（当前 {value}）")
+
+    if excl is None or tax is None:
+        return
+
+    t = round(total, 2)
+    e = round(excl, 2)
+    x = round(tax, 2)
+    if abs(t - (e + x)) > 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"金额不一致：不含税额 {e:,.2f} + 税额 {x:,.2f} = {e + x:,.2f}，"
+                f"与价税合计 {t:,.2f} 相差 {abs(t - (e + x)):.2f} 元，请核对后再保存。"
+            ),
+        )
+
+
 @router.patch("/invoices/{invoice_id}")
 def update_invoice(invoice_id: int, payload: InvoiceUpdate, db: Session = Depends(get_db)) -> dict[str, object]:
     item = db.get(Invoice, invoice_id)
@@ -1840,6 +1885,11 @@ def update_invoice(invoice_id: int, payload: InvoiceUpdate, db: Session = Depend
             detail="这张发票已作废，不能再修改。需要重开请新建一张（作废记录与原件已归档）。",
         )
     data = payload.model_dump(exclude_unset=True)
+    # 金额三要素一致性（2026-10-27 修复「发票金额编辑漏洞」）：
+    # schema 收下 total_amount/tax_rate/tax_amount/excl_tax_amount 之后，
+    # 必须先校验「不含税 + 税额 = 价税合计」，再落库 —— 否则改金额的入口
+    # 会变成写脏数据的新后门。
+    _validate_amount_consistency(item, data)
     # 记住改前的三态：下面要根据跃迁决定要不要落/清时间戳
     was_deducted = bool(item.deducted)
     was_certified = bool(item.certified)

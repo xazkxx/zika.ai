@@ -4790,6 +4790,25 @@ td input[type="checkbox"] {
   padding-top: 6px;
 }
 
+/* 发票编辑弹窗：金额三要素一致性实时提示（2026-10-27，与后端校验同口径） */
+.invoice-amount-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.invoice-amount-hint.is-ok {
+  color: #15803d;
+  background: #f0fdf4;
+}
+.invoice-amount-hint.is-warn {
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+}
+
 @media (max-width: 760px) {
   .invoice-edit-form {
     grid-template-columns: minmax(0, 1fr);

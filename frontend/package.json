@@ -1,7 +1,7 @@
 {
   "name": "erp-frontend",
   "private": true,
-  "version": "1.81.2",
+  "version": "1.81.3",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",

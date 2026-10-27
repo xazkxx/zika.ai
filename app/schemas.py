@@ -733,6 +733,14 @@ class InvoiceUpdate(BaseModel):
     buyer_tax_no: Optional[str] = None
     seller_name: Optional[str] = None
     seller_tax_no: Optional[str] = None
+    # 金额三要素 + 税率（2026-10-27 修复「发票金额编辑漏洞」）：
+    # 编辑弹窗里本来就有这四个输入框、前端也一直在提交，但 schema 没声明 →
+    # Pydantic 默认静默忽略未声明字段 → 改金额保存后原样不变、界面还提示「已保存」。
+    # 补进来后由 `update_invoice` 做一致性校验（价税合计 = 不含税额 + 税额，分位容差）。
+    total_amount: Optional[float] = None
+    tax_rate: Optional[float] = None
+    tax_amount: Optional[float] = None
+    excl_tax_amount: Optional[float] = None
 
 
 class InvoiceRead(InvoiceCreate):

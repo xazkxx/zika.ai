@@ -1947,6 +1947,30 @@ export default function InvoicesPage({ ctx }) {
                               onChange={(event) => setInvoiceEditForm((prev) => ({ ...prev, tax_rate: event.target.value }))}
                             />
                           </label>
+                          {(() => {
+                            // 金额三要素一致性实时提示（2026-10-27）：与后端校验同一套口径，
+                            // 让用户在点「保存」之前就看到「不含税 + 税额 ≠ 价税合计」，
+                            // 而不是点了保存才被 400 拦下。
+                            const num = (v) => {
+                              if (v === '' || v === null || v === undefined) return null;
+                              const n = Number(v);
+                              return Number.isNaN(n) ? null : n;
+                            };
+                            const total = num(invoiceEditForm.total_amount);
+                            const excl = num(invoiceEditForm.excl_tax_amount);
+                            const tax = num(invoiceEditForm.tax_amount);
+                            if (excl === null || tax === null || total === null) return null;
+                            const sum = excl + tax;
+                            const diff = Math.abs(total - sum);
+                            if (diff <= 0.01) {
+                              return <p className="invoice-amount-hint is-ok">金额一致：不含税 + 税额 = {money(sum)}</p>;
+                            }
+                            return (
+                              <p className="invoice-amount-hint is-warn" role="alert">
+                                金额不一致：不含税 + 税额 = {money(sum)}，价税合计 = {money(total)}，相差 {money(diff)} 元 —— 保存会被拦截。
+                              </p>
+                            );
+                          })()}
                           <label>
                             <span>分类</span>
                             <input
