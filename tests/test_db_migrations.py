@@ -16,6 +16,12 @@ from app.db.migration_columns import (
     CUSTOMER_COLUMNS,
     INVOICE_COLUMNS,
     PRODUCT_COLUMNS,
+    PURCHASE_ITEM_COLUMNS,
+    PURCHASE_ORDER_COLUMNS,
+    PURCHASE_RETURN_ITEM_COLUMNS,
+    SALES_ITEM_COLUMNS,
+    SALES_ORDER_COLUMNS,
+    SALES_RETURN_ITEM_COLUMNS,
     SUPPLIER_COLUMNS,
 )
 from app.db.migrations import MIGRATIONS, _TRACKING_TABLE, apply_pending
@@ -151,6 +157,33 @@ def test_master_data_migrations_registered_and_applied():
         ("products", PRODUCT_COLUMNS),
         ("customers", CUSTOMER_COLUMNS),
         ("suppliers", SUPPLIER_COLUMNS),
+    ):
+        with engine.begin() as conn:
+            cols = {column["name"] for column in inspect(conn).get_columns(table)}
+        assert set(columns) <= cols, f"{table} 缺列：{set(columns) - cols}"
+
+
+def test_order_migrations_registered_and_applied():
+    """C1-4A：采购/销售单头与明细（含退货明细）迁移已注册并应用，列齐全。"""
+    assert {5, 6, 7, 8, 9, 10} <= {mid for mid, _, _ in MIGRATIONS}
+
+    apply_pending(engine)
+    with engine.begin() as conn:
+        applied = {
+            row[0]
+            for row in conn.execute(
+                text(f"SELECT id FROM {_TRACKING_TABLE} WHERE id IN (5, 6, 7, 8, 9, 10)")
+            ).fetchall()
+        }
+    assert applied == {5, 6, 7, 8, 9, 10}
+
+    for table, columns in (
+        ("purchase_orders", PURCHASE_ORDER_COLUMNS),
+        ("sales_orders", SALES_ORDER_COLUMNS),
+        ("purchase_order_items", PURCHASE_ITEM_COLUMNS),
+        ("sales_order_items", SALES_ITEM_COLUMNS),
+        ("purchase_return_items", PURCHASE_RETURN_ITEM_COLUMNS),
+        ("sales_return_items", SALES_RETURN_ITEM_COLUMNS),
     ):
         with engine.begin() as conn:
             cols = {column["name"] for column in inspect(conn).get_columns(table)}

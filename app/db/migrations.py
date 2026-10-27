@@ -30,10 +30,22 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
 from app.db.migration_columns import (
+    COMPANY_COLUMNS,
+    CONTRACT_COLUMNS,
     CUSTOMER_COLUMNS,
+    FINANCE_COLUMNS,
+    INVENTORY_COLUMNS,
     INVOICE_COLUMNS,
     PRODUCT_COLUMNS,
+    PURCHASE_ITEM_COLUMNS,
+    PURCHASE_ORDER_COLUMNS,
+    PURCHASE_RETURN_ITEM_COLUMNS,
+    QUOTATION_COLUMNS,
+    SALES_ITEM_COLUMNS,
+    SALES_ORDER_COLUMNS,
+    SALES_RETURN_ITEM_COLUMNS,
     SUPPLIER_COLUMNS,
+    USER_COLUMNS,
 )
 
 # 迁移注册表：只增不改。已发布过的条目改 id 或改内容会让老库状态错乱。
@@ -138,5 +150,47 @@ MIGRATIONS.extend(
         (2, "product attributes", _migration_0002_product_attributes),
         (3, "customer attributes", _migration_0003_customer_attributes),
         (4, "supplier attributes", _migration_0004_supplier_attributes),
+    ]
+)
+
+
+def _migration_0005_purchase_orders(conn) -> None:
+    """C1-4A：采购单头补列（仓库绑定 / 结算链 / 欠款链）。"""
+    _add_columns_if_missing(conn, "purchase_orders", PURCHASE_ORDER_COLUMNS)
+
+
+def _migration_0006_sales_orders(conn) -> None:
+    """C1-4A：销售单头补列。"""
+    _add_columns_if_missing(conn, "sales_orders", SALES_ORDER_COLUMNS)
+
+
+def _migration_0007_purchase_order_items(conn) -> None:
+    """C1-4A：采购单明细补列（含 ORDER_ITEM 基础列）。"""
+    _add_columns_if_missing(conn, "purchase_order_items", PURCHASE_ITEM_COLUMNS)
+
+
+def _migration_0008_sales_order_items(conn) -> None:
+    """C1-4A：销售单明细补列（含 ORDER_ITEM 基础列）。"""
+    _add_columns_if_missing(conn, "sales_order_items", SALES_ITEM_COLUMNS)
+
+
+def _migration_0009_purchase_return_items(conn) -> None:
+    """C1-4A：采购退货明细补列。"""
+    _add_columns_if_missing(conn, "purchase_return_items", PURCHASE_RETURN_ITEM_COLUMNS)
+
+
+def _migration_0010_sales_return_items(conn) -> None:
+    """C1-4A：销售退货明细补列。"""
+    _add_columns_if_missing(conn, "sales_return_items", SALES_RETURN_ITEM_COLUMNS)
+
+
+MIGRATIONS.extend(
+    [
+        (5, "purchase order header", _migration_0005_purchase_orders),
+        (6, "sales order header", _migration_0006_sales_orders),
+        (7, "purchase order items", _migration_0007_purchase_order_items),
+        (8, "sales order items", _migration_0008_sales_order_items),
+        (9, "purchase return items", _migration_0009_purchase_return_items),
+        (10, "sales return items", _migration_0010_sales_return_items),
     ]
 )

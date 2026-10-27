@@ -25,7 +25,7 @@ def _add_missing_columns(conn, table: str, additions: dict[str, str]) -> None:
     """给已存在的表补列（幂等）。
 
     新增列一律可空（不改动历史数据）—— **唯一例外**是带 `DEFAULT` 的 `NOT NULL`，
-    如 `purchase_order_items.unit_factor`（见 `PURCHASE_ITEM_ADDITIONS`）。
+    如 `purchase_order_items.unit_factor`（见 `migration_columns.PURCHASE_ITEM_COLUMNS`）。
     它的默认值本身就代表"行为与改动前完全一致"，所以不需要再引入 NULL 这一态 ——
     否则每个读取点都得写 `COALESCE(unit_factor, 1)`，NULL 会像病毒一样扩散，
     而 `DEFAULT 1` 让历史行天然正确、不必 `UPDATE` 回填。
@@ -45,107 +45,8 @@ def _add_missing_columns(conn, table: str, additions: dict[str, str]) -> None:
 #    PRODUCT / CUSTOMER / SUPPLIER 三个旧 dict 正式删除，补列职责由
 #    `app/db/migrations.py` 的 id=2/3/4 迁移接管。
 
-# 单据头：仓库绑定 + 业务信息 + 结算链 + 欠款链
-PURCHASE_ORDER_ADDITIONS = {
-    "warehouse_id": "INTEGER",
-    "project_id": "INTEGER",
-    "businesser": "VARCHAR(50)",
-    "order_date": "VARCHAR(20)",
-    "delivery_date": "VARCHAR(20)",
-    "payment_method": "VARCHAR(30)",
-    "contact": "VARCHAR(50)",
-    "contact_phone": "VARCHAR(30)",
-    "address": "VARCHAR(255)",
-    "note": "VARCHAR(255)",
-    "payable_amount": "DOUBLE PRECISION DEFAULT 0",
-    "discount_amount": "DOUBLE PRECISION DEFAULT 0",
-    "paid_amount": "DOUBLE PRECISION DEFAULT 0",
-    "is_invoiced": "BOOLEAN DEFAULT FALSE",
-    "current_debt": "DOUBLE PRECISION DEFAULT 0",
-    "prev_debt": "DOUBLE PRECISION DEFAULT 0",
-    "total_debt": "DOUBLE PRECISION DEFAULT 0",
-    # 单据性质：order=采购订单 / inbound=采购入库单（历史数据全部视为入库单）
-    "doc_type": "VARCHAR(20) NOT NULL DEFAULT 'inbound'",
-    "source_order_id": "INTEGER",
-    # 与销售侧对齐（2026-10-21 补齐）：首批入库时间 + 自采垫付
-    "shipped_at": "TIMESTAMP WITH TIME ZONE",
-    "self_purchase_paid": "DOUBLE PRECISION",
-    "self_purchase_supplier_id": "INTEGER",
-}
-
-SALES_ORDER_ADDITIONS = {
-    "warehouse_id": "INTEGER",
-    "project_id": "INTEGER",
-    "businesser": "VARCHAR(50)",
-    "order_date": "VARCHAR(20)",
-    "delivery_date": "VARCHAR(20)",
-    "payment_method": "VARCHAR(30)",
-    "contact": "VARCHAR(50)",
-    "contact_phone": "VARCHAR(30)",
-    "address": "VARCHAR(255)",
-    "note": "VARCHAR(255)",
-    "receivable_amount": "DOUBLE PRECISION DEFAULT 0",
-    "discount_amount": "DOUBLE PRECISION DEFAULT 0",
-    "received_amount": "DOUBLE PRECISION DEFAULT 0",
-    "is_invoiced": "BOOLEAN DEFAULT FALSE",
-    "current_debt": "DOUBLE PRECISION DEFAULT 0",
-    "prev_debt": "DOUBLE PRECISION DEFAULT 0",
-    "total_debt": "DOUBLE PRECISION DEFAULT 0",
-    # 单据性质：order=销售订单 / outbound=销售开单（历史数据全部视为开单）
-    "doc_type": "VARCHAR(20) NOT NULL DEFAULT 'outbound'",
-    "source_order_id": "INTEGER",
-    # 四流合一的「物流流」：物流公司/单号 + 签收人/签收时间（2026-10-21 恢复）
-    "logistics_company": "VARCHAR(100)",
-    "logistics_no": "VARCHAR(100)",
-    "signed_by": "VARCHAR(50)",
-    "signed_at": "TIMESTAMP WITH TIME ZONE",
-}
-
-# 单据明细快照：打印单据时不必回查商品档案
-ORDER_ITEM_ADDITIONS = {
-    "product_name": "VARCHAR(150)",
-    "standards": "VARCHAR(100)",
-    "unit": "VARCHAR(50)",
-    "note": "VARCHAR(255)",
-}
-
-# 3b 多单位换算：**只有采购明细**加换算率快照。
-#
-# ⚠️ 刻意不复用 `ORDER_ITEM_ADDITIONS` —— 那个 dict 被 `purchase_order_items`
-#    和 `sales_order_items` **共用**（见 `ensure_schema_in` 里连着两行各调一次），
-#    往里加 key 会让销售明细**同时**多出一列。3b 的验收要能干净地证明
-#    「除了采购链路，其它单据的库存口径一条都没变」，多一张表多一列会让这个边界模糊；
-#    而这一列在 3c 之前对销售没有任何含义。代价：3c 时再补一次（一次 ALTER + 一次重启）。
-PURCHASE_ITEM_ADDITIONS = {
-    **ORDER_ITEM_ADDITIONS,
-    # 换算率：1 个录入单位 = 几个基本单位。默认 1 = 不换算 = 与改动前逐字节等价。
-    # ⚠️ 全库第一个 NOT NULL 的补列，理由见 `_add_missing_columns` 的 docstring。
-    "unit_factor": "INTEGER NOT NULL DEFAULT 1",
-}
-
-# 3b：采购退货明细也要同一列。
-# ⚠️ 这张表此前**从未**在 `ensure_schema_in` 里注册过（三账套实测都还停在 11 列），
-#    所以漏了它不会"保持现状"、而是会让每一次退货插入都报「列不存在」。
-#    它自己一套列顺序（比采购明细多了 standards 的位置差异），单列一份最不容易错。
-PURCHASE_RETURN_ITEM_ADDITIONS = {
-    "unit_factor": "INTEGER NOT NULL DEFAULT 1",
-}
-
-# 3c 多单位换算：销售明细也加同一列。
-#
-# 为什么不像 3b 那样"另起一份"而是从 `ORDER_ITEM_ADDITIONS` 派生：
-# 这张表**本来就吃** `ORDER_ITEM_ADDITIONS` 那一套（`ensure_schema_in` 里注册的就是它），
-# 现在只是把注册名换成这里、再叠加 `unit_factor`。派生写法能保证
-# 「单头快照那 4 列」只有一处定义，将来加列不会一边加一边忘。
-SALES_ITEM_ADDITIONS = {
-    **ORDER_ITEM_ADDITIONS,
-    "unit_factor": "INTEGER NOT NULL DEFAULT 1",
-}
-
-# 3c：销售退货明细也要同一列（退货同样要按最小单位写库存流水）。
-SALES_RETURN_ITEM_ADDITIONS = {
-    "unit_factor": "INTEGER NOT NULL DEFAULT 1",
-}
+# 单据头 / 单据明细：列定义已搬到 `app/db/migration_columns.py`
+# （C1-4A，由迁移 id=5~10 接管；ORDER_ITEM 基础列已并入 PURCHASE_ITEM / SALES_ITEM 常量）。
 
 # 财务 × 全模块关联
 FINANCE_ADDITIONS = {
@@ -304,17 +205,12 @@ def ensure_schema_in(target_engine=None) -> None:
                     conn.execute(text(f"ALTER TABLE production_boms ADD COLUMN {column_name} {definition}"))
 
         # 融合改造：三张档案表补列
-        # ⚠️ C1-2b（2026-10-27）：products / customers / suppliers 已改由版本化迁移接管
-        #    （app/db/migrations.py id=2/3/4），这里不再重复补列。dict 仍留在本文件，
-        #    作为迁移列定义的唯一来源；C1-3 再把它搬进迁移模块后即可删除。
+        # ⚠️ C1-2b/C1-3（2026-10-27）：products / customers / suppliers 已改由版本化迁移接管
+        #    （app/db/migrations.py id=2/3/4，列定义在 migration_columns），旧 dict 已删。
 
         # 融合改造：单据结算链 / 欠款链 / 仓库绑定
-        _add_missing_columns(conn, "purchase_orders", PURCHASE_ORDER_ADDITIONS)
-        _add_missing_columns(conn, "sales_orders", SALES_ORDER_ADDITIONS)
-        _add_missing_columns(conn, "purchase_order_items", PURCHASE_ITEM_ADDITIONS)
-        _add_missing_columns(conn, "sales_order_items", SALES_ITEM_ADDITIONS)
-        _add_missing_columns(conn, "purchase_return_items", PURCHASE_RETURN_ITEM_ADDITIONS)
-        _add_missing_columns(conn, "sales_return_items", SALES_RETURN_ITEM_ADDITIONS)
+        # ⚠️ C1-4A（2026-10-27）：采购/销售单头与明细（含退货明细）已改由版本化迁移接管
+        #    （app/db/migrations.py id=5~10），这里不再重复补列。
 
         # 融合改造：财务 × 全模块关联
         _add_missing_columns(conn, "financial_transactions", FINANCE_ADDITIONS)
