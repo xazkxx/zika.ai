@@ -401,9 +401,9 @@ def ensure_schema_in(target_engine=None) -> None:
                     conn.execute(text(f"ALTER TABLE production_boms ADD COLUMN {column_name} {definition}"))
 
         # 融合改造：三张档案表补列
-        _add_missing_columns(conn, "products", PRODUCT_ADDITIONS)
-        _add_missing_columns(conn, "customers", CUSTOMER_ADDITIONS)
-        _add_missing_columns(conn, "suppliers", SUPPLIER_ADDITIONS)
+        # ⚠️ C1-2b（2026-10-27）：products / customers / suppliers 已改由版本化迁移接管
+        #    （app/db/migrations.py id=2/3/4），这里不再重复补列。dict 仍留在本文件，
+        #    作为迁移列定义的唯一来源；C1-3 再把它搬进迁移模块后即可删除。
 
         # 融合改造：单据结算链 / 欠款链 / 仓库绑定
         _add_missing_columns(conn, "purchase_orders", PURCHASE_ORDER_ADDITIONS)
@@ -420,7 +420,8 @@ def ensure_schema_in(target_engine=None) -> None:
         _add_missing_columns(conn, "inventory_transactions", INVENTORY_ADDITIONS)
 
         # 第 11 批：发票的业务属性与原始文件
-        _add_missing_columns(conn, "invoices", INVOICE_ADDITIONS)
+        # ⚠️ C1-2b（2026-10-27）：invoices 已改由版本化迁移接管（app/db/migrations.py id=1），
+        #    这里不再重复补列；INVOICE_ADDITIONS 仍作为迁移列定义的唯一来源。
 
         # 第 12 批：总账凭证的 flow_id（凭证 ↔ 流水同生共死）。
         # 总账表在更早一轮里可能已经 create_all 建出来了，这里补上 flow_id 列
@@ -431,7 +432,8 @@ def ensure_schema_in(target_engine=None) -> None:
         _add_missing_columns(conn, "users", USER_ADDITIONS)
 
         # 开票税点：商品档案的默认税率
-        _add_missing_columns(conn, "products", PRODUCT_ADDITIONS)
+        # ⚠️ C1-2b（2026-10-27）：tax_rate 已并入 PRODUCT_ADDITIONS，由迁移 id=2 接管，
+        #    这里不再重复补列。
 
         # 多账套：账套表的补列（全局表，只在 public）
         _add_missing_columns(conn, "companies", COMPANY_ADDITIONS)
