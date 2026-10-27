@@ -40,72 +40,10 @@ def _add_missing_columns(conn, table: str, additions: dict[str, str]) -> None:
 
 
 # 「浩技云进销存」融合改造：商品 / 客户 / 供应商档案补齐字段
-PRODUCT_ADDITIONS = {
-    "mnemonic": "VARCHAR(50)",
-    "standards": "VARCHAR(100)",
-    "brand": "VARCHAR(100)",
-    "bar_code": "VARCHAR(80)",
-    "color": "VARCHAR(50)",
-    "size": "VARCHAR(50)",
-    "manufacturer": "VARCHAR(150)",
-    "manufacturer_id": "INTEGER",
-    "serial_no": "VARCHAR(80)",
-    "unit_weight": "DOUBLE PRECISION",
-    "stock_upper": "INTEGER",
-    "stock_lower": "INTEGER",
-    "pack_qty": "INTEGER",
-    "shelf_life": "INTEGER",
-    "warn_days": "INTEGER",
-    "image_url": "VARCHAR(255)",
-    "note": "VARCHAR(255)",
-}
-
-CUSTOMER_ADDITIONS = {
-    "businesser": "VARCHAR(50)",
-    "contact": "VARCHAR(50)",
-    "contact_phone": "VARCHAR(30)",
-    "tax_no": "VARCHAR(50)",
-    "bank_name": "VARCHAR(150)",
-    "bank_account": "VARCHAR(80)",
-    # 开票电话（2026-10-23）：开票信息与业务联系电话不是一个号码，单独一列。
-    # 追加在字典里（不要重排/重赋值 DICT —— 这是幂等迁移的唯一来源）。
-    "invoice_phone": "VARCHAR(30)",
-    "level": "VARCHAR(30)",
-    "discount": "DOUBLE PRECISION",
-    "credit_limit": "DOUBLE PRECISION",
-    "init_receivable": "DOUBLE PRECISION",
-    "init_invoice_debt": "DOUBLE PRECISION",
-    "relation_date": "VARCHAR(30)",
-    "business_type": "VARCHAR(50)",
-    "main_products": "VARCHAR(255)",
-    "potential_amount": "DOUBLE PRECISION",
-    "note": "VARCHAR(255)",
-    # 所属分类（customer_categories.id）。可空 = 未分类：存量客户一条都不用回填。
-    # ⚠️ 这里只补**列**，不建索引 —— `_add_missing_columns` 能力就这么点。
-    #    索引由 `_partner_category_step4/migrate_partner_categories.py` 建
-    #    （新建库则靠模型上的 index=True 由 create_all 建）。
-    "category_id": "INTEGER",
-}
-
-SUPPLIER_ADDITIONS = {
-    "short_name": "VARCHAR(80)",
-    "contact": "VARCHAR(50)",
-    "main_contact": "VARCHAR(50)",
-    "mobile": "VARCHAR(30)",
-    "postcode": "VARCHAR(20)",
-    "bank_name": "VARCHAR(150)",
-    "bank_account": "VARCHAR(80)",
-    # 开票电话（2026-10-23）：口径同 CUSTOMER_ADDITIONS
-    "invoice_phone": "VARCHAR(30)",
-    "init_payable": "DOUBLE PRECISION",
-    "init_invoice_debt": "DOUBLE PRECISION",
-    "note": "VARCHAR(255)",
-    # 所属分类（supplier_categories.id），口径同 CUSTOMER_ADDITIONS
-    "category_id": "INTEGER",
-    # 纳税人识别号（2026-10-22）：进项发票"税号优先、名称兜底"的匹配依据。
-    # 可空、幂等 —— 老供应商留空，匹配时自动退回按名称比，不影响任何历史数据。
-    "tax_no": "VARCHAR(50)",
-}
+# ⚠️ C1-3（2026-10-27）：列定义已搬到 `app/db/migration_columns.py`（由
+#    scripts/gen_migration_columns.py 从运行期 dict 生成，逐字相等），
+#    PRODUCT / CUSTOMER / SUPPLIER 三个旧 dict 正式删除，补列职责由
+#    `app/db/migrations.py` 的 id=2/3/4 迁移接管。
 
 # 单据头：仓库绑定 + 业务信息 + 结算链 + 欠款链
 PURCHASE_ORDER_ADDITIONS = {
@@ -244,34 +182,8 @@ INVENTORY_ADDITIONS = {
 }
 
 # 第 11 批：发票补业务属性（进销项 / 红蓝字 / 开票方式）与原始文件
-INVOICE_ADDITIONS = {
-    "direction": "VARCHAR(10) NOT NULL DEFAULT 'unknown'",
-    "invoice_flag": "VARCHAR(10) NOT NULL DEFAULT 'blue'",
-    "issue_mode": "VARCHAR(10) NOT NULL DEFAULT 'manual'",
-    "handler": "VARCHAR(50)",
-    # 原始文件：存相对路径（绝对路径换盘就失效）
-    "source_path": "VARCHAR(255)",
-    "source_name": "VARCHAR(255)",
-    "source_size": "INTEGER",
-    "source_mime": "VARCHAR(80)",
-    # 第 14 批（2026-10-18）：发票挂档案，别再靠名字匹配。
-    # ⚠️ `_add_missing_columns` 只补列**不建索引**；索引由
-    #    `_contract_module/migrate_20261018_invoice_links.py` 建（幂等），
-    #    新建库靠模型上的 index=True 由 create_all 建。
-    "customer_id": "INTEGER",
-    "contract_id": "INTEGER",
-    # 认证抵扣时间（2026-10-24）：专票标记抵扣时由接口自动落服务器时间，取消抵扣清空。
-    # 老库靠这里补列，新库靠模型建 —— 与 deducted 配套，缺了它"何时抵的"说不清。
-    "deducted_at": "TIMESTAMP WITH TIME ZONE",
-    # 进项发票认证（2026-10-26）：认证是独立于抵扣的一步，"已认证待抵扣"必须能表达。
-    # 老库靠这里补列；新库靠模型建。`certified` 给了 DEFAULT FALSE ——
-    # 老库补列时既有行必须立即可读，不能留 NULL 让 bool 字段三态化。
-    # ⚠️ `_add_missing_columns` 只补列**不建索引**；supplier_id 的索引由
-    #    `_contract_module/migrate_20261026_input_invoice.py` 建（幂等）。
-    "supplier_id": "INTEGER",
-    "certified": "BOOLEAN NOT NULL DEFAULT FALSE",
-    "certified_at": "TIMESTAMP WITH TIME ZONE",
-}
+# ⚠️ C1-3（2026-10-27）：列定义已搬到 `app/db/migration_columns.py`（INVOICE_COLUMNS），
+#    旧 INVOICE_ADDITIONS 正式删除，补列职责由 `app/db/migrations.py` 的 id=1 迁移接管。
 
 # 系统管理第 1 轮：用户挂部门 / 挂角色 / 联系方式 / 最后登录时间
 USER_ADDITIONS = {
@@ -283,17 +195,8 @@ USER_ADDITIONS = {
     "last_login_at": "TIMESTAMP WITH TIME ZONE",
 }
 
-# 开票税点：商品档案带一个默认税率，开单/开票时按商品带出、可逐单改。
-# 历史商品全为 NULL（＝未设置），这是正确的初始态 —— 见 Product.tax_rate 的注释。
-#
-# ⚠️ 必须用 `.update()` **追加**，绝不能重新赋值一个只含 tax_rate 的字典：
-#    本文件第 38 行已经定义过一份 PRODUCT_ADDITIONS（融合改造那 16 列）。
-#    重新赋值会把它们从迁移里悄悄抹掉 —— `_add_missing_columns` 只遍历这个字典，
-#    漏掉的列不报错、不写日志。新建库靠 `create_all` 从 model 拿全列，看不出问题；
-#    一旦遇到"老库 + 新账套"，症状是业务查询报 `column does not exist`。
-PRODUCT_ADDITIONS.update({
-    "tax_rate": "DOUBLE PRECISION",
-})
+# 开票税点：商品档案默认税率 `tax_rate` 已并入 `migration_columns.PRODUCT_COLUMNS`
+# （C1-3，由迁移 id=2 统一补列）；旧 `PRODUCT_ADDITIONS.update(...)` 已删除。
 
 # 多账套：账套表的补列。
 # 抬头名称 `own_name` 是与账套名 `name` 分开的一列 ——
@@ -420,8 +323,8 @@ def ensure_schema_in(target_engine=None) -> None:
         _add_missing_columns(conn, "inventory_transactions", INVENTORY_ADDITIONS)
 
         # 第 11 批：发票的业务属性与原始文件
-        # ⚠️ C1-2b（2026-10-27）：invoices 已改由版本化迁移接管（app/db/migrations.py id=1），
-        #    这里不再重复补列；INVOICE_ADDITIONS 仍作为迁移列定义的唯一来源。
+        # ⚠️ C1-2b/C1-3（2026-10-27）：invoices 补列已由版本化迁移接管
+        #    （app/db/migrations.py id=1，列定义在 migration_columns.INVOICE_COLUMNS）。
 
         # 第 12 批：总账凭证的 flow_id（凭证 ↔ 流水同生共死）。
         # 总账表在更早一轮里可能已经 create_all 建出来了，这里补上 flow_id 列
@@ -432,8 +335,8 @@ def ensure_schema_in(target_engine=None) -> None:
         _add_missing_columns(conn, "users", USER_ADDITIONS)
 
         # 开票税点：商品档案的默认税率
-        # ⚠️ C1-2b（2026-10-27）：tax_rate 已并入 PRODUCT_ADDITIONS，由迁移 id=2 接管，
-        #    这里不再重复补列。
+        # ⚠️ C1-2b/C1-3（2026-10-27）：tax_rate 已并入 migration_columns.PRODUCT_COLUMNS，
+        #    由迁移 id=2 接管，这里不再重复补列。
 
         # 多账套：账套表的补列（全局表，只在 public）
         _add_missing_columns(conn, "companies", COMPANY_ADDITIONS)

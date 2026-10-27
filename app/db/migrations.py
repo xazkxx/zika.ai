@@ -29,6 +29,13 @@ from __future__ import annotations
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
+from app.db.migration_columns import (
+    CUSTOMER_COLUMNS,
+    INVOICE_COLUMNS,
+    PRODUCT_COLUMNS,
+    SUPPLIER_COLUMNS,
+)
+
 # 迁移注册表：只增不改。已发布过的条目改 id 或改内容会让老库状态错乱。
 # 每条 = (id, name, upgrade)；upgrade(conn) 在当前 search_path 指向的 schema 内执行。
 # 空的注册表 = 还没有任何「新机制」迁移 —— 这是 C1 的起点，后续批次往里追加。
@@ -104,38 +111,26 @@ def _add_columns_if_missing(conn, table: str, additions: dict[str, str]) -> list
 
 
 def _migration_0001_invoice_attributes(conn) -> None:
-    """C1-1 第一条真实迁移：发票业务属性 + 原件 + 挂档案（原 `INVOICE_ADDITIONS`）。
-
-    ⚠️ 列定义仍以 `app.main.INVOICE_ADDITIONS` 为唯一来源（C1 完成前不删旧 dict）；
-    C1-2 把这套定义搬进本模块后再删旧 dict，届时这里改成模块内常量即可。
-    """
-    from app.main import INVOICE_ADDITIONS  # 延迟导入：避免与 main.py 的 import 形成环
-
-    _add_columns_if_missing(conn, "invoices", INVOICE_ADDITIONS)
+    """C1-1/C1-3：发票业务属性 + 原件 + 挂档案（列定义见 migration_columns.INVOICE_COLUMNS）。"""
+    _add_columns_if_missing(conn, "invoices", INVOICE_COLUMNS)
 
 
 MIGRATIONS.append((1, "invoice business attributes & source file", _migration_0001_invoice_attributes))
 
 
 def _migration_0002_product_attributes(conn) -> None:
-    """C1-2a：产品档案补列（原 `PRODUCT_ADDITIONS`，含后追加的 tax_rate）。"""
-    from app.main import PRODUCT_ADDITIONS
-
-    _add_columns_if_missing(conn, "products", PRODUCT_ADDITIONS)
+    """C1-2a/C1-3：产品档案补列（含后追加的 tax_rate）。"""
+    _add_columns_if_missing(conn, "products", PRODUCT_COLUMNS)
 
 
 def _migration_0003_customer_attributes(conn) -> None:
-    """C1-2a：客户档案补列（原 `CUSTOMER_ADDITIONS`）。"""
-    from app.main import CUSTOMER_ADDITIONS
-
-    _add_columns_if_missing(conn, "customers", CUSTOMER_ADDITIONS)
+    """C1-2a/C1-3：客户档案补列。"""
+    _add_columns_if_missing(conn, "customers", CUSTOMER_COLUMNS)
 
 
 def _migration_0004_supplier_attributes(conn) -> None:
-    """C1-2a：供应商档案补列（原 `SUPPLIER_ADDITIONS`）。"""
-    from app.main import SUPPLIER_ADDITIONS
-
-    _add_columns_if_missing(conn, "suppliers", SUPPLIER_ADDITIONS)
+    """C1-2a/C1-3：供应商档案补列。"""
+    _add_columns_if_missing(conn, "suppliers", SUPPLIER_COLUMNS)
 
 
 MIGRATIONS.extend(

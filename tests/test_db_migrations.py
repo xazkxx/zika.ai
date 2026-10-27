@@ -12,12 +12,15 @@ import uuid
 
 from sqlalchemy import inspect, text
 
+from app.db.migration_columns import (
+    CUSTOMER_COLUMNS,
+    INVOICE_COLUMNS,
+    PRODUCT_COLUMNS,
+    SUPPLIER_COLUMNS,
+)
 from app.db.migrations import MIGRATIONS, _TRACKING_TABLE, apply_pending
 from app.db.session import engine
-# 提前把 app.main 拉起来：迁移条目 1 会延迟导入 INVOICE_ADDITIONS，
-# 若在 apply_pending 事务里才首次 import app.main，会重入 create_app/apply_pending
-# 造成二次插入 UNIQUE 冲突。生产路径（create_app 内部调用）不存在此问题，仅测试需提前导入。
-from app.main import app  # noqa: F401
+from app.main import app  # noqa: F401 —— 确保 create_app 已跑、目标表存在（与全量测试同口径）
 
 
 def _probe_id() -> int:
@@ -102,31 +105,29 @@ def test_invoice_migration_registered_and_idempotent():
     assert 1 in applied, "清掉记录后 id=1 应被重新应用"
     assert apply_pending(engine) == [], "已应用过，第二次不应重复"
 
-    # 无论新库（create_all 建好列）还是老库（补列建好列），这 14 列都必须在
+    # 无论新库（create_all 建好列）还是老库（迁移补列建好列），这些列都必须在
     with engine.begin() as conn:
         cols = {column["name"] for column in inspect(conn).get_columns("invoices")}
-    from app.main import INVOICE_ADDITIONS
 
-    assert set(INVOICE_ADDITIONS) <= cols
+    assert set(INVOICE_COLUMNS) <= cols
 
 
 def test_migration_adds_columns_to_legacy_table():
-    """老库缺列路径：真实 ALTER 能补齐 INVOICE_ADDITIONS 全部列，且第二次为空。"""
+    """老库缺列路径：真实 ALTER 能补齐 INVOICE_COLUMNS 全部列，且第二次为空。"""
     from app.db.migrations import _add_columns_if_missing
-    from app.main import INVOICE_ADDITIONS
 
     probe = "_c1_probe_legacy_invoices"
     try:
         with engine.begin() as conn:
             conn.execute(text(f"DROP TABLE IF EXISTS {probe}"))
             conn.execute(text(f"CREATE TABLE {probe} (id INTEGER PRIMARY KEY, invoice_no VARCHAR(64))"))
-            added = _add_columns_if_missing(conn, probe, INVOICE_ADDITIONS)
-        assert set(added) == set(INVOICE_ADDITIONS), "老库缺全部列，应一次补齐"
+            added = _add_columns_if_missing(conn, probe, INVOICE_COLUMNS)
+        assert set(added) == set(INVOICE_COLUMNS), "老库缺全部列，应一次补齐"
 
         with engine.begin() as conn:
-            assert _add_columns_if_missing(conn, probe, INVOICE_ADDITIONS) == [], "已补齐，再补应为空"
+            assert _add_columns_if_missing(conn, probe, INVOICE_COLUMNS) == [], "已补齐，再补应为空"
             cols = {column["name"] for column in inspect(conn).get_columns(probe)}
-        assert set(INVOICE_ADDITIONS) <= cols
+        assert set(INVOICE_COLUMNS) <= cols
     finally:
         with engine.begin() as conn:
             conn.execute(text(f"DROP TABLE IF EXISTS {probe}"))
@@ -146,13 +147,11 @@ def test_master_data_migrations_registered_and_applied():
         }
     assert applied == {2, 3, 4}
 
-    from app.main import CUSTOMER_ADDITIONS, PRODUCT_ADDITIONS, SUPPLIER_ADDITIONS
-
-    for table, additions in (
-        ("products", PRODUCT_ADDITIONS),
-        ("customers", CUSTOMER_ADDITIONS),
-        ("suppliers", SUPPLIER_ADDITIONS),
+    for table, columns in (
+        ("products", PRODUCT_COLUMNS),
+        ("customers", CUSTOMER_COLUMNS),
+        ("suppliers", SUPPLIER_COLUMNS),
     ):
         with engine.begin() as conn:
             cols = {column["name"] for column in inspect(conn).get_columns(table)}
-        assert set(additions) <= cols, f"{table} 缺列：{set(additions) - cols}"
+        assert set(columns) <= cols, f"{table} 缺列：{set(columns) - cols}"

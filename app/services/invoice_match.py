@@ -37,7 +37,7 @@
 
 ## 税号优先、名称兜底（2026-10-22 起两边都支持）
 
-客户档案本来就有 `tax_no`；供应商档案 2026-10-22 补了这一列（`main.py::SUPPLIER_ADDITIONS`）。
+客户档案本来就有 `tax_no`；供应商档案 2026-10-22 补了这一列（`app/db/migration_columns.py::SUPPLIER_COLUMNS`）。
 现在**销项、进项都是"税号优先 → 名称归一化全等兜底"**：
 
 - 税号是税局发的唯一标识，OCR 认它的准确率也高于名称；
@@ -236,7 +236,7 @@ def _resolve_supplier(db: Session, invoice: Invoice) -> tuple[int | None, str]:
     """进项：税号优先 → 名称归一化全等兜底（口径与 `_resolve_customer` 一致）。
 
     2026-10-22 之前这里**只按名称**，因为 `suppliers` 没有税号列。
-    现在补了列（见 `main.py::SUPPLIER_ADDITIONS`），进项票终于也能按税号认人 ——
+    现在补了列（见 `app/db/migration_columns.py::SUPPLIER_COLUMNS`），进项票终于也能按税号认人 ——
     这正是"陕西送变电"和"陕西送变电工程有限公司"能对上同一家的关键。
     """
     tax = _normalize_tax_no(invoice.seller_tax_no)
