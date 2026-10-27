@@ -81,3 +81,37 @@ def apply_pending(engine: Engine) -> list[int]:
             )
             applied.append(mid)
     return applied
+
+
+# ===========================================================================
+# 迁移条目（C1 起，这里逐条追加；id 只增不改）
+# ===========================================================================
+def _add_columns_if_missing(conn, table: str, additions: dict[str, str]) -> list[str]:
+    """幂等补列：只给已存在、但缺这些列的表补，返回本次真正补上的列名。
+
+    与 main.py `_add_missing_columns` 同口径（表不存在直接返回；逐列比对再 ALTER）。
+    """
+    inspector = inspect(conn)
+    if not inspector.has_table(table):
+        return []
+    existing = {column["name"] for column in inspector.get_columns(table)}
+    added: list[str] = []
+    for name, definition in additions.items():
+        if name not in existing:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
+            added.append(name)
+    return added
+
+
+def _migration_0001_invoice_attributes(conn) -> None:
+    """C1-1 第一条真实迁移：发票业务属性 + 原件 + 挂档案（原 `INVOICE_ADDITIONS`）。
+
+    ⚠️ 列定义仍以 `app.main.INVOICE_ADDITIONS` 为唯一来源（C1 完成前不删旧 dict）；
+    C1-2 把这套定义搬进本模块后再删旧 dict，届时这里改成模块内常量即可。
+    """
+    from app.main import INVOICE_ADDITIONS  # 延迟导入：避免与 main.py 的 import 形成环
+
+    _add_columns_if_missing(conn, "invoices", INVOICE_ADDITIONS)
+
+
+MIGRATIONS.append((1, "invoice business attributes & source file", _migration_0001_invoice_attributes))
