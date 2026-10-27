@@ -1465,23 +1465,98 @@ def clear_operation_logs(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles("admin")),
 ) -> dict:
-    """清理日志。`before_days=0` 清空全部，否则只删 N 天前的。
+    """**归档**日志（P0-5 起不再删除）。`before_days=0` 全部搬走，否则只搬 N 天前的。
+
+    改造前这里是 `query.delete()` —— 管理员点一下「清理日志」，
+    三个月的操作痕迹就真的没了。日志是审计证据，**可以被移走，不能被销毁**。
+
+    现在的行为：
+      · 命中范围的日志原样复制进 `operation_log_archives`，再从主表移除；
+      · 主表变小（页面照旧快），归档表只增不减（要查随时可查）；
+      · 返回体保留 `deleted` 字段（旧前端/脚本仍在读），另给 `archived` 说明真实动作。
 
     注意：**这次清理动作本身也会被记一条日志**（中间件在响应之后写入），
-    所以清空之后列表里还剩一条"删除操作日志" —— 这是有意为之：
-    清理行为必须留痕，否则日志可以被无声抹掉就失去了意义。
+    所以清空之后列表里还剩一条"删除操作日志" —— 这是有意为之。
     """
-    query = db.query(OperationLog)
-    if int(before_days or 0) > 0:
-        from datetime import datetime, timedelta, timezone
+    from app.models.operation_log import archive_operation_logs
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=int(before_days))
-        query = query.filter(OperationLog.created_at < cutoff)
-    deleted = query.delete(synchronize_session=False)
+    moved = archive_operation_logs(db, before_days=int(before_days or 0))
     db.commit()
     return {
-        "deleted": int(deleted),
-        "message": f"已清理 {int(deleted)} 条操作日志" + ("" if not before_days else f"（{before_days} 天前）"),
+        "deleted": int(moved),
+        "archived": int(moved),
+        "message": f"已归档 {int(moved)} 条操作日志" + ("" if not before_days else f"（{before_days} 天前）"),
+    }
+
+
+@router.get("/document-archives")
+def list_document_archives(
+    doc_type: str | None = None,
+    doc_no: str | None = None,
+    action: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("admin")),
+) -> dict:
+    """单据归档台账（只读）：谁、什么时候、把哪张单作废/删除了，为什么。
+
+    为什么单独开一个接口而不是塞进操作日志：
+      操作日志只记得下"作废销售单 #12"，
+      **记不下这张单原来金额多少、明细是什么、原件在哪**。
+      对账/审计要的是后者，所以归档表存的是整单快照。
+    """
+    from app.models.document_archive import ARCHIVE_DOC_TYPES, DocumentArchive
+
+    query = db.query(DocumentArchive)
+    if doc_type:
+        if doc_type not in ARCHIVE_DOC_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail="doc_type 只能是 " + " / ".join(ARCHIVE_DOC_TYPES),
+            )
+        query = query.filter(DocumentArchive.doc_type == doc_type)
+    if doc_no:
+        query = query.filter(DocumentArchive.doc_no.ilike(f"%{doc_no.strip()}%"))
+    if action:
+        query = query.filter(DocumentArchive.action == action)
+
+    total = query.count()
+    size = max(1, min(int(page_size or 50), 200))
+    index = max(1, int(page or 1))
+    rows = (
+        query.order_by(DocumentArchive.id.desc())
+        .offset((index - 1) * size)
+        .limit(size)
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "doc_type": row.doc_type,
+                "doc_type_label": ARCHIVE_DOC_TYPES.get(row.doc_type, row.doc_type),
+                "doc_id": row.doc_id,
+                "doc_no": row.doc_no,
+                "action": row.action,
+                "status_before": row.status_before,
+                "status_after": row.status_after,
+                "total_amount": float(row.total_amount or 0.0),
+                "reason": row.reason,
+                "actor_id": row.actor_id,
+                "actor_name": row.actor_name,
+                "actor_role": row.actor_role,
+                "ip": row.ip,
+                "files": row.files,
+                "payload": row.payload,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ],
+        "total": total,
+        "page": index,
+        "page_size": size,
+        "pages": max(1, (total + size - 1) // size),
     }
 
 

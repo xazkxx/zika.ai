@@ -26,10 +26,26 @@ DELETE/UPDATE 都会直接改到生产数据上。
 --------------------
 清理规则见 `scripts/clean_test_data.py`：按测试脚本里写死的名称匹配，不误伤真实数据。
 现在它清的是**测试库**里的残留，生产库在这条链路里根本连不上。
+
+三、鉴权收口后的测试适配（P0-1「方案 B」，2026-10-26）
+-----------------------------------------------------
+`/api/v1` 现在**默认拒绝匿名请求**（白名单只有 health / login / register / 商品图）。
+存量 61 个测试文件、几百条用例都是在 `TestClient(app)` 上直接打业务接口的，
+没有一条带过登录语义。
+
+这里不去改那几百条用例（改不完，而且会把"接口行为断言"和"登录样板"搅在一起），
+而是**在 conftest 里给每个 TestClient 统一注入一张管理员 token**：
+
+  · 被测代码跑的是**生产口径**（auth_mode 默认 enforce，不为测试开后门）；
+  · 用例里显式传 `headers={'Authorization': ...}` 时以用例为准（逐请求头会覆盖默认值），
+    需要验证"匿名应被拒"的用例就靠这个把默认 token 抵掉；
+  · token 用 `admin`（`ensure_default_admin_user` 保证存在，签名密钥就是本进程的真实密钥），
+    所以网关里"回库确认账号存在且未停用"那一段也是真跑的。
 """
 
 import importlib.util
 import os
+import tempfile
 import urllib.parse
 from pathlib import Path
 
@@ -39,6 +55,10 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env'
 PROD_KEY = 'DATABASE_URL'
 TEST_KEY = 'TEST_DATABASE_URL'
+
+# 密钥落盘位置：测试不去写用户目录（`~/.erp_core/secret_key`），扔进系统临时目录。
+# 必须在 import app.* 之前设置 —— 见 pytest_sessionstart 的注释。
+os.environ.setdefault('ERP_SECRET_FILE', str(Path(tempfile.gettempdir()) / 'erp_core_test_secret_key'))
 
 
 def _env_file_value(key):
@@ -86,8 +106,59 @@ _HOWTO = (
     '    set TEST_DATABASE_URL=postgresql+psycopg://user:pass@127.0.0.1:55432/erp_test'
 )
 
+_admin_token_cache = None
+
+
+def _admin_token():
+    """一张管理员 token（懒创建）。
+
+    必须懒：`settings.secret_key` 要等 `app.core.config` 被 import 才有，
+    而 import 它的那一刻 `settings` 就定型了 —— 必须晚于 sessionstart 里换库那一步。
+    能用 `admin` 是因为 `create_app()` 里 `ensure_default_admin_user` 保证它存在。
+    """
+    global _admin_token_cache
+    if _admin_token_cache is None:
+        from app.core.security import create_access_token
+
+        _admin_token_cache = create_access_token(
+            subject='admin', role='admin', expires_delta=60 * 24 * 7
+        )
+    return _admin_token_cache
+
+
+def _install_authed_test_client():
+    """给所有 `TestClient` 默认带上管理员凭证（P0-1 收口后 /api/v1 默认拒绝匿名）。
+
+    为什么替换类而不是给每个用例加 headers：存量 61 个文件、几百条用例，一个个改
+    既改不完也容易漏；替换类只需要在 conftest 里写一次，用例主体一行都不用动，
+    而且**被测代码仍然是生产口径**（不靠 env 关鉴权）。
+
+    逐请求传的 `headers={'Authorization': ...}` 优先级更高，所以需要验证"匿名被拒"
+    的用例直接传一个假 token 就能把默认值抵掉，见 `tests/test_auth_gate.py`。
+    """
+    import fastapi.testclient as testclient
+
+    if getattr(testclient.TestClient, '_erp_authed', False):
+        return  # 重复调用不叠加
+
+    base = testclient.TestClient
+
+    class AuthedTestClient(base):
+        _erp_authed = True
+
+        def __init__(self, *args, **kwargs):
+            headers = dict(kwargs.pop('headers', None) or {})
+            headers.setdefault('Authorization', 'Bearer %s' % _admin_token())
+            super().__init__(*args, headers=headers, **kwargs)
+
+    AuthedTestClient.__name__ = 'TestClient'
+    AuthedTestClient.__qualname__ = 'TestClient'
+    testclient.TestClient = AuthedTestClient
+
+
 _test_url = _setting(TEST_KEY)
 _prod_url = _setting(PROD_KEY)
+
 _test = _parts(_test_url) if _test_url else {}
 _prod = _parts(_prod_url) if _prod_url else {}
 
@@ -126,6 +197,10 @@ def pytest_sessionstart(session):
     # 关键一步：把连接串换成测试库。
     os.environ[PROD_KEY] = _test_url
     os.environ['ERP_TEST_DATABASE'] = _test_url
+
+    # 也在这一步之后才碰 app.*：conftest 顶层若先 import 了 app.core.config，
+    # settings 就会在 DATABASE_URL 被换成测试库**之前**实例化，整场测试会打到生产库。
+    _install_authed_test_client()
 
     print('[conftest] 测试库：%s' % _masked(_test_url))
     if _prod:

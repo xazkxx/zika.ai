@@ -350,12 +350,34 @@ def test_return_status_patch_and_invalid_value():
         ).json()
         return_id = r["id"]
 
-        ok = client.patch(f"/api/v1/purchase-returns/{return_id}/status", json={"status": "cancelled"})
-        assert ok.status_code == 200, ok.text
-        assert ok.json()["status"] == "cancelled"
-
         bad = client.patch(f"/api/v1/purchase-returns/{return_id}/status", json={"status": "nonsense"})
         assert bad.status_code == 400, bad.text
+
+        # 「改状态」这条路**不许**直接作废 —— 作废要撤库存/应付并留痕，只能走 /void。
+        # 这是 P0-5 的口径（与销售退货一致）：状态机接口是廉价接口，红冲必须独立。
+        blocked = client.patch(
+            f"/api/v1/purchase-returns/{return_id}/status", json={"status": "cancelled"}
+        )
+        assert blocked.status_code == 400, blocked.text
+        assert "作废" in blocked.json()["detail"]
+
+        voided = client.post(
+            f"/api/v1/purchase-returns/{return_id}/void", json={"reason": "供应商同意取消"}
+        )
+        assert voided.status_code == 200, voided.text
+        assert voided.json()["status"] == "cancelled"
+        assert "已作废" in (voided.json()["note"] or "")
+        assert "供应商同意取消" in (voided.json()["note"] or "")
+
+        # 已作废的单：状态与内容都不许再改
+        locked = client.patch(
+            f"/api/v1/purchase-returns/{return_id}/status", json={"status": "draft"}
+        )
+        assert locked.status_code == 409, locked.text
+        locked_edit = client.patch(
+            f"/api/v1/purchase-returns/{return_id}", json={"note": "改备注"}
+        )
+        assert locked_edit.status_code == 409, locked_edit.text
     finally:
         if return_id:
             client.delete(f"/api/v1/purchase-returns/{return_id}")
@@ -400,3 +422,292 @@ def test_return_print_pdf():
             client.delete(f"/api/v1/purchase-returns/{return_id}")
         client.delete(f"/api/v1/suppliers/{supplier_id}")
         client.delete(f"/api/v1/products/{product_id}")
+
+
+
+
+# ---------- P0-2：草稿不落账 / 对称性 / 红冲（2026-10-26） ----------
+
+
+def _finance_rows(related_type: str, related_id: int) -> list[dict]:
+    """这张单在财务流水里留下了几行 —— 判「有没有落过账」的硬证据。"""
+    rows = client.get("/api/v1/finance").json()
+    return [
+        row
+        for row in rows
+        if row.get("related_type") == related_type and row.get("related_order_id") == related_id
+    ]
+
+
+def _new_customer() -> int:
+    resp = client.post(
+        "/api/v1/customers",
+        json={"code": f"CUS-PRET-{uuid.uuid4().hex[:8]}", "name": "退货对称性测试客户"},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+def _seed_purchase_stock(product_id: int, supplier_id: int, warehouse_id: int, qty: int) -> int:
+    """先做一笔采购入库垫底，否则退货扣不出库存。"""
+    resp = client.post(
+        "/api/v1/purchase-orders",
+        json={
+            "supplier_id": supplier_id,
+            "warehouse_id": warehouse_id,
+            "items": [{"product_id": product_id, "quantity": qty, "unit_price": 5.0}],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+def test_draft_purchase_return_does_not_touch_stock_or_payable():
+    """P0-2 的核心断言：**草稿退货单不许落账**。
+
+    修之前 `create_purchase_return` 无条件扣库存 + 冲应付：
+    用户只是把单存成草稿、还没跟供应商谈完，库存已经少了、应付已经被冲了。
+    销售侧早有这道守卫，采购侧漏抄 —— 这条测试就是那个缺口。
+    """
+    product_id = _new_product()
+    supplier_id = _new_supplier()
+    warehouse_id = _new_warehouse()
+    inbound_id = None
+    return_id = None
+    try:
+        inbound_id = _seed_purchase_stock(product_id, supplier_id, warehouse_id, 10)
+        assert _stock_for(product_id, warehouse_id) == 10
+
+        created = client.post(
+            "/api/v1/purchase-returns",
+            json={
+                "return_no": _return_no(),
+                "supplier_id": supplier_id,
+                "warehouse_id": warehouse_id,
+                "status": "draft",
+                "items": [{"product_id": product_id, "quantity": 3, "unit_price": 5.0}],
+                "note": "退货单测试",
+            },
+        )
+        assert created.status_code == 201, created.text
+        body = created.json()
+        return_id = body["id"]
+        assert body["status"] == "draft"
+        assert body["total_amount"] == 15.0
+
+        # ① 草稿：库存一分不动、应付一行不写
+        assert _stock_for(product_id, warehouse_id) == 10, "草稿退货单绝不能动库存"
+        assert _finance_rows("purchase_return", return_id) == [], "草稿退货单绝不能冲应付"
+
+        # ② 审核（草稿 → 已退货）：这一刻才落账
+        approved = client.patch(
+            f"/api/v1/purchase-returns/{return_id}/status", json={"status": "submitted"}
+        )
+        assert approved.status_code == 200, approved.text
+        assert _stock_for(product_id, warehouse_id) == 7
+        rows = _finance_rows("purchase_return", return_id)
+        assert len(rows) == 1, f"应付冲减应恰好一行，实际 {len(rows)} 行"
+        assert float(rows[0]["amount"]) == -15.0
+        assert rows[0]["direction"] == "out"
+
+        # ③ 反审核（已退货 → 草稿）：只改状态，账一个字都不许动
+        reverted = client.patch(
+            f"/api/v1/purchase-returns/{return_id}/status", json={"status": "draft"}
+        )
+        assert reverted.status_code == 200, reverted.text
+        assert _stock_for(product_id, warehouse_id) == 7, "反审核不是作废，库存不能退回去"
+        assert len(_finance_rows("purchase_return", return_id)) == 1
+
+        # ④ 再审核：幂等，不许重复扣库存/重复冲应付
+        again = client.patch(
+            f"/api/v1/purchase-returns/{return_id}/status", json={"status": "submitted"}
+        )
+        assert again.status_code == 200, again.text
+        assert _stock_for(product_id, warehouse_id) == 7, "重复审核不能二次扣库存"
+        assert len(_finance_rows("purchase_return", return_id)) == 1, "重复审核不能二次冲应付"
+    finally:
+        if return_id:
+            client.delete(f"/api/v1/purchase-returns/{return_id}")
+        if inbound_id:
+            client.delete(f"/api/v1/purchase-orders/{inbound_id}")
+        _drop_warehouse(warehouse_id)
+        client.delete(f"/api/v1/suppliers/{supplier_id}")
+        client.delete(f"/api/v1/products/{product_id}")
+
+
+def test_purchase_and_sales_return_share_the_same_draft_rule():
+    """对称性断言：**采退与销退对「草稿」的处理必须完全一致**。
+
+    这条测试不验证某一边的实现，而是把两边放在同一组前置条件下比对：
+      · 建草稿 → 两边库存都不许动、财务都不许落；
+      · 提交   → 两边各落一笔金额为负的往来流水。
+    任何一侧再漂移（比如以后又有人把采购侧守卫删掉），这条会立刻红。
+    """
+    product_id = _new_product()
+    supplier_id = _new_supplier()
+    customer_id = _new_customer()
+    warehouse_id = _new_warehouse()
+    inbound_id = None
+    purchase_return_id = None
+    sales_return_id = None
+    try:
+        inbound_id = _seed_purchase_stock(product_id, supplier_id, warehouse_id, 10)
+        stock_before = _stock_for(product_id, warehouse_id)
+
+        purchase = client.post(
+            "/api/v1/purchase-returns",
+            json={
+                "return_no": _return_no(),
+                "supplier_id": supplier_id,
+                "warehouse_id": warehouse_id,
+                "status": "draft",
+                "items": [{"product_id": product_id, "quantity": 2, "unit_price": 5.0}],
+                "note": "退货单测试",
+            },
+        )
+        assert purchase.status_code == 201, purchase.text
+        purchase_return_id = purchase.json()["id"]
+
+        sales = client.post(
+            "/api/v1/sales-returns",
+            json={
+                "customer_id": customer_id,
+                "warehouse_id": warehouse_id,
+                "status": "draft",
+                "items": [{"product_id": product_id, "quantity": 2, "unit_price": 12.5}],
+                "note": "销售退货测试",
+            },
+        )
+        assert sales.status_code == 201, sales.text
+        sales_return_id = sales.json()["id"]
+
+        # ① 草稿：两侧都不许动账
+        assert _stock_for(product_id, warehouse_id) == stock_before
+        assert _finance_rows("purchase_return", purchase_return_id) == []
+        assert _finance_rows("sales_return", sales_return_id) == []
+
+        # ② 提交：两侧各落一笔负数往来
+        for url in (
+            f"/api/v1/purchase-returns/{purchase_return_id}/status",
+            f"/api/v1/sales-returns/{sales_return_id}/status",
+        ):
+            resp = client.patch(url, json={"status": "submitted"})
+            assert resp.status_code == 200, resp.text
+
+        # 采退 −2、销退 +2：净变动为 0，这才是两侧「一进一出」对得上
+        assert _stock_for(product_id, warehouse_id) == stock_before
+
+        purchase_rows = _finance_rows("purchase_return", purchase_return_id)
+        sales_rows = _finance_rows("sales_return", sales_return_id)
+        assert len(purchase_rows) == 1 and len(sales_rows) == 1
+        assert float(purchase_rows[0]["amount"]) == -10.0
+        assert float(sales_rows[0]["amount"]) == -25.0
+    finally:
+        if purchase_return_id:
+            client.delete(f"/api/v1/purchase-returns/{purchase_return_id}")
+        if sales_return_id:
+            client.delete(f"/api/v1/sales-returns/{sales_return_id}")
+        if inbound_id:
+            client.delete(f"/api/v1/purchase-orders/{inbound_id}")
+        _drop_warehouse(warehouse_id)
+        client.delete(f"/api/v1/suppliers/{supplier_id}")
+        client.delete(f"/api/v1/customers/{customer_id}")
+        client.delete(f"/api/v1/products/{product_id}")
+
+
+def test_update_posted_purchase_return_rewrites_ledger_exactly_once():
+    """已落账的退货单改数量：单据、库存、应付必须**一起**变成新口径，且只留一份流水。"""
+    product_id = _new_product()
+    supplier_id = _new_supplier()
+    warehouse_id = _new_warehouse()
+    inbound_id = None
+    return_id = None
+    try:
+        inbound_id = _seed_purchase_stock(product_id, supplier_id, warehouse_id, 10)
+        created = client.post(
+            "/api/v1/purchase-returns",
+            json={
+                "return_no": _return_no(),
+                "supplier_id": supplier_id,
+                "warehouse_id": warehouse_id,
+                "items": [{"product_id": product_id, "quantity": 3, "unit_price": 5.0}],
+                "note": "退货单测试",
+            },
+        )
+        assert created.status_code == 201, created.text
+        return_id = created.json()["id"]
+        assert _stock_for(product_id, warehouse_id) == 7
+
+        patched = client.patch(
+            f"/api/v1/purchase-returns/{return_id}",
+            json={"items": [{"product_id": product_id, "quantity": 5, "unit_price": 5.0}]},
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["total_amount"] == 25.0
+
+        assert _stock_for(product_id, warehouse_id) == 5, "改单后库存必须跟着变成 −5"
+        rows = _finance_rows("purchase_return", return_id)
+        assert len(rows) == 1, f"改单只能留一份应付流水，实际 {len(rows)} 行"
+        assert float(rows[0]["amount"]) == -25.0
+    finally:
+        if return_id:
+            client.delete(f"/api/v1/purchase-returns/{return_id}")
+        if inbound_id:
+            client.delete(f"/api/v1/purchase-orders/{inbound_id}")
+        _drop_warehouse(warehouse_id)
+        client.delete(f"/api/v1/suppliers/{supplier_id}")
+        client.delete(f"/api/v1/products/{product_id}")
+
+
+def test_void_purchase_return_reverts_ledger_and_keeps_the_document():
+    """作废 = 红冲 + 留痕：账要撤回，**单据不许消失**（P0-5）。"""
+    product_id = _new_product()
+    supplier_id = _new_supplier()
+    warehouse_id = _new_warehouse()
+    inbound_id = None
+    return_id = None
+    try:
+        inbound_id = _seed_purchase_stock(product_id, supplier_id, warehouse_id, 10)
+        created = client.post(
+            "/api/v1/purchase-returns",
+            json={
+                "return_no": _return_no(),
+                "supplier_id": supplier_id,
+                "warehouse_id": warehouse_id,
+                "items": [{"product_id": product_id, "quantity": 4, "unit_price": 5.0}],
+                "note": "退货单测试",
+            },
+        )
+        assert created.status_code == 201, created.text
+        return_id = created.json()["id"]
+        assert _stock_for(product_id, warehouse_id) == 6
+
+        voided = client.post(
+            f"/api/v1/purchase-returns/{return_id}/void", json={"reason": "供应商换货"}
+        )
+        assert voided.status_code == 200, voided.text
+        assert voided.json()["status"] == "cancelled"
+        assert _stock_for(product_id, warehouse_id) == 10
+        assert _finance_rows("purchase_return", return_id) == []
+
+        # 幂等：再点一次不报错、也不再冲一次账
+        again = client.post(f"/api/v1/purchase-returns/{return_id}/void")
+        assert again.status_code == 200
+        assert _stock_for(product_id, warehouse_id) == 10
+
+        # 单据仍在（不是物理删除），而且能查到作废原因
+        listed = client.get("/api/v1/purchase-returns", params={"page_size": 200}).json()
+        rows = listed["items"] if isinstance(listed, dict) else listed
+        matched = [row for row in rows if row["id"] == return_id]
+        assert matched, "作废后单据必须仍然存在（P0-5：单据永久保留）"
+        assert matched[0]["status"] == "cancelled"
+        assert "供应商换货" in (matched[0].get("note") or "")
+    finally:
+        if return_id:
+            client.delete(f"/api/v1/purchase-returns/{return_id}")
+        if inbound_id:
+            client.delete(f"/api/v1/purchase-orders/{inbound_id}")
+        _drop_warehouse(warehouse_id)
+        client.delete(f"/api/v1/suppliers/{supplier_id}")
+        client.delete(f"/api/v1/products/{product_id}")
+

@@ -34,6 +34,7 @@ from app.models.operation_log import (
     MAX_OPERATION_LOGS,
     OPERATION_LOG_METHODS,
     OperationLog,
+    OperationLogArchive,
     describe_operation,
     prune_operation_logs,
     record_operation,
@@ -199,8 +200,11 @@ def test_template_choices_reach_the_pdf(template_guard):
 
     # 收尾：删掉造出来的单据与档案
     assert client.delete(f"/api/v1/sales-orders/{order_id}").status_code in (200, 204)
-    assert client.delete(f"/api/v1/products/{product['id']}").status_code in (200, 204)
-    assert client.delete(f"/api/v1/customers/{customer['id']}").status_code in (200, 204)
+    # P0-5：订单"删除"= 作废，行仍在库里并引用着商品 —— 商品必须 force 才能清掉
+    assert client.delete(
+        f"/api/v1/products/{product['id']}?force=true"
+    ).status_code in (200, 204)
+    assert client.delete(f"/api/v1/customers/{customer['id']}?force=true").status_code in (200, 204)
 
 
 def test_template_footer_beats_system_param(template_guard):
@@ -292,7 +296,8 @@ def test_template_update_ignores_non_editable_fields(template_guard):
 
 
 def test_print_templates_require_admin():
-    assert client.get("/api/v1/system/print-templates").status_code == 401
+    # 空 Authorization 抵消 conftest 注入的管理员 token，才是"未带 token"口径
+    assert client.get("/api/v1/system/print-templates", headers={"Authorization": ""}).status_code == 401
 
     role = client.post(
         "/api/v1/system/roles",
@@ -513,6 +518,8 @@ def test_operation_log_prunes_oldest():
     """表的自我修剪：在内存库上跑，不动真库里的历史日志。"""
     engine = create_engine("sqlite://")
     OperationLog.__table__.create(engine)
+    # P0-5：修剪改为"搬进归档表"，内存库也要有这张表
+    OperationLogArchive.__table__.create(engine)
     db = sessionmaker(bind=engine)()
     try:
         for index in range(8):
@@ -532,8 +539,14 @@ def test_operation_log_prunes_oldest():
         # 留下的必须是最新的 5 条
         assert remaining[-1].path == "/api/v1/customers/7"
         assert remaining[0].path == "/api/v1/customers/3"
-        # 没超上限时什么都不删
+        # P0-5：被修剪的 3 条**不是删掉**，而是原样搬进了归档表
+        archived = db.query(OperationLogArchive).order_by(OperationLogArchive.id).all()
+        assert [row.id for row in archived] == [1, 2, 3]
+        assert archived[0].path == "/api/v1/customers/0"
+        assert archived[0].username == "tester"
+        # 没超上限时什么都不动（主表与归档表都不变）
         assert prune_operation_logs(db, limit=5) == 0
+        assert db.query(OperationLogArchive).count() == 3
     finally:
         db.close()
         engine.dispose()
@@ -546,7 +559,15 @@ def test_log_endpoints_require_admin_but_writes_are_still_recorded():
     headers = _admin_headers()
     # 刻意**不**清空日志表：那会抹掉用户真实的操作留痕（见上一条测试的说明）。
     # 只需要看"刚写进去的最新一条"，按 id 倒序取第一行即可。
-    assert client.post("/api/v1/system/roles", json={"code": "X-1", "name": "越权"}).status_code == 401
+    # 空 Authorization：conftest 默认注入的管理员 token 必须被抵掉，这里才是未认证请求
+    assert (
+        client.post(
+            "/api/v1/system/roles",
+            json={"code": "X-1", "name": "越权"},
+            headers={"Authorization": ""},
+        ).status_code
+        == 401
+    )
 
     page = client.get("/api/v1/system/logs?page_size=1", headers=headers).json()
     assert page["total"] >= 1

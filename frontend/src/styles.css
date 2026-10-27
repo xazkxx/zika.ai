@@ -113,7 +113,19 @@ body {
   gap: 14px;
   margin-bottom: 30px;
 }
+/* 2026-10-26（v1.81.1）：装了真 Logo 之后，原来的「亮蓝圆角方块」必须跟着消失 ——
+   银灰 3D 字压在一块亮蓝底板上像贴错图。所以方块样式整体挪到 `.auth-logo-chip`，
+   只有**回退分支**（内置盾牌 svg）才渲染它；真图在位时 `.auth-logo` 只剩居中作用。 */
 .auth-logo {
+  display: grid;
+  place-items: center;
+  min-height: 56px;
+}
+/* 透明底的银灰字压在深蓝渐变卡片上，边缘会"发灰"，加一层柔和的深色投影把厚度托出来 */
+.auth-logo > img {
+  filter: drop-shadow(0 14px 26px rgba(2, 6, 23, 0.6));
+}
+.auth-logo-chip {
   width: 56px;
   height: 56px;
   border-radius: 16px;
@@ -123,15 +135,25 @@ body {
   box-shadow: 0 12px 30px -8px rgba(59, 130, 246, 0.75);
   position: relative;
 }
-.auth-logo::after {
+.auth-logo-chip::after {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: 16px;
   background: linear-gradient(160deg, rgba(255, 255, 255, 0.28), transparent 55%);
 }
-.auth-logo svg { width: 30px; height: 30px; display: block; position: relative; z-index: 1; }
-.auth-brand h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+.auth-logo-chip svg { width: 30px; height: 30px; display: block; position: relative; z-index: 1; }
+.auth-brand h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.01em;
+  /* 2026-10-26 修复「深色背景上一团黑字」：
+     全局 `h1 { color: #111827 }` 是**元素选择器**，它对 h1 的生效优先级
+     高于从 `.auth-shell`（color: #f8fafc）继承来的颜色 —— 继承永远弱于直接命中。
+     这里必须显式给色，不能指望继承。 */
+  color: #f8fafc;
+}
 .auth-tagline { font-size: 14px; color: #94a3b8; margin: 0; }
 .auth-form { display: block; }
 .auth-field { margin-bottom: 16px; }
@@ -182,6 +204,20 @@ body {
 }
 .auth-eye:hover { color: #f8fafc; background: rgba(148, 163, 184, 0.12); }
 .auth-eye svg { width: 18px; height: 18px; }
+/* 2026-10-26（v1.81.1）修复「密码框里两只眼睛」：
+   Edge（以及 IE）会在 input[type=password] 右侧**原生**插一个"显示密码"小眼睛
+   （::-ms-reveal），它和我们自己的 .auth-eye 按钮叠在一起，就是用户截图里的
+   「双眼皮」。原生控件没有任何 API 能关，只能用这条伪元素隐藏。
+   写成不带前缀的全局规则：新增用户 / 重置密码弹窗里的密码框同样受益，
+   省得以后每加一个密码框就要再踩一次。
+   注意 ::-webkit-credentials-auto-fill-button 是密码管理器的钥匙图标，不是"眼睛"，
+   不影响观感，保留（用户可能正靠它填充账号）。 */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+  width: 0;
+  height: 0;
+}
 .auth-row { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 22px; }
 .auth-remember {
   display: inline-flex;
@@ -356,6 +392,13 @@ select {
   font-weight: 800;
   letter-spacing: 0.05em;
   flex-shrink: 0;
+}
+
+/* 侧栏真 Logo（v1.81.1）：图是透明底的银灰字，压在浅色侧栏上容易"散掉"，
+   加一层 1px 的深色投影定住边缘；深色主题下这层投影也不会显脏。
+   只命中 <img>，回退用的 .brand-mark 方块不受影响。 */
+.sidebar-brand > img {
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.45));
 }
 
 .brand-text {
@@ -5088,6 +5131,11 @@ td input[type="checkbox"] {
 }
 .app-shell .brand-text { color: var(--nav-brand-fg); }
 .app-shell .brand-mark { background: var(--nav-brand-mark); }
+/* 珍珠白主题（白色侧栏）下，银灰 3D 字会"化"进背景里 —— 压成深灰剪影反而更利落。
+   只命中真图；回退用的 .brand-mark 方块本身有渐变底色，不受影响。 */
+.app-shell[data-nav-theme='light'] .sidebar-brand > img {
+  filter: brightness(0.32) contrast(1.15) drop-shadow(0 1px 1px rgba(15, 23, 42, 0.18));
+}
 .app-shell .nav-group-title { color: var(--nav-group-fg); }
 .app-shell .nav-group-title:hover { color: var(--nav-group-fg-hover); }
 .app-shell .nav-group.has-active .nav-group-title { color: var(--nav-group-fg-active); }
@@ -8361,3 +8409,60 @@ section.contracts-form-panel .contract-item-row {
   gap: 10px;
   align-items: end;
 }
+
+/* ============================================================
+   金蝶级表格统一主题（v1.78.0 · 2026-10-26）
+   ------------------------------------------------------------
+   为什么放在文件末尾、并且只覆盖「颜色」：
+     · `.data-table` 是全站 30+ 个列表页共用的表（档案、单据、报表）；
+       一页页改 <table> 必漂移，所以只在共享样式里定一次；
+     · 不碰 `table-layout` / `height` / `padding` —— 那是各页列宽与
+       打印排版的既有约定（`styles.css:5406` 有专门说明）；
+     · 新增规则追加在末尾 = 与页面私有样式同优先级时由它们赢，
+       所以「哪个页面想用自己的表头色」仍然可以覆盖，不会被锁死。
+
+   为什么是 #1F3A5F 而不是纯黑：
+     与「增强对账单」的 --stmt-head-bg 同值、与 Excel 导出 #1F4E78
+     同一族 —— 屏幕、打印、导出三处看起来是同一套视觉语言。
+   ============================================================ */
+.data-table thead th {
+  background: #1f3a5f;
+  color: #e9eff7;
+  font-weight: 600;
+  border-bottom: 1px solid #16304f;
+}
+
+/* 斑马纹：只给偶数行，且让位给三种既有语义行
+   （row-muted=作废/失效、is-selected/selected=选中、danger=告警）。
+   不排除的话，这些行在偶数位会被斑马纹盖掉，状态色消失。 */
+.data-table tbody tr:nth-child(even):not(.row-muted):not(.is-selected):not(.selected) > td {
+  background: #f7f9fc;
+}
+
+.data-table tbody tr:hover:not(.row-muted) > td {
+  background: #eef4fb;
+}
+
+.data-table tbody tr.is-selected > td,
+.data-table tbody tr.selected > td {
+  background: #e0edff;
+}
+
+/* 打印时回到「白底黑字 + 细线」：深蓝表头在纸上费墨且看不出层次，
+   而打印件是要给客户/税务看的，可读性优先于屏幕观感。 */
+@media print {
+  .data-table thead th {
+    background: #fff !important;
+    color: #111827 !important;
+    border-bottom: 1.5px solid #374151 !important;
+  }
+
+  .data-table tbody tr:nth-child(even) > td {
+    background: #fafafa !important;
+  }
+
+  .data-table tbody tr:hover > td {
+    background: transparent !important;
+  }
+}
+

@@ -41,15 +41,18 @@
 }
 
 /* ---------------------------------------------------------------- 表头 */
+/* v1.78.0 金蝶级统一：#1F3A5F 深蓝表头 + 浅色文字。
+   与「增强对账单」的 --stmt-head-bg、Excel 导出的 #1F4E78 同一族，
+   屏幕 / 打印 / 导出看起来是同一套视觉语言。 */
 .erp-table__cell--head {
   padding: var(--space-3) var(--space-4);
   text-align: left;
   font-size: var(--fs-xs);      /* 12px */
-  font-weight: var(--fw-medium);
+  font-weight: var(--fw-semibold);
   letter-spacing: 0.02em;
-  color: var(--fg-muted);
-  background: var(--gray-50);
-  border-bottom: 1px solid var(--divider-strong);
+  color: #e9eff7;
+  background: #1f3a5f;
+  border-bottom: 1px solid #16304f;
   white-space: nowrap;
   /* 表头吸顶：长表格滚到下面时仍然知道每列是什么。
      （同一元素可以同时 sticky top 与 sticky right，吸附列的表头两个都要） */
@@ -125,7 +128,7 @@
 }
 
 .erp-table--striped .erp-table__row:nth-child(even) {
-  background: var(--gray-50);
+  background: #f7f9fc;
 }
 
 .erp-table--hover .erp-table__row:hover {
@@ -152,12 +155,12 @@
 }
 
 .erp-table__cell--head.erp-table__cell--sticky-right {
-  background: var(--gray-50);
+  background: #1f3a5f;
   z-index: 3;   /* 高于普通表头，横滚时不被盖住 */
 }
 
 .erp-table--striped .erp-table__row:nth-child(even) .erp-table__cell--sticky-right {
-  background: var(--gray-50);
+  background: #f7f9fc;
 }
 
 .erp-table--hover .erp-table__row:hover .erp-table__cell--sticky-right {
@@ -398,3 +401,24 @@
 .erp-table__cell--wrap .erp-table__ellipsis {
   text-overflow: clip;
 }
+
+/* ------------------------------------------------------------ 打印（v1.78.0）
+   深蓝表头在屏幕上好看，打在纸上费墨且看不出层次；打印件是给客户/税务看的，
+   可读性优先 —— 回到白底黑字 + 一条实线。 */
+@media print {
+  .erp-table__cell--head {
+    background: #fff !important;
+    color: #111827 !important;
+    border-bottom: 1.5px solid #374151 !important;
+  }
+
+  .erp-table__cell--head.erp-table__cell--sticky-right {
+    background: #fff !important;
+  }
+
+  .erp-table--striped .erp-table__row:nth-child(even),
+  .erp-table--striped .erp-table__row:nth-child(even) .erp-table__cell--sticky-right {
+    background: #fafafa !important;
+  }
+}
+

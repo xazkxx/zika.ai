@@ -115,6 +115,9 @@ PERMISSION_CATALOG: list[dict[str, object]] = [
         "items": [
             {"key": "reports", "label": "报表中心"},
             {"key": "analysis", "label": "经营分析"},
+            # 项目资金试算（v1.81.0）：独立菜单而不是塞进「经营分析」的第 4 个 tab，
+            # 因为这张页要横着放三张图 + 一张明细表，独立出来老板看得清。
+            {"key": "project-calc", "label": "项目资金试算"},
         ],
     },
     {

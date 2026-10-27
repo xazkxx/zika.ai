@@ -44,6 +44,8 @@ from contextvars import ContextVar
 
 import pymupdf as fitz
 
+from app.services.brand_logo import PRINT_LOGO_HEIGHT_PT, print_logo_image
+
 # 兜底排版：改造前的硬编码值。任何一处 template 缺失都回落到这里。
 _BASE_LAYOUT: dict[str, float] = {
     "width": 595.28,
@@ -295,6 +297,26 @@ def _render_head(cv: Canvas, spec: dict, y: float) -> float:
     left, right_x = L["margin_left"], L["width"] - L["margin_right"]
     inner = right_x - left
     fs_header, fs_title, fs_body = L["font_header"], L["font_title"], L["font_body"]
+
+    # 页眉 Logo（v1.81.0）：**有文件才画**，画完把 y 往下推，后面所有抬头内容顺延。
+    # 居中对齐而不是靠左：公司名、标题都是居中的，Logo 靠左会在视觉上"掉"出信纸中轴。
+    # 高度用 PRINT_LOGO_HEIGHT_PT（≈32.6pt），等比缩放靠 keep_proportion —— 用户给
+    # 横版或方版都不会被拉扁。图片读不了就静默跳过，不能让开单打印 500。
+    logo = print_logo_image()
+    if logo is not None:
+        try:
+            pix = fitz.Pixmap(str(logo))
+            logo_h = PRINT_LOGO_HEIGHT_PT
+            logo_w = logo_h * pix.width / max(pix.height, 1)
+            mid = L["width"] / 2
+            cv.page.insert_image(
+                fitz.Rect(mid - logo_w / 2, y, mid + logo_w / 2, y + logo_h),
+                filename=str(logo),
+                keep_proportion=True,
+            )
+            y += logo_h + 6
+        except Exception:
+            pass
 
     if spec.get("company"):
         h = max(fs_header * 1.4, 14.0)

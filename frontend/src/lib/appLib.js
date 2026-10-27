@@ -25,8 +25,10 @@ export const APP_HASH = typeof __APP_HASH__ === 'undefined' ? 'nogit' : __APP_HA
 // 构建代号（PWA 缓存版本，v72 → v102 …）：每次 build 自动 +1。
 // 它才是"用户现在跑的是不是最新包"的第一判据 —— 业务版本号 1.75.0 几个月都不动一次。
 export const APP_CACHE = typeof __APP_CACHE__ === 'undefined' ? 'v?' : __APP_CACHE__;
-// 页面上的短标：v102 · 20261021-1439（业务版本 v1.75.0 挪到悬停提示里，标题栏放不下三段）
-export const APP_VERSION_LABEL = `${APP_CACHE} · ${APP_BUILD}`;
+// 页面左下角的短标：v1.81.0 · vNNN
+// 2026-10-26 调整：业务版本号从「悬停才看得见」提到正面 —— 打包交付时验收人一眼要能念出
+// 版本号；构建时间/提交哈希仍在 title 里（左下角宽度放不下四段）。
+export const APP_VERSION_LABEL = `${APP_VERSION} · ${APP_CACHE}`;
 // 菜单按业务域分组。items 里的 key 与业务逻辑一一对应，改分组不会影响任何功能。
 // 左侧菜单框架 —— 业务域对齐浩技云进销存（基础资料 / 采购 / 销售 / 库存 / 生产 / 财务 / 系统设置），
 // 并保留本系统独有的模块（工作台、报表分析、项目管理、移动与智能）。

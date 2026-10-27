@@ -53,7 +53,7 @@ from app.db.session import get_db
 from app.models.contract import CONTRACT_DIRECTIONS, Contract, normalize_direction
 from app.models.customer import Customer
 from app.models.finance import FinancialTransaction
-from app.models.invoice import Invoice
+from app.models.invoice import Invoice, active_invoice_clause
 from app.models.product import Product
 from app.models.project import Project
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem
@@ -356,6 +356,7 @@ def generate_statement(payload: dict[str, object], db: Session = Depends(get_db)
     if payload.get("include_invoices", True):
         inv_direction = "output" if direction == "out" else "input"
         invoice_query = db.query(Invoice).filter(
+            active_invoice_clause(),
             Invoice.direction == inv_direction,
             Invoice.issue_date >= period_start,
             Invoice.issue_date <= period_end,
@@ -1061,6 +1062,7 @@ def _build_fusion_rows(
     # —— ② 发票（挂单的按单分组；未挂单的兜底成独立行）——
     inv_direction = "output" if is_sales else "input"
     inv_q = db.query(Invoice).filter(
+        active_invoice_clause(),
         Invoice.direction == inv_direction,
         Invoice.issue_date >= period_start,
         Invoice.issue_date <= period_end,

@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.contract import Contract, ContractItem
 from app.models.finance import FinancialTransaction
-from app.models.invoice import Invoice
+from app.models.invoice import Invoice, active_invoice_clause
 
 router = APIRouter(tags=["three-way-match"])
 
@@ -95,6 +95,7 @@ def _load_invoice_map(db: Session, order_ids: list[int]) -> dict[int, list[dict]
         return {}
     rows = (
         db.query(Invoice)
+        .filter(active_invoice_clause())
         .filter(Invoice.related_order_id.in_(order_ids))
         .order_by(Invoice.issue_date, Invoice.id)
         .all()
@@ -153,6 +154,7 @@ def _load_loose_pools(db: Session) -> tuple[dict[str, list[dict]], dict[str, lis
     invoices: dict[str, list[dict]] = defaultdict(list)
     for row in (
         db.query(Invoice)
+        .filter(active_invoice_clause())
         .filter(Invoice.related_order_id.is_(None))
         .order_by(Invoice.issue_date, Invoice.id)
         .all()

@@ -34,6 +34,7 @@ from app.models.invoice import (
     DEDUCTION_UNCERTIFIED,
     DIRECTION_INPUT,
     Invoice,
+    active_invoice_clause,
     is_special_invoice,
 )
 
@@ -118,5 +119,10 @@ def input_tax_summary(invoices: list[Invoice], month: str | None = None) -> dict
 
 def certified_tax_of_month(db: Session, month: str | None = None) -> float:
     """本月已认证进项税额（驾驶舱 KPI 用）。与 `/invoices/summary` 同一口径。"""
-    rows = db.query(Invoice).filter(Invoice.direction == DIRECTION_INPUT, Invoice.certified.is_(True)).all()
+    rows = (
+        db.query(Invoice)
+        .filter(active_invoice_clause())
+        .filter(Invoice.direction == DIRECTION_INPUT, Invoice.certified.is_(True))
+        .all()
+    )
     return float(input_tax_summary(rows, month)["certified_this_month_tax"])

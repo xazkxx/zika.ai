@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from app.core.doc_status import assert_transition, is_approved, status_label
 from app.db.session import get_db
-from app.models.finance import FinancialTransaction
+from app.models.inventory import InventoryTransaction
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderItem
 from app.models.purchase_return import PURCHASE_RETURN_STATUS, PurchaseReturn, PurchaseReturnItem
@@ -21,9 +21,11 @@ from app.schemas import (
     PurchaseReturnRead,
 )
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
+
+from app.services.doc_archive import archive_document
 
 from app.api.v1.routes.erp_common import (
     _apply_stock,
@@ -385,30 +387,81 @@ def purchase_order_to_inbound(order_id: int, db: Session = Depends(get_db)) -> P
 
 
 @router.delete("/purchase-orders/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_purchase_order(order_id: int, db: Session = Depends(get_db)) -> Response:
+def delete_purchase_order(
+    order_id: int,
+    request: Request,
+    reason: str = Query("", description="作废原因（写进单据备注，留痕用）"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """**DELETE 已降级为「作废」（2026-10-26 P0-5）**：单据永久保留，不再物理删除。
+
+    与销售侧同一套口径：冲销照旧（账必须平），单据落 `cancelled` 留在库里，
+    作废前的整单快照写进 `document_archives`。
+
+    保留的拒作废闸口：
+      · 已转入库单的订单不许作废（先处理入库单）；
+      · 已登记过付款的单据不许作废 —— 真金白银不属于这张单。
+    """
     item = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).first()
     if item is None:
         raise HTTPException(status_code=404, detail="Purchase order not found")
-    # 已转入库单的订单不允许直接删（入库单还引用着它），先删入库单再回来删订单；
-    # 用 source_order_id 反查比看 status 更准——入库单删掉后订单自然就能删了
+    if item.status == "cancelled":
+        # 幂等：作废过的单再删一次不报错、也不再冲一次账
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    # 已转入库单的订单不允许直接作废（入库单还引用着它），先处理入库单再回来
     if (
         item.doc_type == "order"
-        and db.query(PurchaseOrder).filter(PurchaseOrder.source_order_id == order_id).first() is not None
+        and db.query(PurchaseOrder)
+        .filter(
+            PurchaseOrder.source_order_id == order_id,
+            # P0-5：**已作废**的下游入库单不再挡住父订单（理由同销售侧）
+            PurchaseOrder.status != "cancelled",
+        )
+        .first()
+        is not None
     ):
-        raise HTTPException(status_code=409, detail="该订单已转入库单，请先删除对应的入库单")
-    # 已登记过付款/收款的单据禁止删除（2026-10-18）—— 同销售侧，
+        raise HTTPException(status_code=409, detail="该订单已转入库单，请先处理对应的入库单")
+    # 已登记过付款/收款的单据禁止作废（2026-10-18）—— 同销售侧，
     # 必须排在 _revert_stock / _revert_finance 之前（先动库存再报错会留下半截状态）
     _assert_no_payment_flows(db, order_id, item.order_no or f"#{order_id}")
-    # 删入库单时，来源订单上也可能已登记付款（同销售侧，避免订单变成死锁单）
     if item.source_order_id:
         _assert_source_order_no_payment(db, db.get(PurchaseOrder, item.source_order_id), "采购入库单")
+
+    order_items = (
+        db.query(PurchaseOrderItem)
+        .filter(PurchaseOrderItem.purchase_order_id == order_id)
+        .all()
+    )
+    snapshot = _build_purchase_payload(item, order_items)
+    status_before = item.status
+
     # 库存联动回滚：这张单产生的入库流水一并冲销（订单没有流水，此处自然为空操作）
     _revert_stock(db, "purchase_in", order_id)
-    # 财务联动回滚：只冲销"入库自己产生的"应付（related_type=purchase_in）。
-    # 收付款（receipt/payment）不在这里删 —— 上面那道闸口已经拦下了。
+    # 财务联动回滚：只冲销"入库自己产生的"应付（related_type=purchase_in）
     _revert_finance(db, "purchase_in", order_id)
-    db.query(PurchaseOrderItem).filter(PurchaseOrderItem.purchase_order_id == order_id).delete(synchronize_session=False)
-    db.delete(item)
+
+    item.status = "cancelled"
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    note = f"[已作废 {stamp}]"
+    if reason:
+        note += f" 作废原因：{reason}"
+    note += " 库存与应付已冲销撤回；"
+    item.note = f"{item.note}\n{note}" if item.note else note
+
+    archive_document(
+        db,
+        doc_type="purchase_order",
+        doc_id=item.id,
+        doc_no=item.order_no,
+        action="void",
+        status_before=status_before,
+        status_after="cancelled",
+        total_amount=float(item.total_amount or 0.0),
+        reason=reason,
+        payload=snapshot,
+        request=request,
+    )
+
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -653,6 +706,75 @@ def _purchase_return_apply_finance(db: Session, item: PurchaseReturn, total: flo
 
 
 
+def _purchase_return_posted(db: Session, return_id: int) -> bool:
+    """这张采购退货单**账上是否已经落过账** —— 只看流水，不看状态。
+
+    与销售侧 `_sales_return_posted` 完全对称，理由也一样：
+    「已退货」但流水被人为清掉的历史单，状态仍是 submitted；
+    按状态判断就会在「只改备注」时又落一遍账（库存凭空再扣一批、应付再冲一次）。
+    库存流水才是账的唯一真相源。
+    """
+    return (
+        db.query(InventoryTransaction.id)
+        .filter(
+            InventoryTransaction.related_type == "purchase_return",
+            InventoryTransaction.related_order_id == return_id,
+        )
+        .first()
+        is not None
+    )
+
+
+def _purchase_return_apply_ledger(
+    db: Session, item: PurchaseReturn, rows: list[PurchaseReturnItem]
+) -> None:
+    """按**当前**状态决定要不要落账 —— 落账 = 减库存 + 冲减应付。
+
+    ⚠️ 2026-10-26 P0 修复（与销售退货对齐）：
+
+      只有 `submitted`（已退货）才落账。**本函数只负责「加」，永远不负责「撤」** ——
+      「撤」（红冲）必须走独立的 `POST /purchase-returns/{id}/void`，
+      由用户在二次确认弹窗里明确点了「确认红冲」才执行。
+
+    修之前这里根本没有这个函数：`create_purchase_return` 无条件调
+    `_purchase_return_apply_stock` + `_purchase_return_apply_finance`，
+    于是「存成草稿」也会立刻扣库存、冲应付 —— 单据还只是草稿，账已经动了。
+    销售侧早就有这道守卫（`_sales_return_apply_ledger`），采购侧漏抄了这一份，
+    两个业务域的行为因此长期不一致；而采购侧一旦落账，账上少的是**应付**与**库存**，
+    对账时表现为「货没退，库存却少了」。
+
+    幂等保护：已经落过账的单不重复落账，判据是流水本身而不是状态/标记位。
+    """
+    if item.status != "submitted":
+        return
+    if _purchase_return_posted(db, item.id):
+        return
+    _purchase_return_apply_stock(db, item, rows)
+    total = float(item.total_amount or 0.0)
+    if total > 0:
+        _purchase_return_apply_finance(db, item, total)
+
+
+def _purchase_return_red_flush(
+    db: Session, item: PurchaseReturn, rows: list[PurchaseReturnItem]
+) -> None:
+    """红冲：把这单的库存减少与应付冲减**全部撤回**，再按当前明细重新落一笔。
+
+    调用者只有两个：
+      · `void_purchase_return` —— 用户点「作废 / 红冲」并二次确认后
+      · `update_purchase_return` —— 改的是一张**已落账**的单
+
+    第二条为什么必须重写而不是拦死：已退货的单允许改数量，单据与账本就必须一起动；
+    否则「单据说退 5 件、流水还是 −3」——这种静默不一致比拦死更危险。
+    反过来，只是把 `submitted` 改回 `draft`（反审核）时，一个字都不许动账，
+    所以本函数不在状态变更路径上被调用。
+    """
+    _revert_stock(db, "purchase_return", item.id)
+    _revert_finance(db, "purchase_return", item.id)
+    db.flush()
+    _purchase_return_apply_ledger(db, item, rows)
+
+
 def _purchase_return_payload(item: PurchaseReturn, rows: list[PurchaseReturnItem]) -> dict[str, object]:
     return {
         "id": item.id,
@@ -841,11 +963,10 @@ def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(
     db.commit()
     db.refresh(item)
 
-    # —— 库存联动：退货减少现存量（outbound）——
-    _purchase_return_apply_stock(db, item, rows)
-
-    # —— 财务联动：退货冲减应付。金额记负数（方向 out），对账时自然抵减 ——
-    _purchase_return_apply_finance(db, item, total)
+    # —— 库存 + 财务联动：**只有 submitted 才落账**，且幂等 ——
+    # 退货减少现存量（outbound + outbound 冲减应付，金额记负数、方向 out）。
+    # 草稿一律不动账：建单只是「登记一张要退的货」，真正退货（审核/提交）才发生账务。
+    _purchase_return_apply_ledger(db, item, rows)
 
     db.commit()
     db.refresh(item)
@@ -860,6 +981,11 @@ def update_purchase_return(
     item = db.get(PurchaseReturn, return_id)
     if item is None:
         raise HTTPException(status_code=404, detail="采购退货单不存在")
+    if item.status == "cancelled":
+        raise HTTPException(
+            status_code=409,
+            detail="这张退货单已作废（红冲），不能再修改。要重新退货请新建一张。",
+        )
 
     text_fields = [
         "supplier_name", "contact", "contact_phone", "address", "businesser",
@@ -933,21 +1059,23 @@ def update_purchase_return(
         item.amount_chinese = amount_to_chinese(item.total_amount)
         items_replaced = True
 
-    # —— 库存联动：改单必须**重写**流水（不是"不动"）——
-    # 以前这里是「整单替换明细但完全不碰流水」，于是
-    # 「建单退 3 件 → 改成退 5 件」会留下「单据说 5、流水还是 −3」：
-    # 单据与库存永久对不上，而且没有任何报错。
-    # 明细或仓库**任一**被改动过都要重算 —— 只换明细不换仓、或只换仓不换明细，
-    # 都会让流水指向一个和单据不一致的口径。
-    if items_replaced or "warehouse_id" in payload:
-        _purchase_return_apply_stock(db, item, rows)
-
-    # —— 财务联动：和库存同样的道理。改了明细/供应商/仓库/退货日期，
-    #    应付冲减的金额与归属就都变了，必须一起重算 ——
-    if items_replaced or any(
+    # —— 库存 / 财务联动：**只对已落账的单重写**，草稿一律不动账 ——
+    # 以前这里是「无论什么状态都重写流水」，于是草稿改一次数量，库存与应付就跟着动一次。
+    # 现在的口径与销售退货完全一致（决策表也一样）：
+    #   ① 目标状态不是 submitted（退回草稿等）→ 账保持原样，一次都不许冲；
+    #   ② 已落账 且 改了账务输入（明细/供应商/仓库/退货日期）→ 先冲后落；
+    #   ③ 从未落账（草稿→审核）→ 这一刻才真正落账；
+    #   ④ 已落账 但只改了备注之类 → 什么都不做。
+    posted_before = _purchase_return_posted(db, item.id)
+    ledger_inputs_changed = items_replaced or any(
         key in payload for key in ("supplier_id", "warehouse_id", "return_date")
-    ):
-        _purchase_return_apply_finance(db, item, item.total_amount)
+    )
+    if item.status != "submitted":
+        pass
+    elif posted_before and ledger_inputs_changed:
+        _purchase_return_red_flush(db, item, rows)
+    elif not posted_before:
+        _purchase_return_apply_ledger(db, item, rows)
 
     db.commit()
     db.refresh(item)
@@ -959,32 +1087,144 @@ def update_purchase_return(
 def update_purchase_return_status(
     return_id: int, payload: dict[str, object], db: Session = Depends(get_db)
 ) -> dict[str, object]:
+    """改采购退货状态 —— **只改状态，绝不动账**（与销售退货对齐）。
+
+    这是「反审核」按钮走的那条路。用户点它的意思是
+    「这张单我要退回去改一下」，不是「这张单作废了」——
+    所以库存与应付一律原样保留，交由用户改完再审核。
+
+    真正的冲销（红冲）必须在 `POST /purchase-returns/{id}/void` 里做：
+    那条路带二次确认弹窗，会把单据落到 `cancelled` 并写明原因。
+    """
     item = db.get(PurchaseReturn, return_id)
     if item is None:
         raise HTTPException(status_code=404, detail="采购退货单不存在")
     status_value = str(payload.get("status") or "").strip()
     if status_value not in PURCHASE_RETURN_STATUS:
         raise HTTPException(status_code=400, detail="采购退货状态非法")
+    if item.status == "cancelled":
+        raise HTTPException(
+            status_code=409,
+            detail="这张退货单已作废（红冲），状态不能再改。要重新退货请新建一张。",
+        )
+    if status_value == "cancelled":
+        raise HTTPException(
+            status_code=400,
+            detail="作废（红冲）请用「作废」按钮，它会撤回库存与应付并留痕。",
+        )
+
     item.status = status_value
+    # 草稿 → 已退货：这一刻才落账（幂等，落过就跳过）
+    if status_value == "submitted":
+        _purchase_return_apply_ledger(db, item, _purchase_return_items(db, item.id))
+
     db.commit()
     db.refresh(item)
     return _purchase_return_payload(item, _purchase_return_items(db, item.id))
 
 
+@router.post("/purchase-returns/{return_id}/void", response_model=PurchaseReturnRead)
+def void_purchase_return(
+    return_id: int,
+    request: Request,
+    payload: dict[str, object] | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """作废（红冲）采购退货单 —— 撤库存、撤应付，单据落 `cancelled`。
 
-@router.delete("/purchase-returns/{return_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_purchase_return(return_id: int, db: Session = Depends(get_db)) -> Response:
+    与 `void_sales_return` 同一套口径，**这是采购侧唯一会「反向冲账」的入口**，
+    前端必须二次确认才调它。
+
+    为什么要独立成一个接口，而不是在 PATCH status 里传 cancelled：
+      ① 冲账是不可逆的账务动作，出现在「改状态」这种廉价接口里，
+         任何一个手滑的调用都能把账冲掉；
+      ② 需要一个地方写「谁、什么时候、为什么」冲的 —— `payload.reason`
+         会写进单据备注，事后对账才有人可问；
+      ③ 幂等：已经作废过的单再点一次直接回当前内容，不会二次冲账。
+
+    已登记的付款流水**不拦**：退货单冲减的是应付（负数流水），
+    作废它等于恢复应付，本身不会造成「钱凭空多出来」；
+    真正的钱（payment/receipt）从来不属于退货单。
+    """
     item = db.get(PurchaseReturn, return_id)
     if item is None:
         raise HTTPException(status_code=404, detail="采购退货单不存在")
-    # 库存联动回滚：冲销这张退货单产生的 outbound 流水（货退回的动作撤销，库存加回来）
-    _revert_stock(db, "purchase_return", return_id)
-    # 财务联动回滚：冲销这张单产生的应付冲减流水
-    db.query(FinancialTransaction).filter(
-        FinancialTransaction.related_type == "purchase_return",
-        FinancialTransaction.related_order_id == return_id,
-    ).delete(synchronize_session=False)
-    db.query(PurchaseReturnItem).filter(PurchaseReturnItem.purchase_return_id == return_id).delete(synchronize_session=False)
-    db.delete(item)
+
+    if item.status == "cancelled":
+        # 幂等：重复点不报错、不再冲一次账
+        return _purchase_return_payload(item, _purchase_return_items(db, item.id))
+
+    reason = ""
+    if isinstance(payload, dict):
+        reason = str(payload.get("reason") or "").strip()
+
+    # 归档快照必须在**改动之前**取（留的是"作废前长什么样"）
+    rows = _purchase_return_items(db, item.id)
+    snapshot = _purchase_return_payload(item, rows)
+    status_before = item.status
+
+    was_posted = _purchase_return_posted(db, item.id)
+
+    if was_posted:
+        _revert_stock(db, "purchase_return", item.id)
+        _revert_finance(db, "purchase_return", item.id)
+        db.flush()
+
+    item.status = "cancelled"
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    note = f"[已作废 {stamp}]"
+    if reason:
+        note += f" 作废原因：{reason}"
+    if was_posted:
+        note += " 库存与应付已红冲撤回；"
+    else:
+        note += " 本单未落过账，无库存/应付需要撤回；"
+    item.note = f"{item.note}\n{note}" if item.note else note
+
+    archive_document(
+        db,
+        doc_type="purchase_return",
+        doc_id=item.id,
+        doc_no=item.return_no,
+        action="void",
+        status_before=status_before,
+        status_after="cancelled",
+        total_amount=float(item.total_amount or 0.0),
+        reason=reason,
+        payload=snapshot,
+        request=request,
+    )
+
     db.commit()
+    db.refresh(item)
+    return _purchase_return_payload(item, rows)
+
+
+
+@router.delete("/purchase-returns/{return_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_purchase_return(
+    return_id: int,
+    request: Request,
+    reason: str = Query("", description="作废原因（写进单据备注，留痕用）"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """**DELETE 已降级为「作废」（2026-10-26 P0-5）**：单据永久保留，不再物理删除。
+
+    为什么不再真删：
+      ① 退货单是账务凭证 —— 删掉它，库存与应付的冲销就再也无从追溯；
+      ② 历史单被删后，`purchase_return` 类流水即使被 `_revert_*` 清掉，
+         对账时也只剩「那批货/那笔钱不知去向」，没有任何单据可查；
+      ③ 保留 + `cancelled` + 备注里的时间与原因，才是可审计的红冲。
+
+    语义：
+      · 未落账（草稿）→ 直接作废，不动账；
+      · 已落账 → 撤库存、撤应付，单据落 `cancelled`；
+      · 已作废 → 幂等，不再冲第二次。
+    真正要「作废并说明原因」请用 `POST /purchase-returns/{id}/void`；
+    这里保留 DELETE 只是为了不改前端调用点，行为已与作废完全一致。
+    """
+    item = db.get(PurchaseReturn, return_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="采购退货单不存在")
+    void_purchase_return(return_id, request, {"reason": reason} if reason else None, db)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

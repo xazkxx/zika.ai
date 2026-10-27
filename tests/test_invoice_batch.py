@@ -49,9 +49,13 @@ def test_delete_invoices_batch():
     response = _batch_delete([id_a, id_b])
     assert response.status_code == 204, response.text
 
-    # 都删干净了
-    assert client.delete(f"/api/v1/invoices/{id_a}").status_code == 404
-    assert client.delete(f"/api/v1/invoices/{id_b}").status_code == 404
+    # P0-5：批量删除 = 批量作废 —— 再删一次是幂等 204（旧契约的 404 已不再适用）
+    assert client.delete(f"/api/v1/invoices/{id_a}").status_code == 204
+    assert client.delete(f"/api/v1/invoices/{id_b}").status_code == 204
+
+    # 作废票不进"有效发票"列表（但不等于没记录：记录与原件都在归档里）
+    items = client.get("/api/v1/invoices").json()["items"]
+    assert all(item["id"] not in (id_a, id_b) for item in items), "作废发票不该出现在有效发票列表"
 
     # 空 ids 应 400
     assert _batch_delete([]).status_code == 400

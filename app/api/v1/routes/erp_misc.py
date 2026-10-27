@@ -470,11 +470,14 @@ def summary(db: Session = Depends(get_db)) -> dict[str, float | int]:
     product_count = db.query(Product).count()
     sales_total = (
         db.query(__import__("sqlalchemy").sql.func.coalesce(__import__("sqlalchemy").sql.func.sum(SalesOrder.total_amount), 0))
+        # P0-5：作废单据不计入汇总（单据永久保留后必须显式排除）
+        .filter(SalesOrder.status != "cancelled")
         .scalar()
         or 0
     )
     purchase_total = (
         db.query(__import__("sqlalchemy").sql.func.coalesce(__import__("sqlalchemy").sql.func.sum(PurchaseOrder.total_amount), 0))
+        .filter(PurchaseOrder.status != "cancelled")
         .scalar()
         or 0
     )

@@ -73,9 +73,17 @@ from app.models.operation_log import (
     MAX_OPERATION_LOGS,
     OPERATION_LOG_METHODS,
     OperationLog,
+    OperationLogArchive,
+    archive_operation_logs,
     describe_operation,
     prune_operation_logs,
     record_operation,
+)
+from app.models.document_archive import (
+    ACTION_LABELS as DOCUMENT_ACTION_LABELS,
+    ARCHIVE_ACTIONS,
+    ARCHIVE_DOC_TYPES,
+    DocumentArchive,
 )
 from app.models.organization import Department
 from app.models.outsourcing import OUTSOURCING_STATUS, OutsourcingItem, OutsourcingOrder
@@ -186,6 +194,12 @@ __all__ = [
     "describe_operation",
     "record_operation",
     "prune_operation_logs",
+    "OperationLogArchive",
+    "archive_operation_logs",
+    "DocumentArchive",
+    "ARCHIVE_ACTIONS",
+    "ARCHIVE_DOC_TYPES",
+    "DOCUMENT_ACTION_LABELS",
     "resolve_print_spec",
     "Warehouse",
     "PurchaseOrder",

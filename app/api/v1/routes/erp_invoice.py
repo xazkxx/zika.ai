@@ -33,9 +33,12 @@ from app.models.invoice import (
     DIRECTION_OUTPUT,
     DIRECTION_UNKNOWN,
     INVOICE_FLAG_LABELS,
+    INVOICE_STATUS_LABELS,
+    INVOICE_VOIDED,
     ISSUE_MODE_LABELS,
     Invoice,
     _normalize_tax_no,
+    active_invoice_clause,
     detect_direction,
     is_special_invoice,
 )
@@ -58,6 +61,7 @@ from app.services.invoice_match import (
 # 进项税额口径（2026-10-26）：与 `/dashboard/executive` 的 KPI 共用同一份算法，
 # 不许在这里另写一份 —— 两个界面报出两个数比不报数还糟。
 from app.services.invoice_tax import input_tax_summary
+from app.services.doc_archive import archive_document, archive_file
 from datetime import date, datetime
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse
@@ -74,6 +78,16 @@ from app.api.v1.routes.erp_common import (
 )
 
 router = APIRouter(prefix="", tags=["erp"])
+
+
+def _active_only(query):
+    """只查**有效**发票（排除已作废，P0-5）。
+
+    作废发票仍留在 `invoices` 表里（要能查、能举原件），
+    但**列表、统计、导出、挂单、同步财务**全都不能把它算进去：
+    一张作废的进项票若继续参与抵扣统计，等于给财务一个假数。
+    """
+    return query.filter(active_invoice_clause())
 
 
 # 导出原件 ZIP 时的目录名（按进销项分文件夹，拿出去一眼能分清）
@@ -1087,6 +1101,7 @@ def _invoice_to_dict(item: Invoice, order_no: str | None = None) -> dict[str, ob
         "deduction_state_label": DEDUCTION_STATE_LABELS.get(item.deduction_state, "未认证"),
         "category": item.category,
         "status": item.status,
+        "status_label": INVOICE_STATUS_LABELS.get(item.status or "", item.status or ""),
         "buyer_name": item.buyer_name,
         "buyer_tax_no": item.buyer_tax_no,
         "seller_name": item.seller_name,
@@ -1122,16 +1137,35 @@ def _invoice_to_dict(item: Invoice, order_no: str | None = None) -> dict[str, ob
 
 
 @router.post("/invoices", status_code=status.HTTP_201_CREATED)
-def create_invoice(payload: InvoiceCreate, db: Session = Depends(get_db)) -> dict[str, object]:
-    """保存发票。按发票号码去重：重复上传时删除旧记录，用新解析结果替换。
+def create_invoice(
+    payload: InvoiceCreate, request: Request, db: Session = Depends(get_db)
+) -> dict[str, object]:
+    """保存发票。按发票号码去重：重复上传时**归档旧记录**，用新解析结果替换。
 
     `direction` 没传就**自动判定**（按本公司抬头比对买卖方，见 `detect_direction`）；
     判不出来留 `unknown`，界面显示「待判定」，用户可以手工改或稍后一键重判。
+
+    P0-5：同号重传属于"换票"，旧记录与旧原件都必须留痕 ——
+    旧行写进 `document_archives`（action=reissue），旧原件移入归档目录，**一个字节都不删**。
     """
     existing = db.query(Invoice).filter(Invoice.invoice_no == payload.invoice_no).first()
     if existing is not None:
-        # 替换记录时把旧原件一并删掉，否则 data 目录里会越堆越多"没人认领"的文件
-        file_storage.delete_file(existing.source_path)
+        # 换票：旧记录进归档、旧原件移进归档区（不删除）
+        archived = archive_file(existing.source_path, doc_no=existing.invoice_no)
+        archive_document(
+            db,
+            doc_type="invoice",
+            doc_id=existing.id,
+            doc_no=existing.invoice_no,
+            action="reissue",
+            status_before=existing.status,
+            status_after=INVOICE_VOIDED,
+            total_amount=float(existing.total_amount or 0.0),
+            reason="同号重传：旧记录被本次上传替换（原件已移入归档目录）",
+            payload=_invoice_to_dict(existing, None),
+            files=[archived] if archived else ([existing.source_path] if existing.source_path else []),
+            request=request,
+        )
         # 同步出来的财务流水同样要清：票据被替换了，旧流水就是孤儿
         _purge_invoice_finance(db, [existing.invoice_no])
         db.delete(existing)
@@ -1216,6 +1250,7 @@ def create_invoice(payload: InvoiceCreate, db: Session = Depends(get_db)) -> dic
 
 @router.post("/invoices/import", status_code=status.HTTP_201_CREATED)
 async def import_invoice(
+    request: Request,
     file: UploadFile = File(...),
     save: bool = Query(True, description="是否把原始文件落盘留档"),
     db: Session = Depends(get_db),
@@ -1271,10 +1306,25 @@ async def import_invoice(
         buyer_name=summary.get("buyer_name"),
     )
 
-    # 同号覆盖：重传同一张发票时替换，并把旧原件删掉
+    # 同号覆盖：重传同一张发票时替换，旧记录与旧原件**先进归档**再替换（P0-5）
     existing = db.query(Invoice).filter(Invoice.invoice_no == invoice_no).first()
     if existing is not None:
-        file_storage.delete_file(existing.source_path)
+        archived = archive_file(existing.source_path, doc_no=existing.invoice_no)
+        archive_document(
+            db,
+            doc_type="invoice",
+            doc_id=existing.id,
+            doc_no=existing.invoice_no,
+            action="reissue",
+            status_before=existing.status,
+            status_after=INVOICE_VOIDED,
+            total_amount=float(existing.total_amount or 0.0),
+            reason="同号重传（OCR 导入）：旧记录被本次上传替换（原件已移入归档目录）",
+            payload=_invoice_to_dict(existing, None),
+            files=[archived] if archived else ([existing.source_path] if existing.source_path else []),
+            request=request,
+        )
+        _purge_invoice_finance(db, [existing.invoice_no])
         db.delete(existing)
         db.commit()
 
@@ -1364,7 +1414,7 @@ def list_invoices(
     返回结构与其它列表接口保持一致：`{items, summary}`，
     summary 按进项/销项分别给金额与张数 —— 这正是"进销项分开看"要的东西。
     """
-    query = db.query(Invoice)
+    query = _active_only(db.query(Invoice))
     if direction:
         if direction not in DIRECTION_LABELS:
             raise HTTPException(status_code=400, detail="direction 只能是 input / output / unknown")
@@ -1449,7 +1499,7 @@ def redetect_invoices(db: Session = Depends(get_db)) -> dict[str, object]:
             status_code=400,
             detail="还没有填写本公司名称与税号。请先到「系统设置 → 公司信息」补上，再回来重判。",
         )
-    rows = db.query(Invoice).filter(Invoice.direction == DIRECTION_UNKNOWN).all()
+    rows = _active_only(db.query(Invoice)).filter(Invoice.direction == DIRECTION_UNKNOWN).all()
     changed = 0
     for row in rows:
         decided = detect_direction(
@@ -1517,7 +1567,7 @@ def export_invoice_files(
     只打包**真的还有原件**的发票；没有原件的（早期数据）跳过，
     并在响应头里如实告知跳过了多少张 —— 不报错、也不假装全都导出了。
     """
-    query = db.query(Invoice)
+    query = _active_only(db.query(Invoice))
     id_list = [int(part) for part in (ids or "").split(",") if part.strip().isdigit()]
     if id_list:
         query = query.filter(Invoice.id.in_(id_list))
@@ -1588,7 +1638,7 @@ def export_invoice_qrcodes(
     """
     if direction and direction not in DIRECTION_LABELS:
         raise HTTPException(status_code=400, detail="direction 只能是 input / output / unknown")
-    query = db.query(Invoice)
+    query = _active_only(db.query(Invoice))
     id_list = [int(part) for part in (ids or "").split(",") if part.strip().isdigit()]
     if id_list:
         query = query.filter(Invoice.id.in_(id_list))
@@ -1698,7 +1748,7 @@ def export_invoices_xlsx(
     if direction and direction not in DIRECTION_LABELS:
         raise HTTPException(status_code=400, detail="direction 只能是 input / output / unknown")
 
-    query = db.query(Invoice)
+    query = _active_only(db.query(Invoice))
     id_list = [int(part) for part in (ids or "").split(",") if part.strip().isdigit()]
     if id_list:
         query = query.filter(Invoice.id.in_(id_list))
@@ -1782,6 +1832,13 @@ def update_invoice(invoice_id: int, payload: InvoiceUpdate, db: Session = Depend
     item = db.get(Invoice, invoice_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    if item.status == INVOICE_VOIDED:
+        # 作废票是历史凭证：可以查、可以下载原件，但不许再改金额/税额/抵扣状态。
+        # 真要重开，请按新票重新录入（票号唯一的约束会挡住"同号重开"）。
+        raise HTTPException(
+            status_code=409,
+            detail="这张发票已作废，不能再修改。需要重开请新建一张（作废记录与原件已归档）。",
+        )
     data = payload.model_dump(exclude_unset=True)
     # 记住改前的三态：下面要根据跃迁决定要不要落/清时间戳
     was_deducted = bool(item.deducted)
@@ -1968,7 +2025,7 @@ def order_invoice_status(kind: str, order_id: int, db: Session = Depends(get_db)
     invoiced = order_invoiced_amount(db, order.id)
     uninvoiced = order_uninvoiced_amount(db, order)
     rows = (
-        db.query(Invoice)
+        _active_only(db.query(Invoice))
         .filter(Invoice.related_order_id == order.id)
         .order_by(Invoice.issue_date.asc(), Invoice.id.asc())
         .all()
@@ -2156,33 +2213,121 @@ def issue_invoice_for_sales_order(
     }
 
 
+@router.post("/invoices/{invoice_id}/void")
+def void_invoice(
+    invoice_id: int,
+    request: Request,
+    payload: dict[str, object] | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """作废发票 —— **记录保留、原件保留、同步流水收回**。
+
+    P0-5（2026-10-26）之前，"删除"一张发票是 `db.delete(item)` +
+    `file_storage.delete_file(source_path)`：
+    票号、金额、税额、进销项、原件 PDF/图片**全部消失**，连一条痕迹都没有。
+    财务月底发现"进项少了一张、抵扣对不上"，谁也拿不出那张票。
+
+    现在的语义：
+      · `status` 落 `已作废`，行永久保留，票号**不会被别的票复用**；
+      · 原件从 `data/invoices` **移到** `data/archive/invoices`（移动，不删除），
+        `source_path` 指向新位置，"下载原件"照样能点开；
+      · 发票同步出来的支出流水收回（它是这张票的派生数据，票作废了它就不该在账上）；
+      · 整单快照 + 原件路径 + 操作人 + 原因写进 `document_archives`；
+      · 幂等：已作废的票再作废一次，不报错也不重复处理。
+
+    为什么不能"直接删行"：发票号在税上是唯一凭证号，
+    删掉后同号票可以再录一次，等于允许把一张已抵扣的票"洗掉重开"。
+    """
+    item = db.get(Invoice, invoice_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    reason = ""
+    if isinstance(payload, dict):
+        reason = str(payload.get("reason") or "").strip()
+
+    if item.status == INVOICE_VOIDED:
+        # 幂等：重复点不报错、不再搬一次原件
+        return _invoice_to_dict(item, None)
+
+    snapshot = _invoice_to_dict(item, None)
+    status_before = item.status
+
+    # 原件：移动 + 记路径。移不动（文件已丢）也照常作废，只是 files 为空。
+    archived = archive_file(item.source_path, doc_no=item.invoice_no)
+    if archived:
+        item.source_path = archived
+
+    # 这张票同步出来的支出流水：票都作废了，派生流水不能继续留在账上
+    _purge_invoice_finance(db, [item.invoice_no])
+
+    item.status = INVOICE_VOIDED
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    marker = f"[已作废 {stamp}]"
+    if reason:
+        marker += f" 作废原因：{reason}"
+    marker += " 原件已移入归档目录；"
+
+    archive_document(
+        db,
+        doc_type="invoice",
+        doc_id=item.id,
+        doc_no=item.invoice_no,
+        action="void",
+        status_before=status_before,
+        status_after=INVOICE_VOIDED,
+        total_amount=float(item.total_amount or 0.0),
+        reason=(reason + (" " if reason else "") + marker)[:2000],
+        payload=snapshot,
+        files=[archived] if archived else ([item.source_path] if item.source_path else []),
+        request=request,
+    )
+
+    db.commit()
+    db.refresh(item)
+    return _invoice_to_dict(item, None)
+
+
 @router.delete("/invoices/batch", status_code=status.HTTP_204_NO_CONTENT)
-def delete_invoices_batch(payload: dict[str, object], db: Session = Depends(get_db)) -> Response:
-    """批量删除发票：body 传 {"ids": [1, 2, 3]}。原件与同步出来的财务流水一并删掉。"""
+def delete_invoices_batch(
+    request: Request,
+    payload: dict[str, object],
+    reason: str = Query("", description="作废原因（写进归档台账）"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """批量**作废**发票（P0-5 起不再物理删除）：body 传 {"ids": [1, 2, 3]}。
+
+    单张的语义见 `void_invoice`：记录保留、原件移入归档、同步流水收回。
+    已经作废过的 id 会被跳过（幂等），不存在的 id 直接忽略（与原来一致）。
+    """
     ids = [int(i) for i in (payload.get("ids") or [])]
     if not ids:
         raise HTTPException(status_code=400, detail="ids is required")
     rows = db.query(Invoice).filter(Invoice.id.in_(ids)).all()
     for row in rows:
-        file_storage.delete_file(row.source_path)
-    # 流水不清掉就会变成谁都删不掉的孤儿（delete_finance_entry 拒绝删带 related_type 的）
-    _purge_invoice_finance(db, [row.invoice_no for row in rows])
-    db.query(Invoice).filter(Invoice.id.in_(ids)).delete(synchronize_session=False)
-    db.commit()
+        void_invoice(row.id, request, {"reason": reason} if reason else None, db)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 
 @router.delete("/invoices/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_invoice(invoice_id: int, db: Session = Depends(get_db)) -> Response:
+def delete_invoice(
+    invoice_id: int,
+    request: Request,
+    reason: str = Query("", description="作废原因（写进归档台账）"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """**DELETE 已降级为「作废」（2026-10-26 P0-5）**：记录与原件永久保留。
+
+    改造前这里是 `db.delete(item)` + `delete_file(source_path)` ——
+    记录与原件一起消失，连"曾经有过这张票"都查不到。
+    现在委托给 `void_invoice`：状态落 `已作废`、原件移到归档目录、
+    整单快照写进 `document_archives`。
+    """
     item = db.get(Invoice, invoice_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    # 记录删了原件也要删 —— 否则 data 目录会积一堆再也对不上的文件
-    file_storage.delete_file(item.source_path)
-    _purge_invoice_finance(db, [item.invoice_no])
-    db.delete(item)
-    db.commit()
+    void_invoice(invoice_id, request, {"reason": reason} if reason else None, db)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -2195,7 +2340,7 @@ def invoices_summary(db: Session = Depends(get_db)) -> dict[str, object]:
     `deduction` 块保持原样（它是"专票未抵扣"的历史看板，含销项），
     进项口径单独走 `input_tax` —— 两个口径混在一个块里，财务分不清哪个能对申报表。
     """
-    items = db.query(Invoice).order_by(Invoice.issue_date.asc(), Invoice.id.asc()).all()
+    items = _active_only(db.query(Invoice)).order_by(Invoice.issue_date.asc(), Invoice.id.asc()).all()
     total_amount = sum(float(item.total_amount or 0) for item in items)
     total_tax = sum(float(item.tax_amount or 0) for item in items)
     by_type: dict[str, dict[str, object]] = {}
@@ -2290,7 +2435,7 @@ def _purge_invoice_finance(db: Session, invoice_nos: list[str]) -> int:
 @router.post("/invoices/sync-finance")
 def sync_invoices_to_finance(db: Session = Depends(get_db)) -> dict[str, object]:
     """发票 → 财务关联：每张发票生成一条支出流水（按发票号码幂等去重）。"""
-    items = db.query(Invoice).order_by(Invoice.id.asc()).all()
+    items = _active_only(db.query(Invoice)).order_by(Invoice.id.asc()).all()
     existing_notes = [
         str(note)
         for (note,) in db.query(FinancialTransaction.note).filter(FinancialTransaction.note.isnot(None)).all()

@@ -11,6 +11,7 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from app.api.v1.router import api_router
+from app.core.auth_gate import auth_gate_middleware
 from app.core.security import get_password_hash
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
@@ -1348,6 +1349,12 @@ def create_app() -> FastAPI:
     
     app.include_router(api_router, prefix="/api/v1")
     app.middleware("http")(_tenant_context_middleware)
+    # P0-1「方案 B」：网关鉴权夹在租户上下文与操作日志之间。
+    #  - 在租户之上：匿名请求不必白建一次账套上下文；
+    #  - 在日志之下：**越权尝试本身也要留痕**（`test_log_endpoints_require_admin_but_writes
+    #    _are_still_recorded` 就钉着这条：401 也要写进操作日志，username 为空）。
+    # 见 app/core/auth_gate.py。
+    app.middleware("http")(auth_gate_middleware)
     app.middleware("http")(_operation_log_middleware)
     Base.metadata.create_all(bind=engine)
     ensure_schema_in()

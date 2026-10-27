@@ -100,13 +100,21 @@ def test_delete_sales_order_removes_items():
     assert created.status_code == 201, created.text
     order_id = created.json()["id"]
 
-    # 删除成功
+    # 删除（P0-5 起 = 作废）：204，单据**不再物理消失**
     deleted = client.delete(f"/api/v1/sales-orders/{order_id}")
     assert deleted.status_code == 204
 
-    # 已删除，再次删除应 404
+    # 重复删除：幂等 204，不会二次冲账（旧契约是 404，已随 P0-5 改变）
     again = client.delete(f"/api/v1/sales-orders/{order_id}")
-    assert again.status_code == 404
+    assert again.status_code == 204
+
+    # 单据与明细都还在，只是状态落成 cancelled —— 这才是"可追责"的删除
+    listed = client.get("/api/v1/sales-orders", params={"page_size": 500}).json()
+    rows = listed["items"] if isinstance(listed, dict) else listed
+    matched = [row for row in rows if row["id"] == order_id]
+    assert matched, "P0-5：作废后单据必须仍然可查"
+    assert matched[0]["status"] == "cancelled"
+    assert matched[0]["items"], "P0-5：明细也必须保留（作废不是删明细）"
 
 
 def test_delete_bom_node_cascades_children():

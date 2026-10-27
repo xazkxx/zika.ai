@@ -644,7 +644,10 @@ def test_opening_balances_read_and_write(sandbox):
 
 def test_department_options_open_to_any_logged_in_user(sandbox):
     """员工档案页要部门下拉，但不该因此要求管理员权限；同时不泄漏管理信息。"""
-    assert client.get("/api/v1/system/departments/options").status_code == 401
+    # 显式清空 Authorization：conftest 默认注入管理员 token，否则这里验的就不是"匿名"了
+    assert (
+        client.get("/api/v1/system/departments/options", headers={"Authorization": ""}).status_code == 401
+    )
 
     role = client.post(
         "/api/v1/system/roles",

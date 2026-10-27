@@ -26,8 +26,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import ErpCard from '../ui/ErpCard.jsx';
+import ErpDrawer from '../ui/ErpDrawer.jsx';
+import ErpMoreMenu from '../ui/ErpMoreMenu.jsx';
 import ErpSearchSelect from '../ui/ErpSearchSelect.jsx';
 import ErpTable from '../ui/ErpTable.jsx';
+import SmartCommandBar from '../agent/SmartCommandBar.jsx';
 import { API_BASE, STATEMENT_SCOPES, statementScope } from '../../lib/appLib.js';
 import {
   allRowKeys,
@@ -175,6 +178,9 @@ export default function StatementEditor({
   }, [initialParty, parties]);
 
   const editable = statement?.status === 'draft';
+  // 「全部」视角能选客户也能选供应商 —— 标签写「客户」会让人以为选不到供应商。
+  // 收/付视角才用各自的称谓（2026-10-26 顺手对齐文案，不改任何行为）。
+  const partyLabel = scope === 'all' ? '往来单位' : dirConfig.partyLabel;
   // 单据上的 `party_name` 是**快照**（档案改名后老单据仍显示当时的名字）→ 优先用它
   const partyName =
     statement?.party_name ||
@@ -252,8 +258,21 @@ export default function StatementEditor({
   // 以前这个位置是「生成草稿」：点一下就**占掉一个 DZ 单号并入库**。
   // 用户的直觉却是"先看看这期有什么"，于是台账里堆满没人要的草稿。
   // 现在：点它只查询 + 展示（all 勾选），要落库必须再点「确认生成对账单」。
-  const previewPool = async () => {
-    const invalid = validateGenerate({ partyId, period });
+  //
+  // 2026-10-26：多接一个可选入参 —— AI 指令条认出往来单位后要**立刻**按这个单位
+  // 跑一次预览，而 React 的 setPartyId 是异步的，那一刻读到的还是旧值。
+  // 所以允许显式传 { party, period, scope } 覆盖；不传就是老行为（读当前 state）。
+  // ⚠️ 必须挡住 React 传进来的事件对象：`onClick={previewPool}` 会把 SyntheticEvent
+  //    当第一个参数塞进来，而它也有 `party`/`period` 这类属性，直接当覆盖参数用会炸。
+  const previewPool = async (override) => {
+    const opts = override && !override.nativeEvent ? override : {};
+    const partyValue = opts.party != null ? String(opts.party) : String(partyId || '');
+    const range = opts.period || period;
+    const viewScope = opts.scope || scope;
+    const rangeDir = viewScope === 'all' ? 'all' : viewScope;
+    const partyType = directionOf(rangeDir === 'all' ? 'out' : rangeDir).partyType;
+
+    const invalid = validateGenerate({ partyId: partyValue, period: range });
     if (invalid) {
       setError(invalid);
       setNotice('');
@@ -264,11 +283,11 @@ export default function StatementEditor({
     setNotice('');
     try {
       // 选中的值可能是 ALL / c:<id> / s:<id> / 纯数字（老视图）
-      const picked = String(partyId || '');
-      const query = new URLSearchParams({ period_start: period.start, period_end: period.end });
+      const picked = String(partyValue || '');
+      const query = new URLSearchParams({ period_start: range.start, period_end: range.end });
       if (picked === 'ALL') {
         // 「全部」= 该视角下的全量：全部视角含应收+应付，收/付视角只含本方向
-        query.set('party_type', direction === 'all' ? 'all' : dirConfig.partyType);
+        query.set('party_type', viewScope === 'all' ? 'all' : partyType);
       } else if (picked.startsWith('c:')) {
         query.set('party_type', 'customer');
         query.set('party_id', picked.slice(2));
@@ -276,7 +295,7 @@ export default function StatementEditor({
         query.set('party_type', 'supplier');
         query.set('party_id', picked.slice(2));
       } else {
-        query.set('party_type', dirConfig.partyType);
+        query.set('party_type', partyType);
         query.set('party_id', picked);
       }
       const data = await api(`/statements/preview-pool?${query.toString()}`);
@@ -380,6 +399,43 @@ export default function StatementEditor({
       setLoading(false);
       setBusy('');
     }
+  };
+
+  // ---- 智能指令 → 本页（2026-10-26 · AI 入口）
+  // 从顶部 AI 指令条点「载入本页」时走这里，两条路：
+  //   · 有 statementId：直接载入那张单（单号/账期/明细/勾选一次到位，与台账点行同一条路径）；
+  //   · 只有往来单位：按「这个单位 + 当前账期」跑一次**只读**搜索预览，让用户先看再决定生成。
+  // ⚠️ 不能 setPartyId 之后再调 previewPool()：那一刻 state 还是旧值，
+  //    会把「某个客户」查成「全部往来单位」。参数必须显式传下去。
+  const openFromAgent = (payload) => {
+    if (!payload) return;
+    if (payload.statementId) {
+      loadStatement(payload.statementId);
+      return;
+    }
+    const goto = payload.goto || {};
+    const party = String(goto.party || '').trim();
+    if (!party) {
+      setError('这条指令里没认出往来单位。可以点上面「往来单位」手选，或把公司全名说得更完整一点。');
+      return;
+    }
+    const nextScope = goto.scope === 'in' ? 'in' : 'out';
+    if (nextScope !== scope) {
+      // 与 switchScope 同一口径：换视角必须放掉上一张单，否则应收的数字会挂到供应商头上
+      setScope(nextScope);
+      setStatement(null);
+      setRows([]);
+      setSelectedKeys([]);
+      setOpening('0');
+      setNote('');
+    }
+    setPool(null);
+    setPoolPicked([]);
+    setPartyId(party);
+    setNotice(
+      `已按「${goto.party_name || '该往来单位'}」定位，正在查这一期的单据…`,
+    );
+    previewPool({ party, period, scope: nextScope });
   };
 
   // ---- 行内改数（只允许改两列，其余是后端派生）----
@@ -760,11 +816,33 @@ export default function StatementEditor({
   );
 
   const uncheckedCount = rows.length - checkedRows.length;
+  // 主按钮归属（2026-10-26）：只有「载入了一张还能改的草稿」时，保存才是主按钮。
+  // 已确认/已发出的单不能保存（editable=false），这时候蓝按钮若给了保存，会变成
+  // 一个永远是灰的"假主按钮" —— 反而没有焦点。所以那种情况仍由「搜索预览」占主位。
+  const primaryIsSave = Boolean(statement) && editable;
 
   return (
     <section className="stmt">
+      {/* ================= AI 指令入口（2026-10-26） =================
+          把工作台同款「🤖 智能指令」嵌进本页顶部：一句人话认出往来单位，
+          点「载入本页」直接把那张对账单拉进编辑区；还没生成的单位则按
+          该单位 + 当前账期跑一次**只读**搜索预览。它自己只发查/预览/导出三类
+          请求，不写库 —— 写库仍然只有「确认生成对账单」和「保存」两个入口。 */}
+      <div className="stmt__ai" data-stmt-ai>
+        <SmartCommandBar
+          apiBase={API_BASE}
+          authHeaders={authHeaders}
+          compact
+          placeholder="说一句话就能开单：给我湖南华邦这个月的对账单"
+          onOpenStatement={openFromAgent}
+        />
+      </div>
+
       {/* ================= 顶部命令区 ================= */}
       <header className="stmt__cmd">
+        {/* 左半：视角 + 查询条件。整体去边框 —— 这是"单据头"，不该看起来像
+            一张套着卡片的表单（旧版卡片 + 字段 + 输入框三层边框，视觉上全是线）。 */}
+        <div className="stmt__cmd-main">
         {/* 三视角：全部 = 台账（只看不改）；应收 / 应付 = 各自一本账。
             从「采购对账单」进来默认落在「应付」，从「销售对账单」进来落在「应收」。 */}
         <div className="stmt__seg" role="tablist" aria-label="对账范围">
@@ -789,7 +867,7 @@ export default function StatementEditor({
         {(
           <>
             <div className="stmt__field stmt__field--party">
-              <span className="stmt__field-label">{dirConfig.partyLabel}</span>
+              <span className="stmt__field-label">{partyLabel}</span>
               <ErpSearchSelect
                 options={parties}
                 value={partyId}
@@ -797,8 +875,8 @@ export default function StatementEditor({
                 getOptionValue={(item) => String(item.id)}
                 getOptionLabel={(item) => item.name || ''}
                 getOptionMeta={(item) => [item.code, item.phone].filter(Boolean).join(' · ')}
-                placeholder={`搜索${dirConfig.partyLabel}名称 / 编码`}
-                emptyText={`没有匹配的${dirConfig.partyLabel}`}
+                placeholder={`搜索${partyLabel}名称 / 编码`}
+                emptyText={`没有匹配的${partyLabel}`}
               />
             </div>
 
@@ -835,20 +913,15 @@ export default function StatementEditor({
               </div>
             )}
 
-            {/* 只读预览：点它不写库、不占单号（旧名「生成草稿」误导性太强） */}
-            <button
-              type="button"
-              className="primary-btn small-btn stmt__generate"
-              onClick={previewPool}
-              disabled={busy === 'preview'}
-              data-stmt-preview
-              title="按「往来单位 + 账期」把这期的单据、发票、收款全查出来给你核对（不会生成对账单）"
-            >
-              {busy === 'preview' ? '查询中…' : '🔍 搜索预览'}
-            </button>
           </>
         )}
+        </div>
 
+        {/* 右半：动作区。**一屏只有一个蓝色主按钮**（2026-10-26 主次重排）：
+              · 还没载入对账单 → 「搜索预览」是主（蓝）；
+              · 载入草稿后 → 「保存」是主（蓝），搜索预览退为次按钮；
+              · 打印 / 导出 Excel / 导出 Word 是收尾动作、频率远低于保存，
+                收进 [⋯] 菜单 —— 以前六个按钮平铺成一行，主次全糊了。 */}
         <div className="stmt__cmd-right">
           <div className="stmt__field stmt__field--recent">
             <ErpSearchSelect
@@ -862,31 +935,70 @@ export default function StatementEditor({
               emptyText="还没有保存过对账单"
             />
           </div>
-          {/* 预览态（还没生成对账单）只留「载入已存」：保存/重算/打印/导出都是针对
-              某一张已存在的对账单，摆在预览页纯属误导（2026-10-22 用户反馈）。 */}
-          {pool && !statement ? null : (
-            <>
-          <button type="button" className="secondary-btn small-btn" onClick={save} disabled={!editable || busy === 'save'}>
-            {busy === 'save' ? '保存中…' : '保存'}
-          </button>
-          <button type="button" className="secondary-btn small-btn" onClick={recalc} disabled={!statement || busy === 'recalc'}>
-            {busy === 'recalc' ? '重算中…' : '重算'}
-          </button>
-          <button type="button" className="secondary-btn small-btn" onClick={printPdf} disabled={!statement || busy === 'print'}>
-            {busy === 'print' ? '生成中…' : '打印 PDF'}
-          </button>
-          <button type="button" className="secondary-btn small-btn" onClick={exportExcel} disabled={busy === 'export'}>
-            {busy === 'export' ? '导出中…' : '导出 Excel'}
-          </button>
+          {/* 预览态（还没生成对账单）只留「搜索预览 + 载入已存」：保存/重算/打印/导出
+              都是针对某一张已存在的对账单，摆在预览页纯属误导（2026-10-22 用户反馈）。 */}
           <button
             type="button"
-            className="secondary-btn small-btn"
-            data-word-export="statement"
-            onClick={exportWordFile}
-            disabled={!statement || busy === 'word'}
+            className={`${primaryIsSave ? 'secondary-btn' : 'primary-btn'} small-btn stmt__generate`}
+            onClick={previewPool}
+            disabled={busy === 'preview'}
+            data-stmt-preview
+            title="按「往来单位 + 账期」把这期的单据、发票、收款全查出来给你核对（不会生成对账单）"
           >
-            {busy === 'word' ? '导出中…' : '导出 Word'}
+            {busy === 'preview' ? '查询中…' : '🔍 搜索预览'}
           </button>
+
+          {!statement ? null : (
+            <>
+              <button
+                type="button"
+                className="secondary-btn small-btn"
+                onClick={recalc}
+                disabled={!statement || busy === 'recalc'}
+                title="按当前明细重算头部金额（已发出/已确认的对账单只有这一个显式入口能改数）"
+              >
+                {busy === 'recalc' ? '重算中…' : '重算'}
+              </button>
+              <button
+                type="button"
+                className={`${primaryIsSave ? 'primary-btn' : 'secondary-btn'} small-btn`}
+                data-stmt-save
+                onClick={save}
+                disabled={!editable || busy === 'save'}
+                title={editable ? '保存勾选行（头部金额由服务端重算）' : '只有草稿可以保存'}
+              >
+                {busy === 'save' ? '保存中…' : '保存'}
+              </button>
+              {/* 收尾动作收进 [⋯]：打印与导出不可逆感强、频率低，不该和「保存」抢焦点。
+                  保留 data-word-export="statement" 等旧钩子，验收脚本照旧能点到。 */}
+              <ErpMoreMenu
+                testId="statement"
+                title="打印 / 导出"
+                items={[
+                  {
+                    key: 'print',
+                    label: busy === 'print' ? '正在生成 PDF…' : '打印 PDF',
+                    hint: 'A4 横版 · 可直接发给对方',
+                    disabled: !statement || busy === 'print',
+                    onSelect: printPdf,
+                  },
+                  {
+                    key: 'excel',
+                    label: busy === 'export' ? '正在导出…' : '导出 Excel',
+                    hint: '台账 + 明细两张表 · 含合计',
+                    disabled: busy === 'export',
+                    onSelect: exportExcel,
+                  },
+                  {
+                    key: 'word',
+                    label: busy === 'word' ? '正在导出…' : '导出 Word',
+                    hint: '可盖章发送 · 适合存档',
+                    disabled: !statement || busy === 'word',
+                    attrs: { 'data-word-export': 'statement' },
+                    onSelect: exportWordFile,
+                  },
+                ]}
+              />
             </>
           )}
         </div>
@@ -984,6 +1096,8 @@ export default function StatementEditor({
             ariaLabel="对账单台账"
             loading={loading}
             dense
+            striped
+            hover
             onRowClick={(row) => loadStatement(row.id)}
             // 行可点就必须键盘可开：只给 onRowClick 等于把键盘用户挡在门外
             rowProps={(row) => ({
@@ -1089,6 +1203,8 @@ export default function StatementEditor({
               // 编辑器里每行有输入框；默认间距（12/16）会把 12 行撑到一屏放不下 →
               // 用 dense 压到 8/12，与全站其它"单据明细表"同一密度
               dense
+              striped
+              hover
               selectable
               selectedKeys={selectedKeys}
               onSelectionChange={setSelectedKeys}
@@ -1206,6 +1322,7 @@ export default function StatementEditor({
                   rowKey="id"
                   ariaLabel="往来账底稿"
                   dense
+                  striped
                   emptyProps={{
                     variant: 'data',
                     title: '这一期没有往来流水',
@@ -1386,6 +1503,66 @@ function FusionWideTable({
     return counts;
   }, [columns]);
 
+  // —— 四流增强（2026-10-26）——
+  // 1) 分组色调：按分组**出现顺序**取色，不按中文名硬编码 ——
+  //    后天后端把「签收」改名成「签收/验收」，这里不用改一行。
+  const toneOf = useMemo(() => {
+    const map = new Map();
+    groupCounts.forEach((item, index) => map.set(item.group, (index % 5) + 1));
+    return map;
+  }, [groupCounts]);
+
+  // 2) 断流判定：**按单据块**聚合，而不是看 summary 行自己 ——
+  //    后端给 summary（单据小计）行的 invoice_status 是空的，真正的开票状态挂在
+  //    它上面的 detail 行上（每张单据 = 若干明细 + 收款 + 一行小计）。
+  //    只看 summary 会让色条永远不出现（第一稿就是这样）。
+  //      · 全部明细已开票        → 不断流
+  //      · 有明细已开票/部分开票 → 黄条（部分断流，缺票）
+  //      · 全部明细未开票        → 红条（发票流整个断掉）
+  //    全表合计那行（没有 source_id）不参与判定。
+  const gapByRow = useMemo(() => {
+    const map = new Map();
+    let block = [];
+    for (const row of rows) {
+      if (row.row_kind === 'summary') {
+        if (row.source_id) {
+          const statuses = block
+            .filter((item) => item.row_kind === 'detail')
+            .map((item) => item.invoice_status)
+            .filter(Boolean);
+          if (statuses.length && !statuses.every((status) => status === 'full')) {
+            map.set(row.line_no, statuses.some((status) => status === 'full' || status === 'partial') ? 'warn' : 'stop');
+          }
+        }
+        block = [];
+      } else {
+        block.push(row);
+      }
+    }
+    return map;
+  }, [rows]);
+  const gapOf = (row) => (row && gapByRow.get(row.line_no)) || '';
+  const gapCount = useMemo(
+    () => [...gapByRow.values()].filter((value) => value === 'stop').length,
+    [gapByRow],
+  );
+
+  // 3) 行穿透抽屉：只摊开**当前行已有的字段**（列元数据驱动），
+  //    不额外请求、不拼接后端没有的东西 —— 抽屉里看到的和表里完全一致。
+  const [detailRow, setDetailRow] = useState(null);
+
+  // 4) 分组分隔线 / 冻结列右侧投影：都要逐列算（第一列没有前一组，
+  //    最后一列没有后一列），写死下标会在后端加列时错位。
+  const isGroupStart = (col) => {
+    const index = columns.findIndex((item) => item.field === col.field);
+    return index > 0 && columns[index - 1].group !== col.group;
+  };
+  const isFrozenEdge = (col) => {
+    const index = columns.findIndex((item) => item.field === col.field);
+    const next = columns[index + 1];
+    return Boolean(col.frozen) && !(next && next.frozen);
+  };
+
   const renderCell = (row, col) => {
     const raw = row[col.field];
     if (col.field === 'e_sign_status') return '—';
@@ -1400,17 +1577,35 @@ function FusionWideTable({
 
   return (
     <div className="stmt-fusion" data-stmt-fusion>
+      {/* 四流对齐条（2026-10-26）：每个分组一个色点胶囊，色点与表头上沿颜色一一对应 ——
+          不用读文字也知道这一屏是「业务 / 签收 / 发票 / 资金」四段拼起来的；
+          出现断流（发票流没走完）时多一个红色胶囊，直接给张数。 */}
       <div className="stmt-fusion__legend">
         {groupCounts.map((item) => (
-          <span key={item.group} className="stmt-fusion__legend-item">
-            {item.group} <b>{item.count}</b>
+          <span
+            key={item.group}
+            className="stmt-fusion__legend-item"
+            data-tone={toneOf.get(item.group) || 1}
+          >
+            <i className="stmt-fusion__legend-dot" aria-hidden="true" />
+            {item.group}
+            <b>{item.count}</b>
           </span>
         ))}
+        {gapCount ? (
+          <span className="stmt-fusion__legend-item is-gap" data-stmt-gap-count={gapCount}>
+            <i className="stmt-fusion__legend-dot" aria-hidden="true" />
+            断流
+            <b>{gapCount}</b> 张
+          </span>
+        ) : null}
         <span className="stmt-fusion__legend-item stmt-fusion__legend-total" data-stmt-totals>
           合计 金额 ¥{totals?.amount_sum ?? '0.00'} · 开票 ¥{totals?.invoiced_sum ?? '0.00'} · 收付
           ¥{totals?.paid_sum ?? '0.00'} · 欠款 ¥{totals?.remaining_sum ?? '0.00'}
         </span>
-        <span className="stmt-fusion__legend-hint">拖动表头右缘调列宽，双击复位；表宽超出时横向滚动</span>
+        <span className="stmt-fusion__legend-hint">
+          点任意一行看这张单据的四流明细 · 拖表头右缘调列宽（双击复位）
+        </span>
       </div>
       <div className="stmt-fusion__scroll">
         {/* `table-layout: fixed` + colgroup 是"表头与表体严格对齐"的唯一可靠做法：
@@ -1455,7 +1650,10 @@ function FusionWideTable({
                 <th
                   key={col.field}
                   data-col={col.field}
-                  className={`${col.frozen ? 'is-frozen' : ''} ${col.mono ? 'is-mono' : ''}`.trim()}
+                  data-tone={toneOf.get(col.group) || 1}
+                  className={`${col.frozen ? 'is-frozen' : ''} ${col.mono ? 'is-mono' : ''}${
+                    isGroupStart(col) ? ' is-group-start' : ''
+                  }${isFrozenEdge(col) ? ' is-frozen-edge' : ''}`.trim()}
                   style={{
                     width: widthOf(col),
                     minWidth: widthOf(col),
@@ -1482,14 +1680,35 @@ function FusionWideTable({
                 key={row.line_no}
                 className={`stmt-fusion__row stmt-fusion__row--${row.row_kind}${
                   selectable && docKey(row) && !pickedSet.has(docKey(row)) ? ' is-unpicked' : ''
-                }`}
+                } is-clickable`}
+                data-gap={gapOf(row) || undefined}
+                // 5) 行穿透：整行可点 → 右侧抽屉摊开这一行的四流字段。
+                //    只读，不改数据；键盘 Enter / 空格等价于点一下。
+                tabIndex={0}
+                aria-label={`查看第 ${row.line_no} 行四流明细`}
+                onClick={() => setDetailRow(row)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  setDetailRow(row);
+                }}
               >
+                {/* 断流色条：挂在冻结的「行类型」列左缘，横滚到哪儿都看得见 */}
                 <td className="stmt-fusion__kind" style={{ left: 0 }}>
+                  {gapOf(row) ? (
+                    <i
+                      className={`stmt-fusion__gap is-${gapOf(row)}`}
+                      aria-hidden="true"
+                      data-stmt-gap={gapOf(row)}
+                    />
+                  ) : null}
                   {selectable && row.row_kind === 'summary' && row.source_id ? (
                     <input
                       type="checkbox"
                       checked={pickedSet.has(docKey(row))}
                       onChange={() => onToggleDoc?.(docKey(row))}
+                      // 勾选不该顺带打开抽屉：冒泡到 tr 的 onClick 会一起触发
+                      onClick={(event) => event.stopPropagation()}
                       aria-label={`是否把 ${row.source_no || '该单据'} 放进对账单`}
                       data-stmt-check={row.source_no || ''}
                     />
@@ -1504,6 +1723,8 @@ function FusionWideTable({
                       key={col.field}
                       className={`${col.frozen ? 'is-frozen' : ''} ${col.mono ? 'is-mono' : ''} ${
                         col.kind === 'money' || col.kind === 'qty' ? 'is-num' : ''
+                      }${isGroupStart(col) ? ' is-group-start' : ''}${
+                        isFrozenEdge(col) ? ' is-frozen-edge' : ''
                       }`.trim()}
                       style={{
                         left: col.frozen ? frozenOffsets[col.field] : undefined,
@@ -1522,6 +1743,67 @@ function FusionWideTable({
           </tbody>
         </table>
       </div>
+
+      {/* 行穿透抽屉（2026-10-26）：只摊开当前行**已有字段**，按四流分组排列。
+          刻意不做"再去后端拉一次该单据详情"——抽屉和表格必须永远一致，
+          两处取数就等于两处可能不一致（对账场景最忌讳）。 */}
+      <ErpDrawer
+        open={Boolean(detailRow)}
+        size="lg"
+        testId="stmt-fusion-detail"
+        title="四流穿透 · 单据明细"
+        subtitle={
+          detailRow
+            ? `${FUSION_KIND_LABEL[detailRow.row_kind] || '明细'}${
+                detailRow.source_no ? ` · ${detailRow.source_no}` : ''
+              }`
+            : ''
+        }
+        onClose={() => setDetailRow(null)}
+        footer={
+          <button
+            type="button"
+            className="secondary-btn small-btn"
+            data-stmt-detail-close
+            onClick={() => setDetailRow(null)}
+          >
+            关闭
+          </button>
+        }
+      >
+        {detailRow ? (
+          <div className="stmt-fusion__detail" data-stmt-detail>
+            {groupCounts.map((group) => (
+              <section key={group.group} className="stmt-fusion__detail-group">
+                <h4>
+                  <i
+                    className="stmt-fusion__legend-dot"
+                    data-tone={toneOf.get(group.group) || 1}
+                    aria-hidden="true"
+                  />
+                  {group.group}
+                </h4>
+                <dl>
+                  {columns
+                    .filter((col) => col.group === group.group)
+                    .map((col) => (
+                      <div key={col.field} className="stmt-fusion__detail-row">
+                        <dt>{col.label}</dt>
+                        <dd className={col.kind === 'money' || col.kind === 'qty' ? 'is-num' : ''}>
+                          {/* 后端在小计行的「商品名称」里带了 ◤ / ◢ 折叠标记（表格里是有用的），
+                              抽屉里没有折叠概念，去掉标记只留内容 */}
+                          {String(renderCell(detailRow, col) || '')
+                            .replace(/^[◤◢▾▸▼◣]\s*/, '')
+                            .trim() || '—'}
+                        </dd>
+                      </div>
+                    ))}
+                </dl>
+              </section>
+            ))}
+          </div>
+        ) : null}
+      </ErpDrawer>
     </div>
   );
 }

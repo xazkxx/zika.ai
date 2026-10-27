@@ -233,6 +233,10 @@ def _sales_facts(db: Session, date_from: str, date_to: str) -> list[_Fact]:
         db.query(SalesOrderItem, SalesOrder)
         .join(SalesOrder, SalesOrder.id == SalesOrderItem.sales_order_id)
         .filter(SalesOrder.doc_type == "outbound")
+        # P0-5：作废（cancelled）的单据**不进报表** ——
+        # 单据现在会永久保留，若不过滤，作废一张单不会让营业额下降，
+        # 报表就会长期虚高，而且用户看不出原因。
+        .filter(SalesOrder.status != "cancelled")
         .filter(SalesOrder.order_date >= date_from)
         .filter(SalesOrder.order_date <= date_to)
         .all()
@@ -686,6 +690,8 @@ def build_boss(db: Session, *, date_from: str, date_to: str) -> dict[str, object
     for order in (
         db.query(PurchaseOrder)
         .filter(PurchaseOrder.doc_type == "inbound")
+        # P0-5：作废单据不进报表（理由同销售侧）
+        .filter(PurchaseOrder.status != "cancelled")
         .filter(PurchaseOrder.order_date >= date_from)
         .filter(PurchaseOrder.order_date <= date_to)
         .all()

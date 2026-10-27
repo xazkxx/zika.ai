@@ -339,5 +339,5 @@ def test_duplicate_node_in_items_is_rejected(admin):
 # ============================================================================
 def test_reorder_requires_admin_token():
     """无 token 必须 401（不能像老的业务端点那样裸奔）。"""
-    resp = client.post(REORDER, json={"items": []})
+    resp = client.post(REORDER, json={"items": []}, headers={"Authorization": ""})
     assert resp.status_code == 401, f"无 token 应当 401，实际 {resp.status_code}"

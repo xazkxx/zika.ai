@@ -39,6 +39,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
+from app.services.brand_logo import HEADER_DISTANCE_CM, PRINT_LOGO_HEIGHT_CM, print_logo_image
+
 BODY_FONT = "宋体"
 TITLE_FONT = "黑体"
 HEADER_SHADE = "F2F2F2"  # 表头底色（浅灰，黑白打印机也分得清）
@@ -242,7 +244,37 @@ def _new_document(company_name: str, *, orientation: str = "portrait"):
     normal.element.rPr.rFonts.set(qn("w:ascii"), BODY_FONT)
     normal.element.rPr.rFonts.set(qn("w:hAnsi"), BODY_FONT)
     _page_footer(section, company_name)
+    _page_header_logo(section)
     return doc
+
+
+def _page_header_logo(section) -> None:
+    """页眉 Logo（v1.81.0）：**文件不在就什么都不做**。
+
+    三个细节都是踩过的坑：
+      1. 新文档的 header 里段落数可能是 0，直接 `paragraphs[0]` 会 IndexError；
+      2. 不设置 `header_distance` 的话，Word 默认 1.27cm + 1.15cm 图高会超过 1.8cm
+         上边距，正文第一行被顶下去 —— 对账单那种卡页数的版式会多出一页；
+      3. 图片只进**页眉**，不进正文：这样长文档每一页都有抬头，且正文流不被污染。
+
+    v1.81.1：取图改用 `print_logo_image()`。`add_picture` 不认 WebP，
+    而用户的"png"很可能是改了扩展名的 WebP（实测踩中），
+    那会静默走到下面的 except，变成"网页有图、Word 页眉空"。
+    """
+    path = print_logo_image()
+    if path is None:
+        return
+    try:
+        section.header_distance = Cm(HEADER_DISTANCE_CM)
+        header = section.header
+        paragraph = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.line_spacing = 1.0
+        paragraph.add_run().add_picture(str(path), height=Cm(PRINT_LOGO_HEIGHT_CM))
+    except Exception:
+        # 图片损坏 / 格式不支持：宁可没 Logo，也不能让开单导出直接失败
+        return
 
 
 # ---------------------------------------------------------------------------

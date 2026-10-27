@@ -28,6 +28,8 @@ from typing import Any, Iterable
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.page import PageMargins
+from openpyxl.worksheet.properties import PageSetupProperties
 
 # ---------------------------------------------------------------------------
 # 类别 → 标题 / 工作表名 / 日期字段（用于 from_date–to_date 过滤）
@@ -223,6 +225,9 @@ _WARN_FILL = PatternFill("solid", fgColor="FFF2CC")
 _CARD_FILL = PatternFill("solid", fgColor="F2F6F9")
 _CARD_LABEL_FONT = Font(name="微软雅黑", size=9, color="5A6B80")
 _CARD_VALUE_FONT = Font(name="微软雅黑", size=11, bold=True, color="1F3A5F")
+# 斑马纹 / 公司抬头（2026-10-26）：与网页端明细表同一套配色
+_ZEBRA_FILL = PatternFill("solid", fgColor="F7F9FC")
+_COMPANY_FONT = Font(name="微软雅黑", size=14, bold=True, color="1F3A5F")
 
 _MONEY_FMT = "#,##0.00"
 _NUM_FMT = "#,##0.###"
@@ -285,6 +290,85 @@ def _number_format(kind: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# 列宽自适应 / 状态着色 / 打印设置（2026-10-26 导出精装）
+# ---------------------------------------------------------------------------
+
+# 列宽上下限：8 是"再窄就看不清表头"，46 是"再宽就一屏放不下两列"。
+# 备注/摘要这类长文本靠 Excel 的自动换行兜底，不靠无限加宽。
+_MIN_COL_WIDTH = 8
+_MAX_COL_WIDTH = 46
+
+
+def _display_width(value: Any) -> int:
+    """估算一个值在 Excel 里占几个"字符宽"。中文/全角按 2 算。
+
+    openpyxl 没有真正的 auto-fit（那需要字体度量），但中文按 2 倍估已经够用：
+    宁可略宽一点也不要截断 —— 摘要被切一半的表，会计得逐格点开看。
+    """
+    if value is None or value == "":
+        return 0
+    text = str(value)
+    return sum(2 if ord(ch) > 127 else 1 for ch in text)
+
+
+def _autofit_columns(ws, columns: list[dict[str, Any]], rows: list[dict[str, Any]]) -> None:
+    """按表头 + 内容实测宽度设置列宽（含 2 个字符的左右留白）。"""
+    for idx, col in enumerate(columns, start=1):
+        needed = _display_width(col["label"]) + 2
+        for row in rows:
+            needed = max(needed, _display_width(_cell_value(col, row.get(col["field"]))) + 2)
+        ws.column_dimensions[get_column_letter(idx)].width = max(
+            _MIN_COL_WIDTH, min(needed, _MAX_COL_WIDTH)
+        )
+
+
+# 状态 → 颜色。刻意用"包含"匹配而不是等值：后端字典改一个字（已发送 → 已发出）
+# 颜色不该跟着丢掉。顺序有意义：先判作废，再看确认/发送，最后才是草稿。
+_STATUS_TONES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("作废", "已删", "拒绝", "冲销"), "C72929"),
+    (("确认",), "1F4E78"),
+    (("发送", "发出"), "15803D"),
+    (("草稿", "待"), "B45309"),
+)
+
+
+def _status_font(value: Any) -> Font | None:
+    text = "" if value is None else str(value)
+    if not text:
+        return None
+    for words, color in _STATUS_TONES:
+        if any(word in text for word in words):
+            return Font(name="微软雅黑", size=10, bold=True, color=color)
+    return None
+
+
+def _print_setup(ws, head_row: int, company: str = "") -> None:
+    """打印设置：A4 横版 / 按一页宽缩放 / 表头重复 / 页脚页码 / 页眉打印时间。
+
+    "打印时间"用 Excel 的 &D &T 域，而不是导出那一刻的时间 ——
+    文件可能周一导出、周五才打，纸上要反映真正的打印时间。
+    """
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = 9  # 9 = A4（PAPERSIZE_A4）
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.print_title_rows = f"{head_row}:{head_row}"
+    ws.print_options.horizontalCentered = True
+    ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.5, header=0.2, footer=0.2)
+    ws.oddHeader.right.text = "打印时间：&D &T"
+    ws.oddHeader.right.size = 9
+    ws.oddHeader.right.color = "808080"
+    ws.oddFooter.center.text = "第 &P 页 / 共 &N 页"
+    ws.oddFooter.center.size = 9
+    ws.oddFooter.center.color = "808080"
+    if company:
+        ws.oddFooter.left.text = company
+        ws.oddFooter.left.size = 9
+        ws.oddFooter.left.color = "808080"
+
+
 def _write_summary_cards(ws, start_row: int, cards: list[tuple[str, float]], span: int) -> int:
     """顶部汇总卡片条（2026-10-25）：网页端「期初/本期新增/已开票/已收款/期末应收」
     五卡在 Excel 里的等价物 —— 浅灰底网格，标签一行、数值一行。
@@ -323,26 +407,47 @@ def _write_sheet(
     rows: Iterable[dict[str, Any]],
     total_fields: tuple[str, ...] = (),
     summary_cards: list[tuple[str, float]] | None = None,
+    company: str = "",
 ) -> int:
-    """把一组行写成一张表，返回数据行数（不含标题/表头/合计）。"""
-    widths = [int(c["width"]) for c in columns]
+    """把一组行写成一张表，返回数据行数（不含标题/表头/合计）。
+
+    2026-10-26 导出精装（与网页端同一套视觉语言）：
+      · 抬头三行：公司名 / 单据名 / 共 N 条 + 时间（公司名取自当前账套，不写制表人）；
+      · 深蓝表头 #1F4E78 + 白字；数据区斑马纹 #F7F9FC；
+      · 列宽**按内容自适应**（中文按 2 字宽算），不再是一排固定像素；
+      · 冻结表头 + 打印标题行重复 + A4 横版按宽缩放一页 + 页脚页码；
+      · 状态列按语义着色（作废红 / 已确认蓝 / 已发送绿 / 草稿橙）。
+    """
     span = len(columns)
 
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(span, 1))
-    cell = ws.cell(row=1, column=1, value=title)
+    row = 1
+    # 公司抬头：只放"当前账套公司名"，不放制表人/审核人 —— 那些是内部流转信息，
+    # 对账单是发给对方核对的，抬头越干净越好（2026-10-26 用户拍板）。
+    if company:
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=max(span, 1))
+        ccell = ws.cell(row=row, column=1, value=company)
+        ccell.font = _COMPANY_FONT
+        ccell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[row].height = 26
+        row += 1
+
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=max(span, 1))
+    cell = ws.cell(row=row, column=1, value=title)
     cell.font = _TITLE_FONT
     cell.alignment = Alignment(horizontal="left", vertical="center")
-    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[row].height = 24
+    row += 1
 
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max(span, 1))
-    sub = ws.cell(row=2, column=1, value=subtitle)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=max(span, 1))
+    sub = ws.cell(row=row, column=1, value=subtitle)
     sub.font = _SUB_FONT
     sub.alignment = Alignment(horizontal="left", vertical="center")
+    row += 1
 
     # 顶部汇总卡片（对账单）：插在副标题与表头之间，浅灰底网格
-    head_row = 3
+    head_row = row
     if summary_cards:
-        head_row += _write_summary_cards(ws, 3, summary_cards, max(span, 1))
+        head_row += _write_summary_cards(ws, row, summary_cards, max(span, 1))
 
     for idx, col in enumerate(columns, start=1):
         hc = ws.cell(row=head_row, column=idx, value=col["label"])
@@ -350,17 +455,22 @@ def _write_sheet(
         hc.font = _HEAD_FONT
         hc.border = _BORDER
         hc.alignment = Alignment(horizontal="center", vertical="center")
-        ws.column_dimensions[get_column_letter(idx)].width = widths[idx - 1]
+        # 列宽不在这里写死：数据落完后按内容自适应（见 _autofit_columns），
     ws.row_dimensions[head_row].height = 22
 
     data = list(rows)
     r = head_row + 1
-    for row in data:
+    for position, data_row in enumerate(data):
+        # 斑马纹（2026-10-26）：第 2、4、6… 行上浅底。整行一起上色而不是逐列判断，
+        # 否则空单元格会留白，看起来像"表格被打断"。
+        zebra = position % 2 == 1
         for idx, col in enumerate(columns, start=1):
-            value = _cell_value(col, row.get(col["field"]))
+            value = _cell_value(col, data_row.get(col["field"]))
             dc = ws.cell(row=r, column=idx, value=value)
             dc.font = _BODY_FONT
             dc.border = _BORDER
+            if zebra:
+                dc.fill = _ZEBRA_FILL
             fmt = _number_format(col["kind"])
             if fmt:
                 dc.number_format = fmt
@@ -368,9 +478,14 @@ def _write_sheet(
                 dc.alignment = Alignment(horizontal="right", vertical="center")
             else:
                 dc.alignment = Alignment(horizontal="left", vertical="center")
+            # 状态着色（2026-10-26）：扫一眼就知道哪张已作废、哪张还没发出去
+            if col["field"] == "status_label":
+                tone = _status_font(value)
+                if tone is not None:
+                    dc.font = tone
             # 异常状态色（2026-10-25）：数值 > 0 → 红字（欠款）/ 黄底（未开票）
             warn = col.get("warn")
-            if warn and col["kind"] in ("money", "num") and _num(row.get(col["field"])) > 0.005:
+            if warn and col["kind"] in ("money", "num") and _num(data_row.get(col["field"])) > 0.005:
                 if warn == "red":
                     dc.font = _RED_FONT
                 elif warn == "fill":
@@ -394,11 +509,24 @@ def _write_sheet(
     ws.freeze_panes = ws.cell(row=head_row + 1, column=1)
     if data:
         ws.auto_filter.ref = f"A{head_row}:{get_column_letter(max(span, 1))}{head_row + len(data)}"
+    _autofit_columns(ws, columns, data)
+    _print_setup(ws, head_row, company)
     return len(data)
 
 
-def build(kind: str, headers: list[dict[str, Any]], details: list[dict[str, Any]], *, subtitle: str = "") -> bytes:
-    """生成 xlsx 字节流。调用方负责把 ORM 对象转成 dict（键见上面的列定义）。"""
+def build(
+    kind: str,
+    headers: list[dict[str, Any]],
+    details: list[dict[str, Any]],
+    *,
+    subtitle: str = "",
+    company: str = "",
+) -> bytes:
+    """生成 xlsx 字节流。调用方负责把 ORM 对象转成 dict（键见上面的列定义）。
+
+    `company` 是抬头公司名（当前账套的 own_name）。为空时**不加抬头行** ——
+    老调用方/测试不传就还是原来的两行头，行为向后兼容。
+    """
     meta = DOC_KINDS.get(kind)
     if meta is None:
         raise ValueError(f"不支持的单据导出类别：{kind}")
@@ -431,6 +559,7 @@ def build(kind: str, headers: list[dict[str, Any]], details: list[dict[str, Any]
         rows=headers,
         total_fields=TOTAL_FIELDS.get(kind, ()),
         summary_cards=cards,
+        company=company,
     )
 
     ws2 = wb.create_sheet(detail_sheet)
@@ -441,6 +570,7 @@ def build(kind: str, headers: list[dict[str, Any]], details: list[dict[str, Any]
         subtitle=detail_sub,
         columns=DETAIL_COLUMNS[kind],
         rows=details,
+        company=company,
     )
 
     buf = BytesIO()

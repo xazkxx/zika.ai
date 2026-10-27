@@ -465,8 +465,14 @@ def test_user_filters_work():
 
 
 def test_system_endpoints_require_authentication():
-    """未带 token：管理接口一律 401（不能因为"是本机"就放行）。"""
-    assert client.get("/api/v1/system/meta").status_code == 401
-    assert client.get("/api/v1/system/users").status_code == 401
-    assert client.get("/api/v1/system/roles").status_code == 401
-    assert client.get("/api/v1/system/me/permissions").status_code == 401
+    """未带 token：管理接口一律 401（不能因为"是本机"就放行）。
+
+    `headers={"Authorization": ""}` 是必须的：conftest 会给每个 TestClient 默认注入
+    管理员 token（P0-1 收口后 /api/v1 默认拒绝匿名，存量用例否则跑不动），
+    逐请求的空值头才会把那个默认值抵掉，测到的才是"未带 token"。
+    """
+    anon = {"Authorization": ""}
+    assert client.get("/api/v1/system/meta", headers=anon).status_code == 401
+    assert client.get("/api/v1/system/users", headers=anon).status_code == 401
+    assert client.get("/api/v1/system/roles", headers=anon).status_code == 401
+    assert client.get("/api/v1/system/me/permissions", headers=anon).status_code == 401

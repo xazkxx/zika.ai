@@ -245,6 +245,66 @@
   font-size: 11px;
 }
 
+/* ------------------------------------------- 订单详情抽屉（2026-10-26） */
+/* 字段用 dl 两列铺：单号/状态/客户这类短字段并排，地址/备注占满整行。
+   `.is-wide` 只加在需要通栏的那几个 <div> 上，不另起一套类名。 */
+.doc-detail__facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3, 12px) var(--space-4, 16px);
+  margin: 0 0 var(--space-4, 16px);
+}
+
+.doc-detail__facts > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.doc-detail__facts > div.is-wide {
+  grid-column: 1 / -1;
+}
+
+.doc-detail__facts dt {
+  flex: none;
+  min-width: 64px;
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+}
+
+.doc-detail__facts dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--fg-strong);
+  font-size: var(--fs-sm, 13px);
+  font-weight: var(--fw-medium, 500);
+  word-break: break-word;
+}
+
+.doc-detail__facts--money {
+  margin-top: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-sunken, rgba(148, 163, 184, 0.12));
+}
+
+.doc-detail__subtitle {
+  margin: var(--space-4, 16px) 0 var(--space-2, 8px);
+  color: var(--fg-strong);
+  font-size: var(--fs-sm, 13px);
+  font-weight: var(--fw-semibold, 600);
+}
+
+/* 列表里的单号做成按钮后要保持"就是那串等宽编号"，别被 .link-btn 的
+   padding / 下划线 / 13px 字号撑变样（它毕竟是表格里的一格）。 */
+.doc-no-link-btn {
+  display: inline;
+  font-family: inherit;
+  line-height: inherit;
+  text-align: left;
+}
+
 /* -------------------------------------------------- 订单页「转单」状态标记 */
 /* 订单转成出入库单之后，原来那一排按钮（转入库单 / 删除）会整体消失。
    改造前是"凭空不见"，看起来像 bug；现在换成这枚灰标，明确说出为什么点不了。
@@ -326,13 +386,20 @@
   cursor: default;
 }
 
-/* 操作列现在最多 5 个元素（打印/审核/转单/收款/删除），保证不换行、间距统一 */
+/* 操作列现在最多 4 个元素（审核 → 转单 → 收款 → ⋯），保证不换行、间距统一 */
 .order-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-1, 4px);
   flex-wrap: nowrap;
+}
+
+/* --------------------------------------------------- KPI 计量条（v1.78.0）
+   列表卡是 flush（表格贴边），计量条不能吃卡片 padding —— 会与表格左右边框错位。
+   所以自己留 14px：与 erp-card 头部内边距同档，看起来是一条完整的分段条。 */
+.doc-kpi {
+  padding: 0 14px 12px;
 }
 
 /* --------------------------------------------------- 物流 / 签收（四流合一） */

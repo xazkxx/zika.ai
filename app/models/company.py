@@ -130,5 +130,8 @@ GLOBAL_TABLES: frozenset[str] = frozenset(
         "data_dictionary_items",
         "print_templates",  # 打印模板外观
         "operation_logs",  # 操作日志：审计要跨公司看"谁在什么时候做了什么"
+        # 日志归档（P0-5）：与 operation_logs 同生共死，必须留在同一个 schema 里，
+        # 否则"主表在 public、归档在某账套"会让跨账套审计彻底断链。
+        "operation_log_archives",
     }
 )

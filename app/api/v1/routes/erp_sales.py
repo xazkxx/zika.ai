@@ -25,8 +25,8 @@ from app.models.contract import (
     normalize_direction,
 )
 from app.models.customer import Customer
-from app.models.finance import FinancialTransaction
 from app.models.inventory import InventoryTransaction
+from app.services.doc_archive import archive_document
 from app.models.invoice import Invoice
 from app.models.product import Product
 from app.models.quotation import (
@@ -610,34 +610,80 @@ def update_sales_order_status(order_id: int, payload: dict[str, object], db: Ses
 
 
 @router.delete("/sales-orders/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_sales_order(order_id: int, db: Session = Depends(get_db)) -> Response:
+def delete_sales_order(
+    order_id: int,
+    request: Request,
+    reason: str = Query("", description="作废原因（写进单据备注，留痕用）"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """**DELETE 已降级为「作废」（2026-10-26 P0-5）**：单据永久保留，不再物理删除。
+
+    改造前这里删表头 + 删明细 + 冲销库存/应收，单据从此消失。
+    现在改为：冲销照旧（账必须平），但**单据落 `cancelled` 并留在库里**，
+    同时把作废前的整单快照写进 `document_archives`。
+
+    保留的拒删闸口（一条都没放宽）：
+      · 已转开单的订单不许作废（先处理开单）；
+      · 已登记过收款/付款的单据不许作废 —— 真金白银不属于这张单，不能连带抹掉。
+    """
     item = db.query(SalesOrder).filter(SalesOrder.id == order_id).first()
     if item is None:
         raise HTTPException(status_code=404, detail="Sales order not found")
-    # 已转开单的订单不允许直接删（开单还引用着它），先删开单再回来删订单；
-    # 用 source_order_id 反查比看 status 更准——开单删掉后订单自然就能删了
+    if item.status == "cancelled":
+        # 幂等：作废过的单再删一次不报错、也不再冲一次账
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    # 已转开单的订单不允许直接作废（开单还引用着它），先处理开单再回来
     if (
         item.doc_type == "order"
-        and db.query(SalesOrder).filter(SalesOrder.source_order_id == order_id).first() is not None
+        and db.query(SalesOrder)
+        .filter(
+            SalesOrder.source_order_id == order_id,
+            # P0-5：**已作废**的下游开单不再挡住父订单 ——
+            # 单据现在永久保留，若不加这个条件，作废过的开单会让父订单永远作废不了。
+            SalesOrder.status != "cancelled",
+        )
+        .first()
+        is not None
     ):
-        raise HTTPException(status_code=409, detail="该订单已转开单，请先删除对应的开单")
-    # 已登记过收款/付款的单据禁止删除（2026-10-18）：这类流水是真实资金记录，
-    # 删单不会连带冲销它们，只会把 related_order_id 变成指向空气的孤儿账。
-    # 注意顺序：必须排在 _revert_stock / _revert_finance **之前**，否则先动了库存/应收再报错，
-    # 请求虽然 500/409 了，session 里已经排队的删除仍可能在别处被 flush 出去。
+        raise HTTPException(status_code=409, detail="该订单已转开单，请先处理对应的开单")
+    # 已登记过收款/付款的单据禁止作废（2026-10-18）：这类流水是真实资金记录，
+    # 作废单不会连带冲销它们，只会把 related_order_id 变成指向空气的孤儿账。
     _assert_no_payment_flows(db, order_id, item.order_no or f"#{order_id}")
-    # 删开单时，来源订单上也可能是收过款的（钱挂在订单上、不挂在开单上）。
-    # 不拦的话：开单没了 → 订单停在 completed → 不能重新转单、又因收款不能删 = 死锁。
+    # 作废开单时，来源订单上也可能是收过款的（钱挂在订单上、不挂在开单上）
     if item.source_order_id:
         _assert_source_order_no_payment(db, db.get(SalesOrder, item.source_order_id), "销售开单")
-    # 库存联动回滚：这张单产生的出库流水一并冲销，否则货扣了单没了，库存就再也对不上
+
+    order_items = db.query(SalesOrderItem).filter(SalesOrderItem.sales_order_id == order_id).all()
+    snapshot = _build_sales_payload(item, order_items)
+    status_before = item.status
+
+    # 库存联动回滚：这张单产生的出库流水一并冲销，否则货扣了单作废了，库存就再也对不上
     _revert_stock(db, "sales_out", order_id)
-    # 财务联动回滚：只冲销"开单自己产生的"应收（related_type=sales_out）。
-    # 收付款（related_type=receipt/payment）不在这里删 —— 上面那道闸口已经拦下了。
+    # 财务联动回滚：只冲销"开单自己产生的"应收（related_type=sales_out）
     _revert_finance(db, "sales_out", order_id)
-    # 先删订单明细，再删订单本身，避免留下孤儿明细
-    db.query(SalesOrderItem).filter(SalesOrderItem.sales_order_id == order_id).delete(synchronize_session=False)
-    db.delete(item)
+
+    item.status = "cancelled"
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    note = f"[已作废 {stamp}]"
+    if reason:
+        note += f" 作废原因：{reason}"
+    note += " 库存与应收已冲销撤回；"
+    item.note = f"{item.note}\n{note}" if item.note else note
+
+    archive_document(
+        db,
+        doc_type="sales_order",
+        doc_id=item.id,
+        doc_no=item.order_no,
+        action="void",
+        status_before=status_before,
+        status_after="cancelled",
+        total_amount=float(item.total_amount or 0.0),
+        reason=reason,
+        payload=snapshot,
+        request=request,
+    )
+
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -2860,7 +2906,10 @@ def update_sales_return_status(
 
 @router.post("/sales-returns/{return_id}/void", response_model=SalesReturnRead)
 def void_sales_return(
-    return_id: int, payload: dict[str, object] | None = None, db: Session = Depends(get_db)
+    return_id: int,
+    request: Request,
+    payload: dict[str, object] | None = None,
+    db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """作废（红冲）销售退货单 —— 撤库存、撤应收，单据落 `cancelled`。
 
@@ -2889,6 +2938,12 @@ def void_sales_return(
     if isinstance(payload, dict):
         reason = str(payload.get("reason") or "").strip()
 
+    # 归档快照必须在**改动之前**取：要留的是"作废前这张单长什么样"，
+    # 而不是作废后那行 `[已作废 ...]` 备注。
+    rows = _sales_return_items(db, item.id)
+    snapshot = _sales_return_payload(item, rows)
+    status_before = item.status
+
     was_posted = _sales_return_posted(db, item.id)
 
     if was_posted:
@@ -2907,25 +2962,48 @@ def void_sales_return(
         note += " 本单未落过账，无库存/应收需要撤回；"
     item.note = f"{item.note}\n{note}" if item.note else note
 
+    # P0-5：先把"作废前"的整单快照写进证据表，再提交业务改动
+    archive_document(
+        db,
+        doc_type="sales_return",
+        doc_id=item.id,
+        doc_no=item.return_no,
+        action="void",
+        status_before=status_before,
+        status_after="cancelled",
+        total_amount=float(item.total_amount or 0.0),
+        reason=reason,
+        payload=snapshot,
+        request=request,
+    )
+
     db.commit()
     db.refresh(item)
-    return _sales_return_payload(item, _sales_return_items(db, item.id))
+    return _sales_return_payload(item, rows)
 
 
 
 @router.delete("/sales-returns/{return_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_sales_return(return_id: int, db: Session = Depends(get_db)) -> Response:
+def delete_sales_return(
+    return_id: int,
+    request: Request,
+    reason: str = Query("", description="作废原因（写进单据备注，留痕用）"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """**DELETE 已降级为「作废」（2026-10-26 P0-5）**：单据永久保留，不再物理删除。
+
+    改造前这里会 `db.delete(item)` 连明细一起删掉，再顺手冲销库存与应收。
+    后果是：账上出现"货回来了、单没了、钱也没了"的三无记录，
+    事后既没法向客户解释，也没法向审计交代 —— 因为没有单据。
+
+    现在的语义与 `POST /sales-returns/{id}/void` 完全一致：
+      · 未落账（草稿）→ 直接作废，不动账；
+      · 已落账 → 撤库存、撤应收，单据落 `cancelled` 并写明作废原因；
+      · 已作废 → 幂等，不再冲第二次；
+      · 全过程写 `document_archives`（整单快照 + 操作人 + 原因）。
+    """
     item = db.get(SalesReturn, return_id)
     if item is None:
         raise HTTPException(status_code=404, detail="销售退货单不存在")
-    # 库存联动回滚：冲销这张退货单产生的 inbound 流水（退货入库的动作撤销，库存减回去）
-    _revert_stock(db, "sales_return", return_id)
-    # 财务联动回滚：冲销这张单产生的应收冲减流水
-    db.query(FinancialTransaction).filter(
-        FinancialTransaction.related_type == "sales_return",
-        FinancialTransaction.related_order_id == return_id,
-    ).delete(synchronize_session=False)
-    db.query(SalesReturnItem).filter(SalesReturnItem.sales_return_id == return_id).delete(synchronize_session=False)
-    db.delete(item)
-    db.commit()
+    void_sales_return(return_id, request, {"reason": reason} if reason else None, db)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

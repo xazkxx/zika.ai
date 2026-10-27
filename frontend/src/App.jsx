@@ -1,6 +1,7 @@
 import { API_BASE, APP_VERSION, APP_CACHE, APP_VERSION_LABEL, APP_BUILD_AT, APP_HASH, NAV_THEMES, emptyCustomerForm, emptyProductForm, emptyOrderItem, emptyPurchaseOrderForm, emptySalesOrderForm, emptyInboundForm, emptyOutboundForm, DOC_STATUS_LABELS, OUTBOUND_STATUS_LABELS, emptySupplierForm, emptyWarehouseForm, emptyEmployeeForm, LEDGER_ALIASES, STATEMENT_ALIASES, BANK_ACCOUNT_TYPE_LABEL, emptyBankAccountForm, emptyBankTransferForm, emptyEntryForm, emptyEntryQuery, emptyAssemblyForm, OPENING_TABS, emptyOpeningDraft, emptyContractForm, CONTRACT_STATUS_LABEL, contractStatusLabel, emptyQuotationForm, QUOTATION_STATUS_LABEL, quotationStatusLabel, emptyPurchaseReturnForm, PURCHASE_RETURN_STATUS_LABEL, purchaseReturnStatusLabel, emptySalesReturnForm, SALES_RETURN_STATUS_LABEL, salesReturnStatusLabel, emptyTransferForm, TRANSFER_STATUS_LABEL, transferStatusLabel, emptyStocktakingForm, STOCKTAKING_STATUS_LABEL, stocktakingStatusLabel, emptyAdjustmentForm, ADJUSTMENT_STATUS_LABEL, adjustmentStatusLabel, ADJUST_TYPE_LABEL, ADJUST_TYPE_DIRECTION, adjustTypeLabel, emptyProductionPlanForm, PLAN_TYPE_LABEL, planTypeLabel, PRODUCTION_PLAN_STATUS_LABEL, productionPlanStatusLabel, MRP_STATUS_LABEL, mrpStatusLabel, emptyMaterialIssueForm, MATERIAL_ISSUE_STATUS_LABEL, materialIssueStatusLabel, emptyMaterialReturnForm, MATERIAL_RETURN_STATUS_LABEL, materialReturnStatusLabel, emptyFinishedGoodsForm, FINISHED_GOODS_STATUS_LABEL, finishedGoodsStatusLabel, emptyOutsourcingForm, OUTSOURCING_STATUS_LABEL, outsourcingStatusLabel, REPORT_SHAPE_LABEL, emptyReportQuery, money, plain, emptyInventoryForm, STOCK_STATUS_LABEL, stockStatusLabel, DOC_TYPE_LABEL, docTypeLabel, financeTypeLabel, PROJECT_STATUS_LABEL, PROJECT_STATUS_TONE, emptyStockLogFilter, emptyFinanceForm, emptySystemUserForm, emptyRoleForm, emptyDepartmentForm, emptyPermissionDraft, emptyMenuForm, SYSTEM_TABS, PARAM_VALUE_TYPE_LABEL, emptyParamForm, emptyDictionaryForm, emptyDictItemForm, LOOKUP_TYPES, emptyTemplateDraft, emptyLogQuery, LOG_STATUS_TONE, formatLogTime, isTemplateCustomized, readCompanyFromToken } from './lib/appLib';
 import ResizableLayout from './components/resizable-layout/ResizableLayout.jsx';
 import ErpSearchSelect from './components/ui/ErpSearchSelect.jsx';
+import ErpKpiStrip from './components/ui/ErpKpiStrip.jsx';
 import PartnerModal from './components/partners/PartnerModal.jsx';
 // 订单收/付款登记弹窗（2026-10-18）：补上「前端从不调用 /finance/receipt|payment」这条断链。
 // 受控组件：自己不发请求，POST 在本文件 submitOrderPayment 里做。
@@ -125,6 +126,9 @@ const DataioPage = lazy(() => import('./pages/DataioPage'));
 const DictionariesPage = lazy(() => import('./pages/DictionariesPage'));
 const FinancePage = lazy(() => import('./pages/FinancePage'));
 const ThreeWayMatchPage = lazy(() => import('./pages/ThreeWayMatchPage'));
+// 项目资金试算（v1.81.0）：纯前端 + 只读取数的沙盘，懒加载 —— 三张手写 SVG 图
+// 不该进首屏主包（1.80.0 的首屏 211KB 是硬指标）。
+const ProjectCalcPage = lazy(() => import('./pages/ProjectCalcPage'));
 const FinishedGoodsPage = lazy(() => import('./pages/FinishedGoodsPage'));
 const IncomeExpensePage = lazy(() => import('./pages/IncomeExpensePage'));
 const InventoryPage = lazy(() => import('./pages/InventoryPage'));
@@ -282,6 +286,10 @@ const menuGroups = [
     items: [
       { key: 'reports', label: '报表中心' },
       { key: 'analysis', label: '经营分析' },
+      // 项目资金试算（v1.81.0）：独立菜单，不塞进「经营分析」当第 4 个 tab。
+      // ⚠️ 必须与 app/core/permissions.py 的 analysis 分组**同序同键**，
+      //    否则菜单树接口返回的可见项与内置 menuGroups 对不上（parity 测试会红）。
+      { key: 'project-calc', label: '项目资金试算' },
     ],
   },
   {
@@ -407,6 +415,40 @@ const pageActions = {
   reports: [{ label: '经营分析', to: 'analysis', variant: 'primary' }],
   analysis: [{ label: '报表中心', to: 'reports', variant: 'primary' }],
 };
+/**
+ * 品牌 Logo（v1.81.0）
+ *
+ * 图的真身放在 `data/brand/logo_ui.png`（用户自己丢进去，不打包进 git）；
+ * 构建时由 `scripts/sync_brand_logo.cjs` 同步到 `frontend/public/logo.png`，
+ * 于是运行时只要 GET `/logo.png`。
+ *
+ * **回退是硬要求**：图没放 / 放错格式 / 打包后路径变了，都必须退回 1.80.0 的
+ * 原生矢量 mark（登录页的盾牌、侧栏的 ERP 方块），绝不能出现"裂图"方块。
+ * 所以 `onError` 直接把 failed 置真，之后只渲染 fallback。
+ */
+function BrandLogo({ height = 28, fallback = null, className = '', style }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return fallback;
+  return (
+    <img
+      src={`/logo.png?v=${APP_VERSION}`}
+      alt=""
+      className={className}
+      style={{
+        height,
+        width: 'auto',
+        maxWidth: '100%',
+        objectFit: 'contain',
+        display: 'block',
+        position: 'relative',
+        zIndex: 1,
+        ...style,
+      }}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function App() {
   const getStoredToken = () => {
     try {
@@ -4846,24 +4888,39 @@ function App() {
 
           {summary && (
             <>
-              <div className="report-summary-grid" style={{ marginTop: '16px' }}>
-                <div className="metric-card">
-                  <span>期初余额</span>
-                  <strong>¥{Number(summary.opening_balance || 0).toLocaleString()}</strong>
-                </div>
-                <div className="metric-card">
-                  <span>本期增加</span>
-                  <strong>¥{Number(summary.increase_total || 0).toLocaleString()}</strong>
-                </div>
-                <div className="metric-card">
-                  <span>本期减少</span>
-                  <strong>¥{Number(summary.decrease_total || 0).toLocaleString()}</strong>
-                </div>
-                <div className="metric-card">
-                  <span>期末余额</span>
-                  <strong>¥{Number(summary.closing_balance || 0).toLocaleString()}</strong>
-                </div>
-              </div>
+              {/* v1.78.0：4 个 .metric-card 小盒子 → 一条 KPI 计量条。
+                  会计看往来账永远是「期初 → 本期增减 → 期末」一条线，
+                  分段条正好把这个顺序摆成视觉顺序；期末余额（strong）就是
+                  这张表最终要交出去的那个数。
+                  金额走 appLib.money()（2 位小数），不再 toLocaleString() ——
+                  原来的写法会把 1234.5 显示成 1,234.5，和下面的表格对不上。 */}
+              <ErpKpiStrip
+                style={{ marginTop: '16px' }}
+                items={[
+                  {
+                    key: 'opening',
+                    label: '期初余额',
+                    value: money(summary.opening_balance),
+                  },
+                  {
+                    key: 'increase',
+                    label: '本期增加',
+                    value: money(summary.increase_total),
+                  },
+                  {
+                    key: 'decrease',
+                    label: '本期减少',
+                    value: money(summary.decrease_total),
+                  },
+                  {
+                    key: 'closing',
+                    label: '期末余额',
+                    value: money(summary.closing_balance),
+                    hint: `${(ledgerData?.rows || []).length} 笔往来`,
+                    strong: true,
+                  },
+                ]}
+              />
               <p className="table-hint">期末余额大写：{summary.closing_balance_upper}</p>
             </>
           )}
@@ -10587,10 +10644,17 @@ function App() {
           <div className="auth-card">
             <div className="auth-brand">
               <div className="auth-logo" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2 4 6v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6l-8-4Z" />
-                  <path d="M9 12l2 2 4-4" />
-                </svg>
+                <BrandLogo
+                  height={64}
+                  fallback={
+                    <span className="auth-logo-chip">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 2 4 6v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6l-8-4Z" />
+                        <path d="M9 12l2 2 4-4" />
+                      </svg>
+                    </span>
+                  }
+                />
               </div>
               <h1>寨卡 ERP 管理中心</h1>
               <p className="auth-tagline">安全登录，高效协作</p>
@@ -11745,7 +11809,7 @@ function App() {
       </div>
       <aside className="sidebar">
         <div className="brand sidebar-brand">
-          <span className="brand-mark">ERP</span>
+          <BrandLogo height={30} fallback={<span className="brand-mark">ERP</span>} />
           <span className="brand-text">核心系统</span>
           {/* 版本号（2026-10-18）：构建时由 vite.config.js 注入，每次 build 自动变。
               鼠标悬停能看到完整构建时间与提交哈希，排查"用户看到旧页面"时很有用。 */}
@@ -12425,6 +12489,8 @@ function App() {
             {selectedTab === 'finance' && <PageBoundary><FinancePage ctx={appCtx} /></PageBoundary>}
 
             {selectedTab === 'three-way-match' && <PageBoundary><ThreeWayMatchPage ctx={appCtx} /></PageBoundary>}
+
+            {selectedTab === 'project-calc' && <PageBoundary><ProjectCalcPage ctx={appCtx} /></PageBoundary>}
 
             {selectedTab === 'stock-logs' && renderStockLogsPage()}
 

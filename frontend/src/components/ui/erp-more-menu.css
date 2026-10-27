@@ -1,0 +1,144 @@
+/**
+ * 「⋯ 更多」下拉菜单（ErpMoreMenu）—— 只写 `.erp-more*` 独占类名。
+ *
+ * ⚠️ 不覆写 .primary-btn / .secondary-btn：触发器要和旁边的按钮同高（32px），
+ *    靠自己的 height 写死，而不是去改全局按钮的高度（全站 40px 是统一口径）。
+ */
+
+.erp-more {
+  position: relative;
+  display: inline-flex;
+}
+
+.erp-more__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-md, 6px);
+  background: var(--surface, #fff);
+  color: var(--fg-strong, #0f172a);
+  font-family: inherit;
+  font-size: var(--fs-sm, 13px);
+  font-weight: var(--fw-medium, 500);
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.erp-more__trigger:hover:not(:disabled),
+.erp-more__trigger.is-open {
+  border-color: var(--color-primary-border, #bfdbfe);
+  background: var(--color-primary-soft, #eff6ff);
+  color: var(--color-primary, #2563eb);
+}
+
+.erp-more__trigger:focus-visible {
+  outline: none;
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: var(--ring);
+}
+
+.erp-more__trigger:disabled {
+  color: var(--fg-subtle, #94a3b8);
+  background: var(--bg-soft, #f8fafc);
+  cursor: not-allowed;
+}
+
+/* ⋯ 用字母间距撑开三个点，比写字号的 "..." 更像图标 */
+.erp-more__dots {
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 1px;
+}
+
+.erp-more__label {
+  white-space: nowrap;
+}
+
+/* ④ 面板：portal 到 body + fixed（v1.81.2，见组件头注释 ⑤）。
+   ⚠️ 绝不能改回 absolute：表格 sticky 单元格会给它造层叠上下文，
+      再叠上 .erp-table-wrap / .erp-card 的 overflow，行末菜单就"点了没反应"。 */
+.erp-more__panel {
+  position: fixed;
+  z-index: 60;
+  min-width: 196px;
+  padding: 6px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-lg, 8px);
+  background: var(--surface, #fff);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
+  animation: erp-more-in 120ms ease-out;
+}
+
+/* 左右对齐改由 JS 按触发器矩形算（还要夹在视口内），这里不再写 right/left：
+   两套都写会互相打架，fixed 元素同时给了 left 与 right 还会被拉成整行宽。 */
+
+@keyframes erp-more-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.erp-more__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--radius-md, 6px);
+  background: transparent;
+  color: var(--fg-strong, #0f172a);
+  font-family: inherit;
+  font-size: var(--fs-sm, 13px);
+  text-align: left;
+  cursor: pointer;
+}
+
+.erp-more__item:hover:not(:disabled) {
+  background: var(--color-primary-soft, #eff6ff);
+  color: var(--color-primary, #2563eb);
+}
+
+.erp-more__item:focus-visible {
+  outline: none;
+  box-shadow: var(--ring) inset;
+}
+
+.erp-more__item:disabled {
+  color: var(--fg-subtle, #94a3b8);
+  cursor: not-allowed;
+}
+
+.erp-more__item.is-danger {
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.erp-more__item.is-danger:hover:not(:disabled) {
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.erp-more__item-label {
+  font-weight: var(--fw-medium, 500);
+}
+
+.erp-more__item-hint {
+  font-size: 11px;
+  color: var(--fg-subtle, #94a3b8);
+}
+
+/* 打印/另存 PDF：菜单本身不该出现在纸上（父级已隐藏动作区，这里再兜一层） */
+@media print {
+  .erp-more__panel {
+    display: none !important;
+  }
+}

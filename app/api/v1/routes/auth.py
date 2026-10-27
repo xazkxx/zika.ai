@@ -45,6 +45,24 @@ def require_roles(*allowed_roles: str):
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register_user(payload: UserCreate, db: Session = Depends(get_db)) -> User:
+    """自助注册 —— **默认关闭**（P0-1 鉴权收口，2026-10-26）。
+
+    这个接口原来是个实打实的后门：`role` 由请求体直接决定，于是任何人
+    `POST {"username": "x", "role": "admin"}` 就能给自己开一个管理员账号 ——
+    连登录都不用，等于绕过整条鉴权链路。审计脚本（`scripts/audit_auth_routes.py`）
+    把它标出来的原因就在这。
+
+    现在两道锁：
+    1. 默认 `settings.allow_self_register=False` → 直接 403，并指明正确入口；
+    2. 即便显式打开（首次部署/联调），角色也**写死 staff**，不接受请求体里的 role。
+       真要开管理员，只能在已登录的管理员会话里走 `POST /system/users`。
+    """
+    if not settings.allow_self_register:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="自助注册已关闭：请让管理员在「系统设置 → 用户管理」里创建账号。",
+        )
+
     existing = db.query(User).filter((User.username == payload.username) | (User.email == payload.email)).first()
     if existing:
         raise HTTPException(status_code=400, detail="Username or email already exists")
@@ -53,7 +71,8 @@ def register_user(payload: UserCreate, db: Session = Depends(get_db)) -> User:
         username=payload.username,
         email=payload.email,
         full_name=payload.full_name,
-        role=payload.role or "staff",
+        # 故意不看 payload.role：这条路不提供任何提权可能
+        role="staff",
         hashed_password=get_password_hash(payload.password),
         is_active=True,
     )
@@ -218,7 +237,15 @@ def admin_check(current_user: User = Depends(require_roles("admin"))) -> dict[st
 
 
 @router.get("/users", response_model=list[UserRead])
-def list_users(db: Session = Depends(get_db), skip: int = 0, limit: int | None = None) -> list[User]:
+def list_users(
+    db: Session = Depends(get_db),
+    skip: int = 0,
+    limit: int | None = None,
+    # P0-1：原来这里没有任何校验 —— 不登录就能把全部账号（用户名/邮箱/角色）拉一遍，
+    # 拿到清单再去撞密码。用户管理页走的是 /system/users（那里本来就有管理员闸），
+    # 所以这条补上 admin 依赖对前端零影响。
+    current_user: User = Depends(require_roles("admin")),
+) -> list[User]:
     query = db.query(User)
     if skip and skip > 0:
         query = query.offset(skip)

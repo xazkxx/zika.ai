@@ -1,7 +1,12 @@
 # 外部端接入 API 指南（微信小程序 / 移动端 / 第三方系统）
 
-> 适用版本：ERP v65（2026-10-20 封版）· API 前缀 `/api/v1`
+> 适用版本：ERP v1.80.0（2026-10-26 封版）· API 前缀 `/api/v1`
 > 本文所有请求/响应样例均为**真实抓包**，不是设计稿。
+>
+> ⚠️ **v1.80.0 起 `/api/v1` 默认拒绝匿名请求**（除 `health` / `auth/login` / `auth/register`
+> / 商品图 `/api/v1/uploads/products/*` 外，一律要 `Authorization: Bearer <token>`）。
+> 下表"鉴权"列的"必须"就是字面意思：不带 token 直接 **401**，不是"也能拿到数据"。
+> 详见 [P0-1_鉴权收口_方案B_20261026.md](./P0-1_鉴权收口_方案B_20261026.md)。
 
 ---
 
@@ -14,15 +19,15 @@
 | 我的账套 | `GET /api/v1/auth/companies` | ✔ | 顶栏切换用 |
 | 切换账套 | `POST /api/v1/auth/switch-company` | ✔ | **换发新 token** |
 | 当前用户 | `GET /api/v1/auth/me` | ✔ | 校验 token 是否还活着 |
-| 商品列表 | `GET /api/v1/products` | 建议带 | 全量 262 条，无 keyword 参数 |
-| 商品辅助单位 | `GET /api/v1/products/{id}/units` | 建议带 | 多单位换算 |
-| 客户列表 | `GET /api/v1/customers` | 建议带 | 开单选客户 |
-| 仓库列表 | `GET /api/v1/warehouses?only_active=true` | 建议带 | 开单选仓库 |
-| 销售单列表 | `GET /api/v1/sales-orders` | 建议带 | `doc_type` 区分订单/出库单 |
-| 新建销售单 | `POST /api/v1/sales-orders` | 建议带 | 成功 **201** |
-| 改单据状态 | `PATCH /api/v1/sales-orders/{id}/status` | 建议带 | 只能沿状态机走 |
-| 反审核 | `PATCH /api/v1/sales-orders/{id}/unsubmit` | 建议带 | 有流水 → 409 |
-| 采购单列表 | `GET /api/v1/purchase-orders` | 建议带 | 同上 |
+| 商品列表 | `GET /api/v1/products` | **必须** | 全量 262 条，无 keyword 参数 |
+| 商品辅助单位 | `GET /api/v1/products/{id}/units` | **必须** | 多单位换算 |
+| 客户列表 | `GET /api/v1/customers` | **必须** | 开单选客户 |
+| 仓库列表 | `GET /api/v1/warehouses?only_active=true` | **必须** | 开单选仓库 |
+| 销售单列表 | `GET /api/v1/sales-orders` | **必须** | `doc_type` 区分订单/出库单 |
+| 新建销售单 | `POST /api/v1/sales-orders` | **必须** | 成功 **201** |
+| 改单据状态 | `PATCH /api/v1/sales-orders/{id}/status` | **必须** | 只能沿状态机走 |
+| 反审核 | `PATCH /api/v1/sales-orders/{id}/unsubmit` | **必须** | 有流水 → 409 |
+| 采购单列表 | `GET /api/v1/purchase-orders` | **必须** | 同上 |
 | 经营概览（智能体） | `GET /api/v1/agent/summary` | **必须** | 无 token → 401 |
 | 库存预警 | `GET /api/v1/agent/stock-alerts` | **必须** | 当前 **501** 占位 |
 | 单据查询（智能体） | `GET /api/v1/agent/orders` | **必须** | 当前 **501** 占位 |
@@ -59,7 +64,8 @@
    （商品 262 条、客户 33 条，移动端建议自己传 `limit` 控制首屏）。
 5. **错误响应统一是 `{"detail": "中文说明"}`**，用 HTTP 状态码判断类型，`detail` **直接展示给用户**（后端写的就是中文人话）。
 6. ⚠️ **账套由 token 决定**：后端按 token 里的 `company` 字段切数据库 schema。
-   **不带 token = 落到默认账套**。所以哪怕业务接口不强制鉴权，**也必须带 token**，否则读到的可能不是你以为的那家公司。
+   **v1.80.0 起不带 token 连数据都拿不到**（网关直接 401，根本走不到"落到默认账套"那一步）；
+   带上 token 后读到的才是你以为的那家公司。外部端必须"先登录、再取数"。
 
 ### 错误码约定
 
@@ -379,7 +385,7 @@ GET /api/v1/warehouses?only_active=true    # id, code, name, location, manager, 
 
 ### 6.1 经营概览 `GET /api/v1/agent/summary`
 
-**必须带 token**（无 token → `401 {"detail":"Not authenticated"}`）。
+**必须带 token**（无 token → `401 {"detail":"未登录：请在请求头带上 Authorization: Bearer <token>"}`）。
 
 **响应 200（真实响应）**：
 

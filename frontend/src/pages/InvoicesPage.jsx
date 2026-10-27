@@ -1532,9 +1532,12 @@ export default function InvoicesPage({ ctx }) {
                   </div>
 
                   <div className="invoice-action-row">
+                    {/* v1.78.0 单主按钮：原来三颗全是蓝的（智能分类 / 智能体 / 同步财务），
+                        并排放在一起每颗都在喊"点我"，结果哪颗都不突出。
+                        只留 AI 分析为主入口，另外两颗降为次级 —— 动作没删、位置没变。 */}
                     <button type="button" className="primary-btn small-btn" onClick={handleDeepSeekInvoiceAnalysis}>智能分类分析</button>
-                    <button type="button" className="primary-btn small-btn" onClick={handleInvoiceAgentAnalysis}>智能体分析</button>
-                    <button type="button" className="primary-btn small-btn" onClick={handleSyncInvoicesToFinance}>同步到财务</button>
+                    <button type="button" className="secondary-btn small-btn" onClick={handleInvoiceAgentAnalysis}>智能体分析</button>
+                    <button type="button" className="secondary-btn small-btn" onClick={handleSyncInvoicesToFinance}>同步到财务</button>
                     <button type="button" className="secondary-btn small-btn" onClick={exportInvoiceReportXlsx}>导出勾选（旧版 Excel）</button>
                     <button type="button" className="secondary-btn small-btn" onClick={exportInvoiceReportHtml}>导出美观表格</button>
                   </div>

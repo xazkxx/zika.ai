@@ -132,7 +132,13 @@ def test_parse_unknown_words():
 
 
 def test_dispatch_requires_auth():
-    response = client.post("/api/v1/agent/dispatch", json={"text": "给我客户的对账单"})
+    # conftest 会给 TestClient 默认注入管理员 token（P0-1 收口后 /api/v1 默认拒绝匿名）。
+    # 这里要的正是"匿名"，所以显式把 Authorization 清空 —— 逐请求头会覆盖客户端默认头。
+    response = client.post(
+        "/api/v1/agent/dispatch",
+        json={"text": "给我客户的对账单"},
+        headers={"Authorization": ""},
+    )
     assert response.status_code in (401, 403), response.status_code
 
 

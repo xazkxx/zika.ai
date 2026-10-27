@@ -13,5 +13,7 @@ export { default as ErpTable } from './ErpTable.jsx';
 export { default as ErpFormGrid, ErpFormRow, ErpFormActions } from './ErpForm.jsx';
 export { default as ErpSearchSelect } from './ErpSearchSelect.jsx';
 export { default as ErpTree } from './ErpTree.jsx';
+export { default as ErpMoreMenu } from './ErpMoreMenu.jsx';
+export { default as ErpKpiStrip } from './ErpKpiStrip.jsx';
 export { default as Skeleton } from './Skeleton.jsx';
 export { default as EmptyState } from './EmptyState.jsx';

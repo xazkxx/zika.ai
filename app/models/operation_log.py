@@ -21,7 +21,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import DateTime, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, Session
@@ -144,6 +144,110 @@ class OperationLog(Base):
     )
 
 
+class OperationLogArchive(Base):
+    """操作日志的**归档表**（只增不删）。
+
+    P0-5（2026-10-26）：日志是审计证据，"表满了就删最老的"等于**让证据自己销毁自己**。
+    制度上也不允许：出了事要查三个月前谁改的单，日志却早已被表容量挤掉。
+
+    现在改为两段式：
+      · 主表 `operation_logs` 只保留最近 `MAX_OPERATION_LOGS` 条 —— 保证日志页查询快；
+      · 超出的部分**搬到这里**，主表可以修剪，归档表永不修剪。
+
+    为什么单独一张表而不是在主表加 `archived` 标记：
+      ① 主表要小、索引要多（日志页按时间/用户/对象筛），归档表只用于事后追查；
+      ② 加标记的写法主表照样膨胀，修剪等于没做。
+    """
+
+    __tablename__ = "operation_log_archives"
+
+    # 沿用原日志的 id：归档前后同一条记录是同一个 id，追查时不用做映射
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    username: Mapped[str] = mapped_column(String(50), default="", nullable=False)
+    role: Mapped[str] = mapped_column(String(20), default="", nullable=False)
+    method: Mapped[str] = mapped_column(String(10), default="", nullable=False)
+    path: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    action: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    target_type: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    target_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status_code: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ip: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    user_agent: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 原日志发生时间（业务时间），不是搬家的时间
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)
+    # 搬家时间（归档时间）
+    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+
+def _move_rows_to_archive(db: Session, rows: list[OperationLog]) -> int:
+    """把日志行复制进归档表（调用方负责把主表的行删掉）。返回搬走条数。
+
+    已经归档过的 id 会跳过：日志是"只增"的审计数据，
+    万一有人从备份把老日志灌回来（id 与归档里重复），
+    这里只补缺、不覆盖、也**不允许整笔写入因为主键冲突而失败** ——
+    那会让中间件吞掉异常，连"这次操作"本身的日志也一起丢掉。
+    """
+    if not rows:
+        return 0
+    ids = [row.id for row in rows]
+    already = {
+        int(row_id)
+        for (row_id,) in db.query(OperationLogArchive.id)
+        .filter(OperationLogArchive.id.in_(ids))
+        .all()
+    }
+    moved = 0
+    for row in rows:
+        if int(row.id) in already:
+            continue
+        db.add(
+            OperationLogArchive(
+                id=row.id,
+                user_id=row.user_id,
+                username=row.username,
+                role=row.role,
+                method=row.method,
+                path=row.path,
+                action=row.action,
+                target_type=row.target_type,
+                target_id=row.target_id,
+                status_code=row.status_code,
+                duration_ms=row.duration_ms,
+                ip=row.ip,
+                user_agent=row.user_agent,
+                detail=row.detail,
+                created_at=row.created_at,
+            )
+        )
+        moved += 1
+    return moved
+
+
+def archive_operation_logs(db: Session, *, before_days: int = 0) -> int:
+    """把日志**搬进归档表**（管理员「清理日志」用），返回搬走条数。
+
+    `before_days=0` = 全部搬走；>0 = 只搬 N 天前的。
+    语义与原来的"删除"一致（主表确实变小了），区别是**一条都没丢**。
+    """
+    query = db.query(OperationLog)
+    if int(before_days or 0) > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=int(before_days))
+        query = query.filter(OperationLog.created_at < cutoff)
+    rows = query.order_by(OperationLog.id.asc()).all()
+    if not rows:
+        return 0
+    moved = _move_rows_to_archive(db, rows)
+    db.query(OperationLog).filter(OperationLog.id.in_([row.id for row in rows])).delete(
+        synchronize_session=False
+    )
+    db.flush()
+    return moved
+
+
+
 def _pick_resource(words: list[str]) -> str | None:
     """从右往左找第一个"能当主对象"的片段（跳过子资源）。"""
     return next((word for word in reversed(words) if word in _PATH_LABELS and word not in _SUB_RESOURCES), None)
@@ -192,7 +296,14 @@ def describe_operation(method: str, path: str) -> tuple[str, str, int | None]:
 
 
 def prune_operation_logs(db: Session, limit: int = MAX_OPERATION_LOGS) -> int:
-    """超过 `limit` 就删最老的一批（按 id，不依赖时间精度），返回删除条数。
+    """超过 `limit` 就把最老的一批**搬进归档表**（不再删除），返回搬走条数。
+
+    P0-5（2026-10-26）之前这里是 `DELETE`：表一到 5000 条，最早的日志就被真删了。
+    问题是"删日志"这件事**没有任何人授权、也没有任何提示** —— 用户以为日志是流水账，
+    实际上它是个只留最近 5000 条的环形缓冲。真出事要倒查三个月，证据早没了。
+
+    现在：主表照样修剪（查询性能不变），被修剪的行原样进入
+    `operation_log_archives`，一条不丢。
 
     `limit` 是参数而不是直接读全局常量，是为了让这条规则能被单独测到
     （测试用内存库 + 很小的 limit 跑，不需要动真库、也不需要造 5000 条数据）。
@@ -209,9 +320,18 @@ def prune_operation_logs(db: Session, limit: int = MAX_OPERATION_LOGS) -> int:
     )
     if cutoff is None:
         return 0
-    return int(
-        db.query(OperationLog).filter(OperationLog.id < cutoff).delete(synchronize_session=False)
+    rows = (
+        db.query(OperationLog)
+        .filter(OperationLog.id < cutoff)
+        .order_by(OperationLog.id.asc())
+        .all()
     )
+    if not rows:
+        return 0
+    moved = _move_rows_to_archive(db, rows)
+    db.query(OperationLog).filter(OperationLog.id < cutoff).delete(synchronize_session=False)
+    db.flush()
+    return moved
 
 
 _prune_ticker = 0

@@ -1,11 +1,11 @@
 {
   "name": "erp-frontend",
   "private": true,
-  "version": "1.76.0",
+  "version": "1.81.2",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
-    "build": "node ../scripts/check_undefined_refs.cjs && vite build",
+    "build": "node ../scripts/sync_brand_logo.cjs && node ../scripts/check_undefined_refs.cjs && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4173"
   },
   "dependencies": {

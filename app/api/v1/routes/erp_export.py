@@ -22,6 +22,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.api.v1.routes.erp_common import _attachment_response
+from app.core.company_info import load_company
 from app.db.session import get_db
 from app.models.contract import (
     CONTRACT_DIRECTIONS,
@@ -324,6 +325,9 @@ def export_documents(
     to_date: str | None = Query(None, description="截止日期 YYYY-MM-DD"),
     direction: str | None = Query(None, description="in / out（仅合同、对账单有效）"),
     status: str | None = Query(None, description="单据状态原值，如 draft / confirmed"),
+    company: str | None = Query(
+        None, description="抬头公司名；不传则自动取当前账套的抬头（own_name）"
+    ),
     db: Session = Depends(get_db),
 ) -> Response:
     """导出单据台账 xlsx（主表 + 明细两张工作表）。"""
@@ -351,5 +355,12 @@ def export_documents(
     for row in headers:
         row.pop("_id", None)
 
-    data = doc_export.build(kind, headers, details, subtitle=subtitle)
+    # 抬头公司名（2026-10-26）：默认取**当前账套的 own_name**，不是账套名 ——
+    # 账套名是给人看的标签，抬头才是税务主体，两者刻意分开存。
+    # 读不到（表还没建 / 没填）就留空，导出不加抬头行，绝不让整个导出失败。
+    company_name = company or (load_company(db).get("own_name") or "")
+
+    data = doc_export.build(
+        kind, headers, details, subtitle=subtitle, company=str(company_name).strip()
+    )
     return _attachment_response(data, doc_export.filename(kind), xlsx_media_type())

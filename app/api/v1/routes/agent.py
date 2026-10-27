@@ -67,11 +67,14 @@ def agent_summary(
     today_sales = (
         db.query(func.coalesce(func.sum(SalesOrder.total_amount), 0))
         .filter(SalesOrder.doc_type == "outbound", SalesOrder.order_date == today)
+        # P0-5：作废单据不计入 KPI（单据永久保留后必须显式排除）
+        .filter(SalesOrder.status != "cancelled")
         .scalar()
     )
     today_sales_count = (
         db.query(func.count(SalesOrder.id))
         .filter(SalesOrder.doc_type == "outbound", SalesOrder.order_date == today)
+        .filter(SalesOrder.status != "cancelled")
         .scalar()
     )
 

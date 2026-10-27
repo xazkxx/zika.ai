@@ -67,6 +67,16 @@ export default function SmartCommandBar({
   authHeaders,
   /** 跳到业务页并预填筛选：({page, ...}) => void，由 App.jsx 提供 */
   onGoto,
+  /**
+   * 嵌入式场景（2026-10-26，增强对账单顶部）：
+   * 传了它就多出「载入本页」按钮 —— 把认出的人和单子**直接送进当前页面**，
+   * 不用先跳页再重选一遍。回调参数：{ statementId?, party?, goto? }。
+   * 不传 = 工作台老行为（只预览 / 导出 / 跳页），零变化。
+   */
+  onOpenStatement,
+  /** 紧凑形态：隐藏示例行、压缩外边距（嵌在单据页顶部时用） */
+  compact = false,
+  placeholder = '用一句话找我：给我湖南华邦的对账单 / 蒲白750 的合同',
 }) {
   const inputRef = useRef(null);
   const [text, setText] = useState('');
@@ -283,7 +293,7 @@ export default function SmartCommandBar({
   const gotoLink = result?.goto || {};
 
   return (
-    <section className="scb" data-smart-command>
+    <section className={`scb${compact ? ' scb--compact' : ''}`} data-smart-command>
       <div className="scb__bar">
         <span className="scb__icon" aria-hidden="true">🤖</span>
         <input
@@ -291,7 +301,7 @@ export default function SmartCommandBar({
           className="scb__input"
           data-scb-input
           value={text}
-          placeholder="用一句话找我：给我湖南华邦的对账单 / 蒲白750 的合同"
+          placeholder={placeholder}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
             // 下拉开着时，方向键/回车先归下拉用；Esc 先关下拉（全局监听兜底）
@@ -463,6 +473,23 @@ export default function SmartCommandBar({
                 </span>
               </div>
               <div className="scb__generated-actions">
+                {onOpenStatement ? (
+                  <button
+                    type="button"
+                    className="primary-btn small-btn"
+                    data-scb-load={result.generated.id}
+                    onClick={() => {
+                      setOpen(false);
+                      onOpenStatement({
+                        statementId: result.generated.id,
+                        party: result.party || null,
+                        goto: result.goto || null,
+                      });
+                    }}
+                  >
+                    载入本页
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="secondary-btn small-btn"
@@ -505,6 +532,19 @@ export default function SmartCommandBar({
                       <span>金额 <b>{fmtMoney(card.amount)}</b></span>
                     </div>
                     <div className="scb__card-actions">
+                      {onOpenStatement ? (
+                        <button
+                          type="button"
+                          className="primary-btn small-btn"
+                          data-scb-load={card.id}
+                          onClick={() => {
+                            setOpen(false);
+                            onOpenStatement({ statementId: card.id, party: result.party || null, goto: gotoLink });
+                          }}
+                        >
+                          载入本页
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className="secondary-btn small-btn"

@@ -863,3 +863,534 @@ body.is-col-resizing * {
     display: none;
   }
 }
+
+/* ===========================================================================
+   2026-10-26 增强对账单 UI 重构（第 1 批 · 「重排 + 加壳」）
+   ---------------------------------------------------------------------------
+   原则：**只重排与加壳，不减配**。四流穿透、AI 指令、OCR、勾选核对、
+   六个金额卡、往来账底稿……一个功能都没删，改的只是它们的摆放与层级：
+
+     · 顶部先给 AI 指令条（= 这页的"灵魂入口"）；
+     · 命令区变成吸顶工具条：查询条件在左、动作在右，去边框，不再像一张表单卡；
+     · 一屏只有一个蓝色主按钮：空态=搜索预览，载入草稿后=保存；
+     · 打印/导出收进 [⋯]；
+     · 金额卡变成一条 KPI 计量条（分段、无边框）；
+     · 明细表换成深蓝表头 + 斑马纹（与导出的 Excel 同一套视觉语言）。
+
+   ⚠️ 所有选择器都挂在 `.stmt` / `.stmt-fusion` 下 —— `styles.css` 是 40+ 个
+      页面共用的 200KB 大文件，任何一条全局改动都会连带改别人的页面。
+   =========================================================================== */
+
+/* --------------------------------------------------- 本页设计令牌（局部） */
+.stmt {
+  --stmt-head-bg: #1f3a5f;      /* 深蓝表头：与 Excel 导出 #1F4E78 同一族 */
+  --stmt-zebra: #f7f9fc;        /* 斑马纹：比表头浅两档，扫行不串行 */
+  --stmt-line: #eef2f7;         /* 比全站 --border 更轻的一条线：分段用 */
+  --stmt-tone-1: #3b82f6;       /* 业务 */
+  --stmt-tone-2: #14b8a6;       /* 签收 */
+  --stmt-tone-3: #8b5cf6;       /* 发票 */
+  --stmt-tone-4: #f59e0b;       /* 资金 */
+  --stmt-tone-5: #64748b;       /* 兜底（第 5 组及以后） */
+}
+
+/* =========================================================== AI 指令条 */
+.stmt__ai {
+  padding: 10px 14px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-xl, 12px);
+  /* 极淡的蓝紫渐变：一眼看出"这块不是表单，是入口" */
+  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 68%);
+}
+
+/* 工作台里 `.scb` 是 800px 居中胶囊；嵌进单据页必须铺满整条工具条 */
+.stmt__ai .scb {
+  max-width: none;
+  margin: 0;
+}
+
+.stmt__ai .scb__bar {
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.06);
+}
+
+/* 紧凑形态：示例行收起来（单据页的纵向空间要留给表格），
+   placeholder 本身已经写清"可以怎么说" */
+.stmt__ai .scb--compact .scb__examples {
+  display: none;
+}
+
+.stmt__ai .scb__error {
+  margin: 6px 2px 0;
+}
+
+/* =========================================================== 命令区（吸顶） */
+/* 旧的 `.stmt__cmd` 是"一张卡片"：边框 + 圆角 + 阴影三件套，滚动时还会跟着走掉。
+   改成单据工具条：贴顶、只留一条底边线、白底、轻阴影 —— 滚到表格深处
+   仍能一眼看到"当前是哪家单位、哪个账期"，也随时能改条件重查。 */
+.stmt__cmd {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  /* 2026-10-26 第二稿：**刻意的两行**，而不是"让它自己换行"。
+     一行的做法在 1600 屏还能挤，1440 以下就会把动作区甩到第三、四行，
+     中间留下大片空白（实测第一稿就是这样）。两行在任何宽度都稳定：
+       第 1 行 = 查询条件（视角 / 往来单位 / 账期 / 期初）
+       第 2 行 = 动作（载入已存 · 搜索预览 · 重算 · 保存 · ⋯），右对齐 */
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2, 8px);
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 6px 16px -14px rgba(15, 23, 42, 0.5);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+/* 查询条件行用 **grid** 而不是 flex-wrap：
+   flex 会把 JSX 里的空白文本节点当成"匿名 flex 项"，凭空多出一条 32px 的空行
+   （实测 .stmt__cmd-main 高 78px，而三个控件只有 38px）—— grid 不生成匿名项。
+   四列 = 视角 / 往来单位 / 账期 / 期初（期初在「全部」视角不渲染，空列宽 0）。 */
+.stmt__cmd-main {
+  display: grid;
+  grid-template-columns: max-content minmax(200px, 300px) max-content max-content;
+  align-items: center;
+  gap: var(--space-2, 8px) var(--space-3, 12px);
+  min-width: 0;
+}
+
+@media (max-width: 1100px) {
+  .stmt__cmd-main {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .stmt__cmd-main {
+    grid-template-columns: 1fr;
+  }
+}
+
+.stmt__cmd-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: var(--space-2, 8px);
+  margin-left: auto;
+  min-width: 0;
+}
+
+/* 动作区每个控件都**不许被压缩**：`nowrap` + 可收缩的 flex 项会把"重算"挤成
+   两行竖排文字（第一稿实测如此）。统一 34px 高，与查询行同一水平线。 */
+.stmt__cmd-right > * {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.stmt__cmd-right .small-btn,
+.stmt__cmd-right .erp-more__trigger {
+  height: 34px;
+  padding: 0 14px;
+  line-height: 1;
+}
+
+.stmt__cmd-right .link-btn {
+  white-space: nowrap;
+}
+
+/* 查询行控件同高：日期框 / 下拉触发器都按 34px 对齐（视角段按钮维持原 32px 内高） */
+.stmt__cmd .stmt__date,
+.stmt__cmd .ssel-trigger {
+  height: 34px;
+}
+
+.stmt__cmd .stmt__seg {
+  padding: 2px;
+}
+
+/* 动作区极窄屏（<900）允许换行 —— 宁可两行，也不要把按钮压扁 */
+@media (max-width: 900px) {
+  .stmt__cmd-right {
+    flex-wrap: wrap;
+  }
+}
+
+/* 字段标签改成"上标签下控件"的纵向排布太占高，这里统一压成 12px 灰字，
+   与控件基线对齐；标签不再带冒号（视觉噪音） */
+.stmt__field-label {
+  letter-spacing: 0.02em;
+}
+
+/* 往来单位下拉的触发器：与日期框同高（32px），边框同色，看起来是一条工具条 */
+.stmt__cmd .ssel-trigger {
+  height: 32px;
+}
+
+
+/* =========================================================== KPI 计量条 */
+/* 六张卡从"六个小盒子"变成一条连续计量条：无边框、分段线、首尾相连。
+   期末余额那一段（--strong）用顶部 3px 蓝条 + 浅蓝底点睛。 */
+.stmt__cards {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-lg, 8px);
+  background: var(--surface, #fff);
+}
+
+.stmt__card {
+  gap: 2px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.stmt__card + .stmt__card {
+  border-left: 1px solid var(--stmt-line);
+}
+
+.stmt__card--strong {
+  border: none;
+  background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%);
+  box-shadow: inset 0 3px 0 var(--color-primary, #2563eb);
+}
+
+.stmt__card-label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted, #64748b);
+}
+
+.stmt__card-value {
+  font-size: var(--fs-lg, 18px);
+  font-weight: var(--fw-semibold, 600);
+}
+
+.stmt__card-hint {
+  font-size: 10.5px;
+}
+
+/* 响应式必须在这里重写一遍：上面那条 `.stmt__cards` 是文件末尾规则，
+   会盖掉文件前半段 @media 里的三列/两列设置（同优先级，后出现的赢）。 */
+@media (max-width: 1400px) {
+  .stmt__cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  /* 三列时换行，第二行第一段不能再顶着左分割线 */
+  .stmt__card:nth-child(3n + 1) {
+    border-left: none;
+  }
+
+  .stmt__card:nth-child(n + 1) {
+    border-top: 1px solid var(--stmt-line);
+  }
+
+  .stmt__card:nth-child(-n + 3) {
+    border-top: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .stmt__cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stmt__card:nth-child(n) {
+    border-top: 1px solid var(--stmt-line);
+    border-left: none;
+  }
+
+  .stmt__card:nth-child(2n) {
+    border-left: 1px solid var(--stmt-line);
+  }
+
+  .stmt__card:nth-child(-n + 2) {
+    border-top: none;
+  }
+}
+
+/* =============================================== 明细表：深蓝表头 + 斑马纹 */
+/* 与导出的 Excel 用同一套语言（#1F4E78 深蓝表头 / #F7F9FC 斑马纹），
+   用户在屏幕上核完再导出，看到的是同一张表 —— 这是"专业感"的来源。 */
+.stmt .erp-table__cell--head {
+  background: var(--stmt-head-bg);
+  color: #fff;
+  font-weight: var(--fw-semibold, 600);
+  border-bottom-color: var(--stmt-head-bg);
+}
+
+.stmt .erp-table__cell--head.erp-table__cell--sticky-right {
+  background: var(--stmt-head-bg);
+}
+
+/* 表头里的排序/筛选小图标在深蓝底上要反白，否则黑图标看不见 */
+.stmt .erp-table__cell--head svg {
+  color: #fff;
+  opacity: 0.85;
+}
+
+.stmt .erp-table--striped .erp-table__row:nth-child(even) {
+  background: var(--stmt-zebra);
+}
+
+.stmt .erp-table--striped .erp-table__row:nth-child(even) .erp-table__cell--sticky-right {
+  background: var(--stmt-zebra);
+}
+
+.stmt .erp-table--hover .erp-table__row:hover,
+.stmt .erp-table--hover .erp-table__row:hover .erp-table__cell--sticky-right {
+  background: var(--color-primary-soft, #eff6ff);
+}
+
+/* 合计行：浅灰底 + 加粗，与 Excel 的合计行同款 */
+.stmt .erp-table__foot .erp-table__cell,
+.stmt .erp-table__foot td {
+  background: #f1f5f9;
+  font-weight: var(--fw-semibold, 600);
+}
+
+
+/* ============================================== 四流超宽表：四流对齐条 */
+.stmt-fusion__legend {
+  padding: 8px 14px;
+  gap: 6px;
+  background: #f8fafc;
+}
+
+.stmt-fusion__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-pill, 999px);
+  background: #fff;
+  color: var(--fg-muted, #64748b);
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.stmt-fusion__legend-item b {
+  color: var(--fg-strong, #0f172a);
+  font-variant-numeric: tabular-nums;
+}
+
+.stmt-fusion__legend-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--stmt-tone-5, #64748b);
+}
+
+/* 色点 = 分组色，与表头那 3px 上沿一一对应（顺序取色，不按中文名硬编码） */
+.stmt-fusion__legend-item[data-tone='1'] .stmt-fusion__legend-dot,
+.stmt-fusion__legend-dot[data-tone='1'] {
+  background: var(--stmt-tone-1);
+}
+
+.stmt-fusion__legend-item[data-tone='2'] .stmt-fusion__legend-dot,
+.stmt-fusion__legend-dot[data-tone='2'] {
+  background: var(--stmt-tone-2);
+}
+
+.stmt-fusion__legend-item[data-tone='3'] .stmt-fusion__legend-dot,
+.stmt-fusion__legend-dot[data-tone='3'] {
+  background: var(--stmt-tone-3);
+}
+
+.stmt-fusion__legend-item[data-tone='4'] .stmt-fusion__legend-dot,
+.stmt-fusion__legend-dot[data-tone='4'] {
+  background: var(--stmt-tone-4);
+}
+
+.stmt-fusion__legend-item[data-tone='5'] .stmt-fusion__legend-dot,
+.stmt-fusion__legend-dot[data-tone='5'] {
+  background: var(--stmt-tone-5);
+}
+
+/* 断流胶囊：红点 + 红字。只在真有断流时出现，出现即代表"要人工核" */
+.stmt-fusion__legend-item.is-gap {
+  border-color: var(--color-danger-border, #fecaca);
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-danger-strong, #b91c1c);
+}
+
+.stmt-fusion__legend-item.is-gap .stmt-fusion__legend-dot {
+  background: #dc2626;
+}
+
+
+/* ================================== 四流超宽表：分组表头着色 + 断流色条 */
+/* 表头 3px 上沿按组着色 —— 34 列横滚时，用户在余光里就知道自己滑到哪一段了。
+   第一列（行类型）没有 data-tone，补一条灰带保持表头高度一致。 */
+.stmt-fusion__table th[data-tone='1'] {
+  border-top: 3px solid var(--stmt-tone-1);
+}
+
+.stmt-fusion__table th[data-tone='2'] {
+  border-top: 3px solid var(--stmt-tone-2);
+}
+
+.stmt-fusion__table th[data-tone='3'] {
+  border-top: 3px solid var(--stmt-tone-3);
+}
+
+.stmt-fusion__table th[data-tone='4'] {
+  border-top: 3px solid var(--stmt-tone-4);
+}
+
+.stmt-fusion__table th[data-tone='5'] {
+  border-top: 3px solid var(--stmt-tone-5);
+}
+
+.stmt-fusion__table th.stmt-fusion__kind {
+  border-top: 3px solid var(--stmt-tone-5);
+}
+
+/* 组与组之间加一道亮线：横滚时"业务→签收→发票→资金"的边界一眼可辨 */
+.stmt-fusion__table th.is-group-start {
+  border-left: 2px solid rgba(255, 255, 255, 0.55);
+}
+
+.stmt-fusion__table td.is-group-start {
+  border-left: 1px solid #cbd5e1;
+}
+
+/* 冻结列最右侧投影：横滚时压在后面的数据上，形成明确的"钉住"层感 */
+.stmt-fusion__table th.is-frozen-edge,
+.stmt-fusion__table td.is-frozen-edge {
+  box-shadow: 8px 0 10px -8px rgba(15, 23, 42, 0.45);
+}
+
+/* 断流色条：贴在冻结「行类型」列左缘，横滚到哪儿都看得见 */
+.stmt-fusion__gap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+}
+
+.stmt-fusion__gap.is-stop {
+  background: #dc2626;
+}
+
+.stmt-fusion__gap.is-warn {
+  background: #f59e0b;
+}
+
+/* 行穿透：整行可点。悬停用 background-image 叠加，不去改 box-shadow ——
+   否则会把冻结列的右侧投影盖掉（同一属性只能有一份）。 */
+.stmt-fusion__row.is-clickable {
+  cursor: pointer;
+}
+
+.stmt-fusion__row.is-clickable:hover > td {
+  background-image: linear-gradient(rgba(37, 99, 235, 0.07), rgba(37, 99, 235, 0.07));
+}
+
+.stmt-fusion__row.is-clickable:focus-visible {
+  outline: 2px solid var(--color-primary, #2563eb);
+  outline-offset: -2px;
+}
+
+/* ============================================== 行穿透抽屉（只读字段墙） */
+.stmt-fusion__detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5, 20px);
+}
+
+.stmt-fusion__detail-group h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--space-2, 8px);
+  font-size: var(--fs-xs, 12px);
+  font-weight: var(--fw-semibold, 600);
+  letter-spacing: 0.06em;
+  color: var(--fg-muted, #64748b);
+}
+
+.stmt-fusion__detail-group dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 var(--space-4, 16px);
+  margin: 0;
+}
+
+.stmt-fusion__detail-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3, 12px);
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--stmt-line);
+}
+
+.stmt-fusion__detail-row dt {
+  flex: 0 0 auto;
+  color: var(--fg-muted, #64748b);
+  font-size: var(--fs-xs, 12px);
+  white-space: nowrap;
+}
+
+.stmt-fusion__detail-row dd {
+  margin: 0;
+  color: var(--fg-strong, #0f172a);
+  font-size: 12.5px;
+  text-align: right;
+  word-break: break-all;
+}
+
+.stmt-fusion__detail-row dd.is-num {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .stmt-fusion__detail-group dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ------------------------------------------------------------------ 打印 */
+@media print {
+  /* AI 指令条、⋯ 菜单、legend 提示都不该出现在纸上 */
+  .stmt__ai,
+  .stmt .erp-more,
+  .stmt-fusion__legend-hint {
+    display: none !important;
+  }
+
+  .stmt__cmd {
+    position: static;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .stmt .erp-table__cell--head {
+    background: var(--stmt-head-bg) !important;
+    color: #fff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .stmt-fusion__table th,
+  .stmt-fusion__table td.stmt-fusion__kind {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+

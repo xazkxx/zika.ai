@@ -200,8 +200,13 @@ def test_footer_text_reaches_the_pdf(param_guard):
 
     # 收尾：删掉造出来的单据与档案
     assert client.delete(f"/api/v1/sales-orders/{order_id}").status_code in (200, 204)
-    assert client.delete(f"/api/v1/products/{product['id']}").status_code in (200, 204)
-    assert client.delete(f"/api/v1/customers/{customer['id']}").status_code in (200, 204)
+    # P0-5：订单"删除"= 作废，行仍在库里并引用着商品/客户 —— 主数据必须 force 才能清掉
+    assert client.delete(
+        f"/api/v1/products/{product['id']}?force=true"
+    ).status_code in (200, 204)
+    assert client.delete(
+        f"/api/v1/customers/{customer['id']}?force=true"
+    ).status_code in (200, 204)
 
 
 def test_default_page_and_warn_flag_are_delivered_to_frontend(param_guard):

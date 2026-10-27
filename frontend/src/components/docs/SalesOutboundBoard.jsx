@@ -65,6 +65,8 @@ import ResizableLayout from '../resizable-layout/ResizableLayout.jsx';
 import ErpSearchSelect from '../ui/ErpSearchSelect.jsx';
 import ErpCard from '../ui/ErpCard.jsx';
 import ErpTable from '../ui/ErpTable.jsx';
+import ErpMoreMenu from '../ui/ErpMoreMenu.jsx';
+import ErpKpiStrip from '../ui/ErpKpiStrip.jsx';
 import { ErpFormActions, ErpFormGrid, ErpFormRow } from '../ui/ErpForm.jsx';
 import { itemRowError } from '../../lib/orderLines';
 import ArchiveImportDialog from '../dataio/ArchiveImportDialog.jsx';
@@ -457,17 +459,19 @@ export default function SalesOutboundBoard({ ctx }) {
       {
         key: 'actions',
         title: '操作',
-        // 2026-10-20 完结闸：196 → 384，新插入 收款/开票/完结 三个按钮（业务闭环：
-        // 收款 → 开票 → 完结）。完结按钮的置灰是**业务规则**不是 UI 状态：
-        // 只有后端 settled（应收余额≤0 且 未开票≤0）才放行。
-        // 2026-10-21 加「预览」首位入口 + 单号可点（见 order_no 列注释）：384 → 440
-        width: 440,
-        minWidth: 440,
+        // v1.78.0 金蝶级 UI：7 颗按钮（含一颗蓝的「完结」）平铺 440px，
+        // 一页 20 行就是 20 个主按钮，主视觉完全失焦。现在只留「预览」，
+        // 其余 6 个动作收进 ⋯。440 → 152，省下的宽度还给客户/金额列。
+        // 完结闸的置灰规则**没有改**：后端 settled（应收≤0 且 未开票≤0）才放行。
+        width: 152,
+        minWidth: 152,
         align: 'right',
         sticky: 'right',
         nowrap: true,
         render: (row) => (
           <div className="row-actions">
+            {/* ⚠️ 这一颗**不能改名、不能藏**：验收脚本 verify_tax_and_issue_invoice.cjs
+                按「行内文字 === 预览」定位本行再进详情开票，改了就断链。 */}
             <button
               type="button"
               className="secondary-btn small-btn"
@@ -476,65 +480,63 @@ export default function SalesOutboundBoard({ ctx }) {
             >
               预览
             </button>
-            <button
-              type="button"
-              className="secondary-btn small-btn"
-              onClick={() => printPdf(`/print/sales-order/${row.id}`, `${row.order_no}.pdf`)}
-            >
-              打印
-            </button>
-            <button
-              type="button"
-              className="secondary-btn small-btn"
-              onClick={() => printPdf(`/print/delivery-note/${row.id}`, `送货单_${row.order_no}.pdf`)}
-            >
-              送货单
-            </button>
-            <button
-              type="button"
-              className="secondary-btn small-btn"
-              onClick={() => openOrderPayment(row, 'sales')}
-              title="登记收款（实收冲减本单应收，超收转预收）"
-            >
-              收款
-            </button>
-            <button
-              type="button"
-              className="secondary-btn small-btn"
-              onClick={() => setInvoiceDialogRow(row)}
-              title="登记销项发票（计入本单已开票金额）"
-            >
-              开票
-            </button>
-            <button
-              type="button"
-              className="primary-btn small-btn"
-              disabled={!row.settled || row.status === 'completed'}
-              title={
-                row.status === 'completed'
-                  ? '该单已完结'
-                  : row.settled
-                    ? '标记为已完结'
-                    : COMPLETE_LOCKED_TITLE
-              }
-              onClick={() => updateSalesOrderStatus(row.id, 'completed')}
-            >
-              完结
-            </button>
-            <button
-              type="button"
-              className="danger-btn"
-              onClick={() =>
-                setConfirmDelete({
-                  id: row.id,
-                  endpoint: `/sales-orders/${row.id}`,
-                  label: `销售出库单 ${row.order_no}`,
-                  kind: 'sales-order',
-                })
-              }
-            >
-              删除
-            </button>
+            <ErpMoreMenu
+              testId={`outbound-${row.id}`}
+              title="打印 / 收款 / 开票 / 完结 / 删除"
+              items={[
+                {
+                  key: 'print',
+                  label: '打印销售单',
+                  hint: row.order_no,
+                  onSelect: () => printPdf(`/print/sales-order/${row.id}`, `${row.order_no}.pdf`),
+                },
+                {
+                  key: 'delivery',
+                  label: '打印送货单',
+                  hint: '随货同行联',
+                  onSelect: () =>
+                    printPdf(`/print/delivery-note/${row.id}`, `送货单_${row.order_no}.pdf`),
+                },
+                {
+                  key: 'pay',
+                  label: '登记收款',
+                  hint: '实收冲减本单应收，超收转预收',
+                  onSelect: () => openOrderPayment(row, 'sales'),
+                },
+                {
+                  key: 'invoice',
+                  label: '登记销项发票',
+                  hint: '计入本单已开票金额',
+                  onSelect: () => setInvoiceDialogRow(row),
+                },
+                {
+                  key: 'complete',
+                  label: row.status === 'completed' ? '已完结' : '标记完结',
+                  // 置灰原因照旧写清楚：不能点的时候必须让人知道为什么
+                  hint:
+                    row.status === 'completed'
+                      ? '该单已完结'
+                      : row.settled
+                        ? '钱票两清，标记为已完结'
+                        : COMPLETE_LOCKED_TITLE,
+                  disabled: !row.settled || row.status === 'completed',
+                  onSelect: () => updateSalesOrderStatus(row.id, 'completed'),
+                },
+                {
+                  key: 'delete',
+                  label: '删除本单',
+                  hint: '删除后不可恢复',
+                  danger: true,
+                  onSelect: () =>
+                    setConfirmDelete({
+                      id: row.id,
+                      endpoint: `/sales-orders/${row.id}`,
+                      label: `销售出库单 ${row.order_no}`,
+                      kind: 'sales-order',
+                    }),
+                },
+              ]}
+            />
           </div>
         ),
       },
@@ -552,6 +554,66 @@ export default function SalesOutboundBoard({ ctx }) {
       warehouses,
     ],
   );
+
+  /**
+   * 列表卡顶部的 KPI 计量条（v1.78.0）。
+   *
+   * ⚠️ 口径全部取后端算好的字段：`settled` / `outstanding_amount` /
+   *    `uninvoiced_amount` 都是 `_apply_settlement_fields` 的产物。
+   *    前端**绝不自己复算**「结清 = 应收 ≤ 0 且 未开票 ≤ 0」——
+   *    两套口径只要有一处不一样，页面上就会出现「KPI 说结清、行内说欠款」
+   *    这种没法解释的矛盾（完结按钮的置灰本来就只认后端 settled）。
+   */
+  const kpiItems = useMemo(() => {
+    let completed = 0;
+    let unsettled = 0;
+    let outstanding = 0;
+    let uninvoiced = 0;
+    let amount = 0;
+    let received = 0;
+
+    salesOrders.forEach((row) => {
+      const total = Number(row.total_amount || 0) - Number(row.discount_amount || 0);
+      const owe = Number(row.outstanding_amount || 0);
+      amount += total;
+      received += Math.max(0, total - owe);
+      if (row.status === 'completed') completed += 1;
+      // 分位容差：金额是 numeric(12,2)，避免 0.001 的尾差算成"未结清"
+      if (row.settled === false && owe > 0.005) {
+        unsettled += 1;
+        outstanding += owe;
+      }
+      if (Number(row.uninvoiced_amount || 0) > 0.005) uninvoiced += 1;
+    });
+
+    return [
+      {
+        key: 'count',
+        label: '本页单据',
+        value: `${salesOrders.length} 张`,
+        hint: `已发货 ${completed} 张`,
+      },
+      {
+        key: 'unsettled',
+        label: '未收款',
+        value: `${unsettled} 张`,
+        hint: outstanding > 0 ? `欠 ¥${money(outstanding)}` : '已全部结清',
+      },
+      {
+        key: 'uninvoiced',
+        label: '未开票',
+        value: `${uninvoiced} 张`,
+        hint: uninvoiced > 0 ? '完结前需开完票' : '票已开全',
+      },
+      {
+        key: 'amount',
+        label: '应收合计',
+        value: `¥${money(amount)}`,
+        hint: `已收 ¥${money(received)}`,
+        strong: true,
+      },
+    ];
+  }, [salesOrders]);
 
   /** 详情弹窗里的明细：把服务端存的 `unit_factor` 快照也显示出来 */
   const detailColumns = useMemo(
@@ -796,6 +858,9 @@ export default function SalesOutboundBoard({ ctx }) {
             </button>
           }
         >
+          <div className="doc-kpi">
+            <ErpKpiStrip dense items={kpiItems} />
+          </div>
           <ErpTable
             columns={orderColumns}
             rows={salesOrders}

@@ -177,6 +177,24 @@ DIRECTION_LABELS = {
 INVOICE_FLAG_LABELS = {"blue": "蓝字", "red": "红字"}
 ISSUE_MODE_LABELS = {"manual": "手工开票", "api": "对接开票"}
 
+# —— 作废状态（P0-5，2026-10-26）——
+# 发票以前是**物理删除**：删掉的票号、金额、税额、原件全部消失，
+# 结果「进项税抵扣统计」少一张、对账单上多一笔无票收入，谁也说不清差在哪。
+# 现在改成软作废：行保留、原件移入归档目录，`status` 落这个值。
+INVOICE_VOIDED = "已作废"
+INVOICE_STATUS_LABELS = {"草稿": "草稿", "已确认": "已确认", INVOICE_VOIDED: INVOICE_VOIDED}
+
+
+def active_invoice_clause():
+    """SQL 条件：**排除已作废发票**（`status` 为空的历史数据视为有效）。
+
+    为什么用 `coalesce` 而不是 `status != '已作废'`：
+    SQL 里 `NULL != '已作废'` 的结果是 NULL（不是 TRUE），
+    直接写会把所有"没填过 status"的历史发票一起过滤掉 ——
+    那是**静默丢数**，比多算一张作废票严重得多。
+    """
+    return func.coalesce(Invoice.status, "") != INVOICE_VOIDED
+
 
 def _normalize_tax_no(value: str | None) -> str:
     return "".join(ch for ch in str(value or "") if ch.isalnum()).upper()

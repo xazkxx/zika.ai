@@ -939,6 +939,28 @@ def run_cleanup(verbose: bool = True) -> int:
     except Exception as exc:
         skipped.append(("invoices（发票）", f"{type(exc).__name__}: {str(exc).splitlines()[0][:90]}"))
 
+    # 单据归档台账（P0-5）：测试产生的归档行按**单号签名**清掉。
+    #
+    # 为什么必须清：归档表只增不减（真实业务就该如此）。测试每跑一轮都会作废几张
+    # TEST-* / SO-<hex> / INV-<hex> 的测试单，不清的话这表会被测试噪音长期占着，
+    # 以后真查生产记录还得先过滤一遍测试单号。
+    # 只认测试签名：真实单号是 XS/CGTH/CGTH+DATE+流水、票号是 20 位数字，不会命中。
+    try:
+        with engine.begin() as conn:
+            n = conn.execute(
+                text(
+                    "DELETE FROM document_archives WHERE doc_no LIKE 'TEST-%' "
+                    "OR doc_no LIKE 'SO-%' OR doc_no LIKE 'INV-%' OR doc_no LIKE 'TMP-%'"
+                )
+            ).rowcount
+        total += n
+        if n:
+            applied.append(("document_archives（归档台账）", n))
+    except Exception as exc:
+        skipped.append(
+            ("document_archives（归档台账）", f"{type(exc).__name__}: {str(exc).splitlines()[0][:90]}")
+        )
+
     # 孤儿发票 / 孤儿发票流水（2026-10-22）。
     #
     # ⚠️ 这里**不能**按票号签名删：`一键开票` 生成的 `KP-<单号>` 是**真实业务数据**，

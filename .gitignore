@@ -93,6 +93,12 @@ coverage.xml
 Thumbs.db
 desktop.ini
 
+# 探针/诊断脚本产出的临时截图与报告（diag_order_more_menu.mjs 等）
+scripts/_more_*
+scripts/_probe_*
+scripts/_diag_*
+scripts/diag_order_more_menu.mjs
+
 # ---- 10. 测试专用 PostgreSQL 实例（A5，scripts/test_db.py 生成）----
 .pgtest/
 

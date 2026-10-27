@@ -371,8 +371,9 @@ def test_purchase_order_status_and_plain_order_delete():
         )
         assert patched.status_code == 200, patched.text
         assert patched.json()["status"] == "cancelled"
+        # P0-5：删除 = 作废，幂等返回 204（旧契约"再删 404"已不再适用）
         assert client.delete(f"/api/v1/purchase-orders/{order['id']}").status_code == 204
-        assert client.delete(f"/api/v1/purchase-orders/{order['id']}").status_code == 404
+        assert client.delete(f"/api/v1/purchase-orders/{order['id']}").status_code == 204
     finally:
         client.delete(f"/api/v1/suppliers/{supplier_id}")
         client.delete(f"/api/v1/products/{product_id}")
