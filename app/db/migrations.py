@@ -194,3 +194,33 @@ MIGRATIONS.extend(
         (10, "sales return items", _migration_0010_sales_return_items),
     ]
 )
+
+
+def _migration_0011_financial_transactions(conn) -> None:
+    """C1-4B：资金流水补列（红冲 / 挂发票 / 流水号）。"""
+    _add_columns_if_missing(conn, "financial_transactions", FINANCE_COLUMNS)
+
+
+def _migration_0012_inventory_transactions(conn) -> None:
+    """C1-4B：库存流水溯源补列。"""
+    _add_columns_if_missing(conn, "inventory_transactions", INVENTORY_COLUMNS)
+
+
+def _migration_0013_users(conn) -> None:
+    """C1-4B：用户挂部门 / 角色 / 联系方式等补列。"""
+    _add_columns_if_missing(conn, "users", USER_COLUMNS)
+
+
+def _migration_0014_companies(conn) -> None:
+    """C1-4B：账套抬头名称补列。"""
+    _add_columns_if_missing(conn, "companies", COMPANY_COLUMNS)
+
+
+MIGRATIONS.extend(
+    [
+        (11, "financial transactions", _migration_0011_financial_transactions),
+        (12, "inventory transactions", _migration_0012_inventory_transactions),
+        (13, "user profile columns", _migration_0013_users),
+        (14, "company header", _migration_0014_companies),
+    ]
+)

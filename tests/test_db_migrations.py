@@ -13,7 +13,10 @@ import uuid
 from sqlalchemy import inspect, text
 
 from app.db.migration_columns import (
+    COMPANY_COLUMNS,
     CUSTOMER_COLUMNS,
+    FINANCE_COLUMNS,
+    INVENTORY_COLUMNS,
     INVOICE_COLUMNS,
     PRODUCT_COLUMNS,
     PURCHASE_ITEM_COLUMNS,
@@ -23,6 +26,7 @@ from app.db.migration_columns import (
     SALES_ORDER_COLUMNS,
     SALES_RETURN_ITEM_COLUMNS,
     SUPPLIER_COLUMNS,
+    USER_COLUMNS,
 )
 from app.db.migrations import MIGRATIONS, _TRACKING_TABLE, apply_pending
 from app.db.session import engine
@@ -184,6 +188,31 @@ def test_order_migrations_registered_and_applied():
         ("sales_order_items", SALES_ITEM_COLUMNS),
         ("purchase_return_items", PURCHASE_RETURN_ITEM_COLUMNS),
         ("sales_return_items", SALES_RETURN_ITEM_COLUMNS),
+    ):
+        with engine.begin() as conn:
+            cols = {column["name"] for column in inspect(conn).get_columns(table)}
+        assert set(columns) <= cols, f"{table} 缺列：{set(columns) - cols}"
+
+
+def test_finance_inventory_user_company_migrations():
+    """C1-4B：财务/库存流水、用户、公司补列迁移已注册并应用。"""
+    assert {11, 12, 13, 14} <= {mid for mid, _, _ in MIGRATIONS}
+
+    apply_pending(engine)
+    with engine.begin() as conn:
+        applied = {
+            row[0]
+            for row in conn.execute(
+                text(f"SELECT id FROM {_TRACKING_TABLE} WHERE id IN (11, 12, 13, 14)")
+            ).fetchall()
+        }
+    assert applied == {11, 12, 13, 14}
+
+    for table, columns in (
+        ("financial_transactions", FINANCE_COLUMNS),
+        ("inventory_transactions", INVENTORY_COLUMNS),
+        ("users", USER_COLUMNS),
+        ("companies", COMPANY_COLUMNS),
     ):
         with engine.begin() as conn:
             cols = {column["name"] for column in inspect(conn).get_columns(table)}

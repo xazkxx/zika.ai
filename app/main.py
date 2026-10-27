@@ -48,53 +48,18 @@ def _add_missing_columns(conn, table: str, additions: dict[str, str]) -> None:
 # 单据头 / 单据明细：列定义已搬到 `app/db/migration_columns.py`
 # （C1-4A，由迁移 id=5~10 接管；ORDER_ITEM 基础列已并入 PURCHASE_ITEM / SALES_ITEM 常量）。
 
-# 财务 × 全模块关联
-FINANCE_ADDITIONS = {
-    "bank_account_id": "INTEGER",
-    "category": "VARCHAR(50)",
-    "handler": "VARCHAR(50)",
-    "related_type": "VARCHAR(40)",
-    "doc_no": "VARCHAR(50)",
-    "direction": "VARCHAR(10)",
-    "product_id": "INTEGER",
-    "warehouse_id": "INTEGER",
-    "project_id": "INTEGER",
-    "occurred_at": "VARCHAR(20)",
-    "period": "VARCHAR(7)",
-    # 红冲（2026-10-19）：红字行指回被冲的原流水；applied_amount 记"实际冲抵到单据"的金额
-    # （预收/预付不进单据，红冲回退时只能按 applied_amount 扣）。
-    # ⚠️ `_add_missing_columns` 只补列**不建索引**；唯一索引（防同一笔被冲两次）
-    #    由 `_contract_module/migrate_20261019_finance_reversal.py` 建（幂等）。
-    "reversal_of_id": "INTEGER",
-    "applied_amount": "DOUBLE PRECISION",
-    # 业财一体化（2026-10-22）：付款流水挂进项发票（先款后票的钩子）。
-    # ⚠️ 只追加键，不许整体重新赋值 —— 这个 dict 是 PowerUp 式补列的唯一来源。
-    "invoice_id": "INTEGER",
-    # 资金流水号（对账单「收款流水号」列）：新库靠模型建，老库靠这里补。
-    "flow_no": "VARCHAR(40)",
-}
+# 财务 × 全模块关联：列定义已搬到 `app/db/migration_columns.py`（FINANCE_COLUMNS）
+# （C1-4B，由迁移 id=11 接管；含红冲 reversal_of_id / applied_amount、发票 invoice_id、flow_no）。
 
-# 库存流水溯源：让每条出入库都能追到来源单据，删单时可冲销
-INVENTORY_ADDITIONS = {
-    "related_type": "VARCHAR(40)",
-    "related_order_id": "INTEGER",
-    "doc_no": "VARCHAR(50)",
-    "note": "VARCHAR(255)",
-}
+# 库存流水溯源：列定义已搬到 `app/db/migration_columns.py`（INVENTORY_COLUMNS）
+# （C1-4B，由迁移 id=12 接管）。
 
 # 第 11 批：发票补业务属性（进销项 / 红蓝字 / 开票方式）与原始文件
 # ⚠️ C1-3（2026-10-27）：列定义已搬到 `app/db/migration_columns.py`（INVOICE_COLUMNS），
 #    旧 INVOICE_ADDITIONS 正式删除，补列职责由 `app/db/migrations.py` 的 id=1 迁移接管。
 
 # 系统管理第 1 轮：用户挂部门 / 挂角色 / 联系方式 / 最后登录时间
-USER_ADDITIONS = {
-    "department_id": "INTEGER",
-    "role_id": "INTEGER",
-    "phone": "VARCHAR(30)",
-    "position": "VARCHAR(50)",
-    "remark": "VARCHAR(255)",
-    "last_login_at": "TIMESTAMP WITH TIME ZONE",
-}
+# 列定义已搬到 `app/db/migration_columns.py`（USER_COLUMNS，迁移 id=13 接管）。
 
 # 开票税点：商品档案默认税率 `tax_rate` 已并入 `migration_columns.PRODUCT_COLUMNS`
 # （C1-3，由迁移 id=2 统一补列）；旧 `PRODUCT_ADDITIONS.update(...)` 已删除。
@@ -102,9 +67,7 @@ USER_ADDITIONS = {
 # 多账套：账套表的补列。
 # 抬头名称 `own_name` 是与账套名 `name` 分开的一列 ——
 # 合并成一个字段时，用户清空抬头会把 NOT NULL 的账套名写成 NULL。
-COMPANY_ADDITIONS = {
-    "own_name": "VARCHAR(150)",
-}
+# 列定义已搬到 `app/db/migration_columns.py`（COMPANY_COLUMNS，迁移 id=14 接管）。
 
 
 # ===========================================================================
@@ -212,11 +175,9 @@ def ensure_schema_in(target_engine=None) -> None:
         # ⚠️ C1-4A（2026-10-27）：采购/销售单头与明细（含退货明细）已改由版本化迁移接管
         #    （app/db/migrations.py id=5~10），这里不再重复补列。
 
-        # 融合改造：财务 × 全模块关联
-        _add_missing_columns(conn, "financial_transactions", FINANCE_ADDITIONS)
-
-        # 融合改造：库存流水溯源（开单联动库存 / 删单冲销）
-        _add_missing_columns(conn, "inventory_transactions", INVENTORY_ADDITIONS)
+        # 融合改造：财务 × 全模块关联 / 库存流水溯源
+        # ⚠️ C1-4B（2026-10-27）：financial_transactions / inventory_transactions
+        #    已改由版本化迁移接管（app/db/migrations.py id=11/12）。
 
         # 第 11 批：发票的业务属性与原始文件
         # ⚠️ C1-2b/C1-3（2026-10-27）：invoices 补列已由版本化迁移接管
@@ -228,14 +189,14 @@ def ensure_schema_in(target_engine=None) -> None:
         _add_missing_columns(conn, "journal_entries", {"flow_id": "INTEGER"})
 
         # 系统管理第 1 轮：用户表补列（部门 / 角色 / 联系方式）
-        _add_missing_columns(conn, "users", USER_ADDITIONS)
+        # ⚠️ C1-4B：users 补列由迁移 id=13 接管（users.role 的 NOT NULL 特殊逻辑仍在上方内联）。
 
         # 开票税点：商品档案的默认税率
         # ⚠️ C1-2b/C1-3（2026-10-27）：tax_rate 已并入 migration_columns.PRODUCT_COLUMNS，
         #    由迁移 id=2 接管，这里不再重复补列。
 
         # 多账套：账套表的补列（全局表，只在 public）
-        _add_missing_columns(conn, "companies", COMPANY_ADDITIONS)
+        # ⚠️ C1-4B：companies.own_name 由迁移 id=14 接管。
 
 
 def _ensure_numeric_money(conn, table: str, columns: tuple[str, ...]) -> list[str]:
