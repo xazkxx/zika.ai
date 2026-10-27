@@ -5,7 +5,6 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import Float, Numeric, inspect, text
 from sqlalchemy.orm import sessionmaker
 from starlette.responses import Response
 from starlette.types import Scope
@@ -21,22 +20,8 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 
 
-def _add_missing_columns(conn, table: str, additions: dict[str, str]) -> None:
-    """给已存在的表补列（幂等）。
-
-    新增列一律可空（不改动历史数据）—— **唯一例外**是带 `DEFAULT` 的 `NOT NULL`，
-    如 `purchase_order_items.unit_factor`（见 `migration_columns.PURCHASE_ITEM_COLUMNS`）。
-    它的默认值本身就代表"行为与改动前完全一致"，所以不需要再引入 NULL 这一态 ——
-    否则每个读取点都得写 `COALESCE(unit_factor, 1)`，NULL 会像病毒一样扩散，
-    而 `DEFAULT 1` 让历史行天然正确、不必 `UPDATE` 回填。
-    """
-    inspector = inspect(conn)
-    if not inspector.has_table(table):
-        return
-    existing = {column["name"] for column in inspector.get_columns(table)}
-    for column_name, definition in additions.items():
-        if column_name not in existing:
-            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column_name} {definition}"))
+# C1-5（2026-10-27）：`_add_missing_columns` 已并入 `app/db/migrations.py::_add_columns_if_missing`；
+# 全部补列 / 转列 / 建索引 / 纠偏逻辑都在迁移模块，本文件不再保留任何 schema 迁移代码。
 
 
 # 「浩技云进销存」融合改造：商品 / 客户 / 供应商档案补齐字段
@@ -78,170 +63,18 @@ def _add_missing_columns(conn, table: str, additions: dict[str, str]) -> None:
 # （C1-4C，迁移 id=15 / 16 接管；转列 numeric / direction 纠偏 / 建索引由迁移 id=17 接管）。
 # ===========================================================================
 
-# 把 `double precision`（＝Float）改成 `numeric(12,2)` 的金额列。
-# ⚠️ 为什么必须改：对账单要拿合同金额做**减法**（合同额 − 已开票 − 已收 − 预收核销），
-#    Float 的 0.1+0.2!=0.3 会一路累积成"差一分钱"，而对账场景差一分就是失败。
-# 三张表 × 各 2~3 列；顺序无所谓，函数内部逐列判断是否已经是 numeric。
-MONEY_COLUMNS_TO_NUMERIC: dict[str, tuple[str, ...]] = {
-    "contracts": ("total_amount",),
-    "contract_items": ("unit_price", "amount"),
-    "quotations": ("total_amount",),
-    "quotation_items": ("unit_price", "amount"),
-}
-
-# 单价（费率）列：最终要落到 `numeric(14,4)`。
-# ⚠️ 与 MONEY_COLUMNS_TO_NUMERIC 的关系：那两个 unit_price 先随大流转成 (12,2)（处理
-# `double precision` 老库），再在这里放宽小数位 —— 两步都是为了幂等，重复跑不会来回抖。
-PRICE_COLUMNS_TO_WIDE_NUMERIC: dict[str, tuple[str, ...]] = {
-    "contract_items": ("unit_price",),
-    "quotation_items": ("unit_price",),
-}
+# 金额/单价转列配置（MONEY_COLUMNS_TO_NUMERIC / PRICE_COLUMNS_TO_WIDE_NUMERIC）
+# 已搬到 `app/db/migrations.py`（C1-5，迁移 id=17 使用）。
 
 
-def ensure_schema_in(target_engine=None) -> None:
-    """补列迁移（幂等）。按**传入的 engine** 跑，这样多账套下每个 schema 都能各跑一遍。
 
-    账套 schema 里的表与 public 是各自独立的一份副本 —— 只在 public 上补列，
-    新账套的表就会缺列，而且报错发生在业务查询里，很难联想到迁移。
-    """
-    target = target_engine if target_engine is not None else engine
-    with target.begin() as conn:
-        # ⚠️ 这里必须查**账套自己的表**（products），不能查 users。
-        # SQLAlchemy 的 has_table 是按 schema 精确查的，不走 search_path ——
-        # 而 users 是全局表、只存在于 public。账套 schema 里查 users 恒为 False，
-        # 整个补列迁移会被这一行悄悄跳过，症状是"新账套的业务查询报缺列"。
-        if not inspect(conn).has_table("products"):
-            return
-
-        # users 只在 public 有；账套 schema 里没有它是正常的，不要当成异常
-        if inspect(conn).has_table("users"):
-            columns = [column["name"] for column in inspect(conn).get_columns("users")]
-            if "role" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'staff'"))
-                conn.execute(text("UPDATE users SET role = 'staff' WHERE role IS NULL"))
-
-        if inspect(conn).has_table("production_orders"):
-            production_columns = [column["name"] for column in inspect(conn).get_columns("production_orders")]
-            if "bom_id" not in production_columns:
-                conn.execute(text("ALTER TABLE production_orders ADD COLUMN bom_id INTEGER"))
-
-        if inspect(conn).has_table("production_boms"):
-            bom_columns = [column["name"] for column in inspect(conn).get_columns("production_boms")]
-            bom_additions = {
-                "parent_id": "INTEGER",
-                "name": "VARCHAR(150)",
-                "code": "VARCHAR(80)",
-                "bom_type": "VARCHAR(50) DEFAULT 'component'",
-                "level": "INTEGER NOT NULL DEFAULT 0",
-                "description": "VARCHAR(255)",
-            }
-            for column_name, definition in bom_additions.items():
-                if column_name not in bom_columns:
-                    conn.execute(text(f"ALTER TABLE production_boms ADD COLUMN {column_name} {definition}"))
-
-        # 融合改造：三张档案表补列
-        # ⚠️ C1-2b/C1-3（2026-10-27）：products / customers / suppliers 已改由版本化迁移接管
-        #    （app/db/migrations.py id=2/3/4，列定义在 migration_columns），旧 dict 已删。
-
-        # 融合改造：单据结算链 / 欠款链 / 仓库绑定
-        # ⚠️ C1-4A（2026-10-27）：采购/销售单头与明细（含退货明细）已改由版本化迁移接管
-        #    （app/db/migrations.py id=5~10），这里不再重复补列。
-
-        # 融合改造：财务 × 全模块关联 / 库存流水溯源
-        # ⚠️ C1-4B（2026-10-27）：financial_transactions / inventory_transactions
-        #    已改由版本化迁移接管（app/db/migrations.py id=11/12）。
-
-        # 第 11 批：发票的业务属性与原始文件
-        # ⚠️ C1-2b/C1-3（2026-10-27）：invoices 补列已由版本化迁移接管
-        #    （app/db/migrations.py id=1，列定义在 migration_columns.INVOICE_COLUMNS）。
-
-        # 第 12 批：总账凭证的 flow_id（凭证 ↔ 流水同生共死）。
-        # ⚠️ C1-4C（2026-10-27）：已改由版本化迁移接管（app/db/migrations.py id=18）。
-
-        # 系统管理第 1 轮：用户表补列（部门 / 角色 / 联系方式）
-        # ⚠️ C1-4B：users 补列由迁移 id=13 接管（users.role 的 NOT NULL 特殊逻辑仍在上方内联）。
-
-        # 开票税点：商品档案的默认税率
-        # ⚠️ C1-2b/C1-3（2026-10-27）：tax_rate 已并入 migration_columns.PRODUCT_COLUMNS，
-        #    由迁移 id=2 接管，这里不再重复补列。
-
-        # 多账套：账套表的补列（全局表，只在 public）
-        # ⚠️ C1-4B：companies.own_name 由迁移 id=14 接管。
+# C1-5（2026-10-27）：`ensure_schema_in()` 已整体删除 —— 生产单 bom_id、BOM 层级补列、
+# users.role 的 NOT NULL 处理已并入 `app/db/migrations.py`（id=19~21）；其余补列更早已搬走。
+# 本文件不再负责任何 schema 变更，统一由 `create_app()` / 账套初始化执行 `apply_pending()`。
 
 
-def _ensure_numeric_money(conn, table: str, columns: tuple[str, ...]) -> list[str]:
-    """把金额列从 `double precision` 幂等转成 `numeric(12, 2)`，返回**本次真正转换**的列。
-
-    · 已经是 `numeric` 的直接跳过 —— 这是可重复执行的关键（启动时每次都跑）。
-    · `USING round(col::numeric, 2)`：保留两位，不写 COALESCE ——
-      可空列上的 NULL 必须保持 NULL（`round(NULL)` 仍是 NULL），
-      把它抹成 0 会让"金额未填"和"金额为零"变成同一件事，对账单上分不清。
-    · 表/列不存在（老库还没建、或某账套缺表）→ 静默跳过，不阻断启动。
-    """
-    inspector = inspect(conn)
-    if not inspector.has_table(table):
-        return []
-    existing = {column["name"]: column["type"] for column in inspector.get_columns(table)}
-    converted: list[str] = []
-    for column in columns:
-        column_type = existing.get(column)
-        if column_type is None:
-            continue
-        # ⚠️ 这里**必须是 `isinstance(x, Float)` 而不是 `isinstance(x, Numeric)`**：
-        #    SQLAlchemy 的类层次是 `Float(Numeric)`、`DOUBLE_PRECISION(Float)` ——
-        #    拿 Numeric 判"已经是定点数"会把 double precision 当成 numeric 放过，
-        #    函数静默返回空列表、迁移看起来"成功"但列还是浮点（第一版就这么错了）。
-        if isinstance(column_type, Numeric) and not isinstance(column_type, Float):
-            continue
-        conn.execute(
-            text(
-                f"ALTER TABLE {table} ALTER COLUMN {column} "
-                f"TYPE NUMERIC(12, 2) USING round({column}::numeric, 2)"
-            )
-        )
-        converted.append(column)
-    return converted
-
-
-def _ensure_wide_price(conn, table: str, columns: tuple[str, ...]) -> list[str]:
-    """把单价列幂等放宽到 `numeric(14, 4)`，返回**本次真正改过**的列。
-
-    为什么单价不能是 (12,2)：单价是费率，不是钱。真实合同里 `73.901 元/米`
-    这种三位单价很常见（含税↔不含税换算出来的）。存成 73.90 之后：
-
-        73.90  × 580 = 42,862.00
-        73.901 × 580 = 42,862.58      ← 合同上就是这个数
-
-    差 0.58 元，合计跟合同总额对不上 —— 用户看到的就是"尾差"。
-
-    · 已经是 (14,4) 或更高小数位的 → 跳过（这是幂等的关键，每次启动都跑）。
-    · `USING {col}::numeric(14,4)`：只改类型、不动值。**不能**写 round(col,2)，
-      那等于把要救的数据又抹平一次。
-    · 表/列不存在 → 静默跳过，不阻断启动。
-    """
-    inspector = inspect(conn)
-    if not inspector.has_table(table):
-        return []
-    existing = {column["name"]: column["type"] for column in inspector.get_columns(table)}
-    widened: list[str] = []
-    for column in columns:
-        column_type = existing.get(column)
-        if column_type is None:
-            continue
-        scale = getattr(column_type, "scale", None)
-        # 非定点数（double precision）留给前面的 _ensure_numeric_money 处理
-        if not isinstance(column_type, Numeric) or isinstance(column_type, Float):
-            continue
-        if scale is not None and scale >= 4:
-            continue
-        conn.execute(
-            text(
-                f"ALTER TABLE {table} ALTER COLUMN {column} "
-                f"TYPE NUMERIC(14, 4) USING {column}::numeric(14, 4)"
-            )
-        )
-        widened.append(column)
-    return widened
+# C1-5：`_ensure_numeric_money` / `_ensure_wide_price` 已搬到 `app/db/migrations.py`
+# （迁移 id=17 使用；金额 double→numeric(12,2)、单价→numeric(14,4) 的幂等转换在那里）。
 
 
 # C1-4C（2026-10-27）：原 `ensure_contract_module()` 的补列 / 转列 / direction 纠偏 / 建索引
@@ -330,7 +163,7 @@ def ensure_user_company_links() -> None:
 def ensure_all_tenant_schemas() -> None:
     """给每个**新账套**的 schema 建表 + 补列（幂等）。
 
-    第一个账套（public）已经由上面的 `create_all` + `ensure_schema_in()` 处理过，
+    第一个账套（public）已经由 `create_app()` 里的 `create_all` + `apply_pending()` 处理过，
     这里跳过它。
 
     ⚠️ 单个账套初始化失败**不能拖垮整个服务**：第一个账套是现有生产数据，
@@ -1030,10 +863,8 @@ def create_app() -> FastAPI:
     app.middleware("http")(auth_gate_middleware)
     app.middleware("http")(_operation_log_middleware)
     Base.metadata.create_all(bind=engine)
-    ensure_schema_in()
-    # C1-4C（2026-10-27）：合同/报价补列、金额转 numeric、direction 纠偏、建索引
-    # 已并入版本化迁移（id=15~17），与其余迁移一起在下面 apply_pending 统一执行。
-    # C1（2026-10-27）：版本化迁移 —— 只应用「还没跑过」的迁移，幂等由 erp_migrations 保证。
+    # C1（2026-10-27）：全部 schema 迁移（补列 / 转列 / 建索引 / 纠偏）都在 apply_pending 里。
+    # 只应用「还没跑过」的迁移，幂等由 erp_migrations 记录表保证。
     apply_pending(engine)
     ensure_default_admin_user()
     ensure_default_departments()

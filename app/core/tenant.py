@@ -210,13 +210,13 @@ def create_tenant_schema(schema: str) -> None:
 
 
 def create_tenant_tables(schema: str, metadata) -> None:
-    """在账套 schema 里建业务表 + 补列（幂等）。
+    """在账套 schema 里建业务表（幂等）。
 
-    ⚠️ 建表与补列**必须用 `ddl_engine_for`（search_path 不带 public）**，
+    ⚠️ 建表**必须用 `ddl_engine_for`（search_path 不带 public）**，
     否则 `create_all` 的 checkfirst 会误判"表已存在"而一张都不建。详见 `ddl_engine_for`。
-    """
-    from app.main import ensure_schema_in  # 延迟导入：main 会 import 本模块
 
+    C1-5（2026-10-27）：补列不再在这里做 —— `ensure_all_tenant_schemas()` 建表后统一调用
+    `apply_pending(ddl_engine_for(schema))`，与 public 走同一套版本化迁移（id=1~21）。
+    """
     ddl = ddl_engine_for(schema)
     metadata.create_all(ddl, tables=tenant_tables(metadata))
-    ensure_schema_in(ddl)

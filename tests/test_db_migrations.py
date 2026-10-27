@@ -258,3 +258,26 @@ def test_contract_migrations_registered_and_applied():
     assert str(types["total_amount"]).upper().startswith("NUMERIC"), "contracts.total_amount 应已转 numeric"
     assert "ix_contracts_direction" in index_names
     assert "ix_quotations_contract_id" in index_names
+
+
+def test_production_and_user_role_migrations():
+    """C1-5：生产单 bom_id、BOM 层级、users.role 迁移已注册并应用。"""
+    assert {19, 20, 21} <= {mid for mid, _, _ in MIGRATIONS}
+
+    apply_pending(engine)
+    with engine.begin() as conn:
+        applied = {
+            row[0]
+            for row in conn.execute(
+                text(f"SELECT id FROM {_TRACKING_TABLE} WHERE id IN (19, 20, 21)")
+            ).fetchall()
+        }
+    assert applied == {19, 20, 21}
+
+    with engine.begin() as conn:
+        po_cols = {column["name"] for column in inspect(conn).get_columns("production_orders")}
+        bom_cols = {column["name"] for column in inspect(conn).get_columns("production_boms")}
+        user_cols = {column["name"] for column in inspect(conn).get_columns("users")}
+    assert "bom_id" in po_cols
+    assert {"parent_id", "name", "code", "bom_type", "level", "description"} <= bom_cols
+    assert "role" in user_cols

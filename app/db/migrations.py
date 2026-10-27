@@ -26,7 +26,7 @@ C1 完成前**不删** main.py 的 `*_ADDITIONS` / `ensure_schema_in` / `ensure_
 
 from __future__ import annotations
 
-from sqlalchemy import inspect, text
+from sqlalchemy import Float, Numeric, inspect, text
 from sqlalchemy.engine import Engine
 
 from app.db.migration_columns import (
@@ -47,6 +47,86 @@ from app.db.migration_columns import (
     SUPPLIER_COLUMNS,
     USER_COLUMNS,
 )
+
+# —— C1-5：从 main.py 搬来的转列工具（金额 double→numeric(12,2) / 单价→numeric(14,4)）——
+# 搬到这里后，`migrations.py` 是 schema 迁移的唯一实现处；main.py 不再保留迁移代码。
+MONEY_COLUMNS_TO_NUMERIC: dict[str, tuple[str, ...]] = {
+    "contracts": ("total_amount",),
+    "contract_items": ("unit_price", "amount"),
+    "quotations": ("total_amount",),
+    "quotation_items": ("unit_price", "amount"),
+}
+
+PRICE_COLUMNS_TO_WIDE_NUMERIC: dict[str, tuple[str, ...]] = {
+    "contract_items": ("unit_price",),
+    "quotation_items": ("unit_price",),
+}
+
+
+def _ensure_numeric_money(conn, table: str, columns: tuple[str, ...]) -> list[str]:
+    """把金额列从 `double precision` 幂等转成 `numeric(12, 2)`，返回**本次真正转换**的列。
+
+    · 已经是 `numeric` 的直接跳过 —— 这是可重复执行的关键（启动时每次都跑）。
+    · `USING round(col::numeric, 2)`：保留两位，不写 COALESCE ——
+      可空列上的 NULL 必须保持 NULL（`round(NULL)` 仍是 NULL），
+      把它抹成 0 会让"金额未填"和"金额为零"变成同一件事，对账单上分不清。
+    · 表/列不存在（老库还没建、或某账套缺表）→ 静默跳过，不阻断启动。
+    """
+    inspector = inspect(conn)
+    if not inspector.has_table(table):
+        return []
+    existing = {column["name"]: column["type"] for column in inspector.get_columns(table)}
+    converted: list[str] = []
+    for column in columns:
+        column_type = existing.get(column)
+        if column_type is None:
+            continue
+        # ⚠️ 必须是 `isinstance(x, Float)` 而不是 `isinstance(x, Numeric)`：
+        #    SQLAlchemy 的类层次是 `Float(Numeric)`、`DOUBLE_PRECISION(Float)` ——
+        #    拿 Numeric 判"已经是定点数"会把 double precision 当成 numeric 放过。
+        if isinstance(column_type, Numeric) and not isinstance(column_type, Float):
+            continue
+        conn.execute(
+            text(
+                f"ALTER TABLE {table} ALTER COLUMN {column} "
+                f"TYPE NUMERIC(12, 2) USING round({column}::numeric, 2)"
+            )
+        )
+        converted.append(column)
+    return converted
+
+
+def _ensure_wide_price(conn, table: str, columns: tuple[str, ...]) -> list[str]:
+    """把单价列幂等放宽到 `numeric(14, 4)`，返回**本次真正改过**的列。
+
+    单价是费率不是钱：`73.901 元/米` 被 (12,2) 存成 73.90，×580 就差 0.58 元。
+    · 已经是 (14,4) 或更高小数位的 → 跳过（幂等的关键）。
+    · `USING {col}::numeric(14,4)`：只改类型、不动值。
+    · 表/列不存在 → 静默跳过，不阻断启动。
+    """
+    inspector = inspect(conn)
+    if not inspector.has_table(table):
+        return []
+    existing = {column["name"]: column["type"] for column in inspector.get_columns(table)}
+    widened: list[str] = []
+    for column in columns:
+        column_type = existing.get(column)
+        if column_type is None:
+            continue
+        scale = getattr(column_type, "scale", None)
+        if not isinstance(column_type, Numeric) or isinstance(column_type, Float):
+            continue
+        if scale is not None and scale >= 4:
+            continue
+        conn.execute(
+            text(
+                f"ALTER TABLE {table} ALTER COLUMN {column} "
+                f"TYPE NUMERIC(14, 4) USING {column}::numeric(14, 4)"
+            )
+        )
+        widened.append(column)
+    return widened
+
 
 # 迁移注册表：只增不改。已发布过的条目改 id 或改内容会让老库状态错乱。
 # 每条 = (id, name, upgrade)；upgrade(conn) 在当前 search_path 指向的 schema 内执行。
@@ -244,13 +324,6 @@ def _migration_0017_contract_module_extras(conn) -> None:
     - `contracts.direction` 与 `contract_type` 对齐（只动自相矛盾的历史行）。
     - 两个索引 `CREATE INDEX IF NOT EXISTS`（索引名 per-schema，多账套不冲突）。
     """
-    from app.main import (  # noqa: PLC0415 —— 延迟导入，避免与 main.py 循环
-        MONEY_COLUMNS_TO_NUMERIC,
-        PRICE_COLUMNS_TO_WIDE_NUMERIC,
-        _ensure_numeric_money,
-        _ensure_wide_price,
-    )
-
     if not inspect(conn).has_table("contracts"):
         return
     for table, columns in MONEY_COLUMNS_TO_NUMERIC.items():
@@ -287,5 +360,47 @@ MIGRATIONS.extend(
         (16, "quotation link", _migration_0016_quotations),
         (17, "contract module extras (numeric/index/direction)", _migration_0017_contract_module_extras),
         (18, "journal entry flow_id", _migration_0018_journal_entries_flow_id),
+    ]
+)
+
+
+def _migration_0019_production_orders_bom_id(conn) -> None:
+    """C1-5：生产单挂 BOM（bom_id）。"""
+    _add_columns_if_missing(conn, "production_orders", {"bom_id": "INTEGER"})
+
+
+def _migration_0020_production_boms(conn) -> None:
+    """C1-5：BOM 清单层级补列（parent / code / 类型 / 层级 / 说明）。"""
+    _add_columns_if_missing(
+        conn,
+        "production_boms",
+        {
+            "parent_id": "INTEGER",
+            "name": "VARCHAR(150)",
+            "code": "VARCHAR(80)",
+            "bom_type": "VARCHAR(50) DEFAULT 'component'",
+            "level": "INTEGER NOT NULL DEFAULT 0",
+            "description": "VARCHAR(255)",
+        },
+    )
+
+
+def _migration_0021_users_role(conn) -> None:
+    """C1-5：用户角色列（NOT NULL DEFAULT 'staff' + 历史行回填），幂等。"""
+    inspector = inspect(conn)
+    if not inspector.has_table("users"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    if "role" in columns:
+        return
+    conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'staff'"))
+    conn.execute(text("UPDATE users SET role = 'staff' WHERE role IS NULL"))
+
+
+MIGRATIONS.extend(
+    [
+        (19, "production order bom_id", _migration_0019_production_orders_bom_id),
+        (20, "production bom hierarchy", _migration_0020_production_boms),
+        (21, "users role column", _migration_0021_users_role),
     ]
 )
