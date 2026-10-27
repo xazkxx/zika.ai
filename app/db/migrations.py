@@ -224,3 +224,68 @@ MIGRATIONS.extend(
         (14, "company header", _migration_0014_companies),
     ]
 )
+
+
+def _migration_0015_contracts(conn) -> None:
+    """C1-4C：合同主表补列（方向 / 原件 / 模板 / OCR）。"""
+    _add_columns_if_missing(conn, "contracts", CONTRACT_COLUMNS)
+
+
+def _migration_0016_quotations(conn) -> None:
+    """C1-4C：报价单补列（关联合同）。"""
+    _add_columns_if_missing(conn, "quotations", QUOTATION_COLUMNS)
+
+
+def _migration_0017_contract_module_extras(conn) -> None:
+    """C1-4C：合同模块的转列 / 纠偏 / 建索引（全部前置判断，老库安全）。
+
+    - 金额列 `double -> numeric(12,2)`、单价列 -> `numeric(14,4)`：复用 main.py 的幂等
+      转换函数（内部按列类型判断，已是 numeric 直接跳过；表/列不存在也跳过）。
+    - `contracts.direction` 与 `contract_type` 对齐（只动自相矛盾的历史行）。
+    - 两个索引 `CREATE INDEX IF NOT EXISTS`（索引名 per-schema，多账套不冲突）。
+    """
+    from app.main import (  # noqa: PLC0415 —— 延迟导入，避免与 main.py 循环
+        MONEY_COLUMNS_TO_NUMERIC,
+        PRICE_COLUMNS_TO_WIDE_NUMERIC,
+        _ensure_numeric_money,
+        _ensure_wide_price,
+    )
+
+    if not inspect(conn).has_table("contracts"):
+        return
+    for table, columns in MONEY_COLUMNS_TO_NUMERIC.items():
+        _ensure_numeric_money(conn, table, columns)
+    for table, columns in PRICE_COLUMNS_TO_WIDE_NUMERIC.items():
+        _ensure_wide_price(conn, table, columns)
+    conn.execute(
+        text(
+            "UPDATE contracts SET direction = 'in' "
+            "WHERE contract_type = 'purchase' AND direction <> 'in'"
+        )
+    )
+    conn.execute(
+        text(
+            "UPDATE contracts SET contract_type = 'purchase' "
+            "WHERE direction = 'in' AND contract_type <> 'purchase'"
+        )
+    )
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_contracts_direction ON contracts (direction)"))
+    if inspect(conn).has_table("quotations"):
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_quotations_contract_id ON quotations (contract_id)")
+        )
+
+
+def _migration_0018_journal_entries_flow_id(conn) -> None:
+    """C1-4C：总账凭证 flow_id（凭证 ↔ 流水同生共死）。"""
+    _add_columns_if_missing(conn, "journal_entries", {"flow_id": "INTEGER"})
+
+
+MIGRATIONS.extend(
+    [
+        (15, "contract header", _migration_0015_contracts),
+        (16, "quotation link", _migration_0016_quotations),
+        (17, "contract module extras (numeric/index/direction)", _migration_0017_contract_module_extras),
+        (18, "journal entry flow_id", _migration_0018_journal_entries_flow_id),
+    ]
+)

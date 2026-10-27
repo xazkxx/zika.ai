@@ -74,37 +74,9 @@ def _add_missing_columns(conn, table: str, additions: dict[str, str]) -> None:
 # 第 13 批：合同双向管理 / 客户文件归档 / 报价单关联 / 增强对账单
 # 设计说明书：`_contract_module/DESIGN-PHASE1.md`
 # ===========================================================================
-# 合同主表补列。三条硬规则：
-#   1. 一律可空，**唯一例外**是带 DEFAULT 的 NOT NULL（`direction` / `ocr_status`）——
-#      默认值本身就代表"与改动前行为完全一致"，历史行天然正确、不必 UPDATE 回填。
-#   2. 只补列，不建索引 —— 索引在 `ensure_contract_module()` 里显式
-#      `CREATE INDEX IF NOT EXISTS`（`_add_missing_columns` 没有这个能力）。
-#   3. `contract_type`（sales/purchase）**不动**：存量代码还在写它，
-#      `direction` 由模型层的 `normalize_direction()` 双向对齐。
-CONTRACT_ADDITIONS = {
-    # 合同方向：in 采购（形成应付）/ out 销售（形成应收）。
-    # DEFAULT 'out' 是刻意的：历史行全部是销售合同口径（旧代码默认 sales）。
-    "direction": "VARCHAR(10) NOT NULL DEFAULT 'out'",
-    # 合同原件（PDF / Word / 图片），路径存**相对 storage_root** ——
-    # 绝对路径换台机器/换盘就全失效（与 invoices.source_path 同口径）。
-    "source_file_path": "VARCHAR(500)",
-    "source_file_name": "VARCHAR(255)",
-    "source_file_size": "INTEGER",
-    "source_file_mime": "VARCHAR(100)",
-    # 这份合同套用的是模板库里的哪一份（`contract_templates.id`）。
-    # 不建外键：模板删了，历史合同仍然要能说清"当初是按哪份模板签的"（名字可以留空）。
-    "template_id": "INTEGER",
-    # OCR 原始输出**原样保存**：识别一定有错，人工核对时要能看到引擎当时吐了什么；
-    # 只存清洗后的字段就永远说不清"这一分钱是怎么来的"。核对结论另存 ocr_status。
-    "ocr_json": "TEXT",
-    "ocr_status": "VARCHAR(20) NOT NULL DEFAULT 'none'",
-    "updated_at": "TIMESTAMP WITH TIME ZONE",
-}
-
-# 报价单补列：关联合同（可选）。存量表**故意不补外键**（见决策矩阵）。
-QUOTATION_ADDITIONS = {
-    "contract_id": "INTEGER",
-}
+# 合同 / 报价单补列：列定义已搬到 `app/db/migration_columns.py`
+# （C1-4C，迁移 id=15 / 16 接管；转列 numeric / direction 纠偏 / 建索引由迁移 id=17 接管）。
+# ===========================================================================
 
 # 把 `double precision`（＝Float）改成 `numeric(12,2)` 的金额列。
 # ⚠️ 为什么必须改：对账单要拿合同金额做**减法**（合同额 − 已开票 − 已收 − 预收核销），
@@ -184,9 +156,7 @@ def ensure_schema_in(target_engine=None) -> None:
         #    （app/db/migrations.py id=1，列定义在 migration_columns.INVOICE_COLUMNS）。
 
         # 第 12 批：总账凭证的 flow_id（凭证 ↔ 流水同生共死）。
-        # 总账表在更早一轮里可能已经 create_all 建出来了，这里补上 flow_id 列
-        # （幂等，只补缺，不影响已存在的凭证行）。
-        _add_missing_columns(conn, "journal_entries", {"flow_id": "INTEGER"})
+        # ⚠️ C1-4C（2026-10-27）：已改由版本化迁移接管（app/db/migrations.py id=18）。
 
         # 系统管理第 1 轮：用户表补列（部门 / 角色 / 联系方式）
         # ⚠️ C1-4B：users 补列由迁移 id=13 接管（users.role 的 NOT NULL 特殊逻辑仍在上方内联）。
@@ -274,71 +244,9 @@ def _ensure_wide_price(conn, table: str, columns: tuple[str, ...]) -> list[str]:
     return widened
 
 
-def ensure_contract_module(target_engine=None) -> None:
-    """第 13 批：合同 / 客户文件 / 报价单关联 / 对账单的建表 + 补列 + 转列 + 建索引（幂等）。
-
-    调用时机有两个，**都必须调**：
-    · `create_app()` 里紧跟 `ensure_schema_in()` —— 处理第一个账套（schema=public）；
-    · `ensure_all_tenant_schemas()` 里 `create_tenant_tables()` 之后 —— 处理每个账套。
-
-    ⚠️ 三张**新表**（`customer_files` / `statements` / `statement_items`）由
-    `Base.metadata.create_all()` 建，这里**不再重复建表**：重复写一份 DDL 意味着
-    模型改了而这里没改，两份定义迟早分叉。本函数只做 create_all **做不到**的三件事：
-
-    1. **给已存在的表补列**（create_all 只管"表不存在"这一种情况）；
-    2. **给已存在的表建索引**（create_all 同样只建新表的索引）——
-       `contracts.direction` / `quotations.contract_id` 在模型上写了 `index=True`，
-       但那对新库生效、对老库不生效；
-    3. **改列类型**（`double precision` → `numeric(12,2)`），这是 DDL 迁移，
-       模型里的 `Numeric` 只是"新库建出来就是 numeric"。
-    """
-    target = target_engine if target_engine is not None else engine
-    with target.begin() as conn:
-        # 一眼判断"这个 schema 到底有没有业务表"。
-        # 与 `ensure_schema_in` 同口径：查账套自己的表，不查 users（users 只在 public）。
-        if not inspect(conn).has_table("contracts"):
-            return
-
-        # —— 1. 补列 ——
-        _add_missing_columns(conn, "contracts", CONTRACT_ADDITIONS)
-        _add_missing_columns(conn, "quotations", QUOTATION_ADDITIONS)
-
-        # —— 2. 金额列转 numeric(12,2) ——
-        for table, columns in MONEY_COLUMNS_TO_NUMERIC.items():
-            _ensure_numeric_money(conn, table, columns)
-
-        # —— 2b. 单价列放宽到 numeric(14,4)（2026-10-19 修 "合计尾差 0.58 元"）——
-        # 单价是**费率**不是钱：73.901 元/米被 (12,2) 存成 73.90 之后，
-        # 73.90 × 580 = 42862.00，而 73.901 × 580 = 42862.58 —— 差的那 0.58 就是这么来的。
-        # 顺序很重要：必须在 `_ensure_numeric_money` **之后**（它会把非 numeric 的列先转成
-        # (12,2)，这里再放宽小数位），否则同一列会被两次 DDL 改两遍。
-        for table, columns in PRICE_COLUMNS_TO_WIDE_NUMERIC.items():
-            _ensure_wide_price(conn, table, columns)
-
-        # —— 3. direction 与 contract_type 对齐（只动自相矛盾的历史行）——
-        # 新写入由 Pydantic 的 model_validator 保证一致；这里处理"补列时 DEFAULT 顶上去"的行：
-        # 一条采购合同被默认写成 direction='out' 的话，按方向过滤的台账会漏掉它。
-        conn.execute(
-            text(
-                "UPDATE contracts SET direction = 'in' "
-                "WHERE contract_type = 'purchase' AND direction <> 'in'"
-            )
-        )
-        conn.execute(
-            text(
-                "UPDATE contracts SET contract_type = 'purchase' "
-                "WHERE direction = 'in' AND contract_type <> 'purchase'"
-            )
-        )
-
-        # —— 4. 建索引（CREATE INDEX IF NOT EXISTS 幂等；名字与模型里一致）——
-        # 新表的索引由 create_all 建好了，这里只管两张**存量表**上面的新列。
-        # ⚠️ 索引名在 PG 里是 per-schema 的，所以三个账套各叫同一个名字不会冲突。
-        for statement in (
-            "CREATE INDEX IF NOT EXISTS ix_contracts_direction ON contracts (direction)",
-            "CREATE INDEX IF NOT EXISTS ix_quotations_contract_id ON quotations (contract_id)",
-        ):
-            conn.execute(text(statement))
+# C1-4C（2026-10-27）：原 `ensure_contract_module()` 的补列 / 转列 / direction 纠偏 / 建索引
+# 已全部搬进 `app/db/migrations.py` 的 id=15~17 迁移（含前置判断，老库幂等安全）；
+# 函数体与两处调用已删除，`create_app()` 与账套初始化统一走 `apply_pending()`。
 
 
 # ===========================================================================
@@ -445,9 +353,7 @@ def ensure_all_tenant_schemas() -> None:
         try:
             tenant_router.create_tenant_schema(schema)
             tenant_router.create_tenant_tables(schema, Base.metadata)
-            # 第 13 批：同样要给账套 schema 补列 / 转金额列 / 建索引 ——
-            # 只在 public 上做的话，新账套的合同方向过滤与对账单金额精度都会出问题。
-            ensure_contract_module(tenant_router.engine_for(schema))
+            # C1-4C（2026-10-27）：合同模块补列/转列/索引已并入迁移，统一由下方 apply_pending 处理。
             # C1（2026-10-27）：账套也要跑版本化迁移。用 ddl_engine_for（search_path 不带
             # public），否则 has_table("erp_migrations") 会先看到 public 里的同名表，
             # 把 public 的迁移历史误当成这个账套自己的 —— 那是串账。
@@ -1125,11 +1031,9 @@ def create_app() -> FastAPI:
     app.middleware("http")(_operation_log_middleware)
     Base.metadata.create_all(bind=engine)
     ensure_schema_in()
-    # 第 13 批：合同 / 客户文件 / 对账单。
-    # 必须在 create_all 之后（新表靠它建）—— 它只补列、转列、建索引。
-    ensure_contract_module()
-    # C1（2026-10-27）：版本化迁移 —— 新机制先于旧机制之前跑（空注册表时是 no-op）。
-    # 它只应用「还没跑过」的迁移，幂等由 erp_migrations 记录表保证。
+    # C1-4C（2026-10-27）：合同/报价补列、金额转 numeric、direction 纠偏、建索引
+    # 已并入版本化迁移（id=15~17），与其余迁移一起在下面 apply_pending 统一执行。
+    # C1（2026-10-27）：版本化迁移 —— 只应用「还没跑过」的迁移，幂等由 erp_migrations 保证。
     apply_pending(engine)
     ensure_default_admin_user()
     ensure_default_departments()

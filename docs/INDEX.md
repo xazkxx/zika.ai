@@ -194,7 +194,7 @@
 | --- | --- | --- |
 | [首屏懒加载与耦合治理_20261027.md](./首屏懒加载与耦合治理_20261027.md) | A1 库备份 · A2 清 6 项探针 · A3 重复注释 · A4 appCtx 注释锁+门禁实测 · B4 47 页改懒加载（gzip 667→469 KB） · B4b 重型依赖按需 import（gzip 469→211 KB） · 白屏修复（appCtx 残留简写键 + 门禁升级为作用域级） · B5 发票 Excel 导出搬后端（openpyxl 直出，614 passed） · **B6 "Office 报文件已损坏"真凶=下载来源标记 Mark-of-the-Web → 受保护视图沙箱起不来；落盘全部改 `saveBlobSmart`/`saveBlob`（`showSaveFilePicker` 直写磁盘，全仓只剩 1 处 a[download]）+ 4 个 Excel 受信任位置（D:\下载的东西 / 桌面 / 文档 / 下载），8 项单测** | ✅ 已做 |
 | [测试库隔离_20261027.md](./测试库隔离_20261027.md) | A5：`conftest.py` 只认 `TEST_DATABASE_URL`，配独立实例（55432）跑 608 个测试；生产库事务数零增长实证 | ✅ 已做 |
-| [C1_迁移机制统一_设计_20261027.md](./C1_迁移机制统一_设计_20261027.md) | **C1-1~4B 已落地**：版本化注册表 + `erp_migrations` + 启动接入 + 真实迁移 id=1~14（发票/主数据/采购销售/财务库存/用户公司）；列定义在 `app/db/migration_columns.py`（生成器零手抄） | 🚧 进行中 |
+| [C1_迁移机制统一_设计_20261027.md](./C1_迁移机制统一_设计_20261027.md) | **C1 全部搬完（id=1~18）**：版本化注册表 + `erp_migrations` + 启动接入 + 13 组 `*_ADDITIONS` 与合同模块转列/索引/纠偏全部进迁移；列定义在 `app/db/migration_columns.py`（生成器零手抄）；`ensure_schema_in` 仅剩生产/BOM 内联项；**665 passed** | ✅ 已落地 |
 
 ---
 

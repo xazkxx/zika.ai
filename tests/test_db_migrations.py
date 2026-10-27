@@ -14,6 +14,7 @@ from sqlalchemy import inspect, text
 
 from app.db.migration_columns import (
     COMPANY_COLUMNS,
+    CONTRACT_COLUMNS,
     CUSTOMER_COLUMNS,
     FINANCE_COLUMNS,
     INVENTORY_COLUMNS,
@@ -22,6 +23,7 @@ from app.db.migration_columns import (
     PURCHASE_ITEM_COLUMNS,
     PURCHASE_ORDER_COLUMNS,
     PURCHASE_RETURN_ITEM_COLUMNS,
+    QUOTATION_COLUMNS,
     SALES_ITEM_COLUMNS,
     SALES_ORDER_COLUMNS,
     SALES_RETURN_ITEM_COLUMNS,
@@ -217,3 +219,42 @@ def test_finance_inventory_user_company_migrations():
         with engine.begin() as conn:
             cols = {column["name"] for column in inspect(conn).get_columns(table)}
         assert set(columns) <= cols, f"{table} 缺列：{set(columns) - cols}"
+
+
+def test_contract_migrations_registered_and_applied():
+    """C1-4C：合同/报价补列 + 转列/索引/纠偏迁移已注册并应用。"""
+    assert {15, 16, 17, 18} <= {mid for mid, _, _ in MIGRATIONS}
+
+    apply_pending(engine)
+    with engine.begin() as conn:
+        applied = {
+            row[0]
+            for row in conn.execute(
+                text(f"SELECT id FROM {_TRACKING_TABLE} WHERE id IN (15, 16, 17, 18)")
+            ).fetchall()
+        }
+    assert applied == {15, 16, 17, 18}
+
+    for table, columns in (
+        ("contracts", CONTRACT_COLUMNS),
+        ("quotations", QUOTATION_COLUMNS),
+    ):
+        with engine.begin() as conn:
+            cols = {column["name"] for column in inspect(conn).get_columns(table)}
+        assert set(columns) <= cols, f"{table} 缺列：{set(columns) - cols}"
+
+    # 金额列必须已是 numeric（转列迁移生效），两个索引必须存在
+    with engine.begin() as conn:
+        types = {column["name"]: column["type"] for column in inspect(conn).get_columns("contracts")}
+        index_names = {
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT indexname FROM pg_indexes "
+                    "WHERE tablename IN ('contracts', 'quotations')"
+                )
+            ).fetchall()
+        }
+    assert str(types["total_amount"]).upper().startswith("NUMERIC"), "contracts.total_amount 应已转 numeric"
+    assert "ix_contracts_direction" in index_names
+    assert "ix_quotations_contract_id" in index_names
