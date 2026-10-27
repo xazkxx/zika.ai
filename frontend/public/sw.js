@@ -108,7 +108,7 @@
  *   stale-while-revalidate 浼氬厛鎶婃棫鏍峰紡杩樼粰鐢ㄦ埛 鈥斺€?鐢ㄦ埛鎶ュ憡"鏂眰淇簡杩樺湪"銆?
  *   bump 鍚?activate 鐩存帴鍒犳棫缂撳瓨锛屼笅娆″鑸繀鐒舵嬁鍒版渶鏂版瀯寤恒€?*/
 
-const CACHE_VERSION = 'erp-pwa-v298';
+const CACHE_VERSION = 'erp-pwa-v299';
 const CACHE_NAME = `${CACHE_VERSION}-shell`;
 
 // 搴旂敤澶栧３锛氱绾挎墦寮€鑷冲皯瑕佹湁鐨勬枃浠?
